@@ -1,0 +1,19 @@
+[project]
+name = "gtaz"
+version = "0.0.1"
+authors = [
+    { name="Hansimov" },
+]
+description = "Visual-based AI for real-time tasks in GTAV"
+readme = "README.md"
+requires-python = ">=3.6"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Hansimov/gtaz"
+Issues = "https://github.com/Hansimov/gtaz/issues"
