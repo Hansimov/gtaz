@@ -30,6 +30,13 @@ PW_RENDERFULLCONTENT = 0x00000002
 # 默认截图间隔（秒）
 DEFAULT_INTERVAL = 0.5
 
+# 默认图像质量（JPEG）
+DEFAULT_QUALITY = 85
+
+# 支持的图像格式
+IMAGE_FORMAT_JPEG = "JPEG"
+IMAGE_FORMAT_PNG = "PNG"
+
 
 class ScreenCapturer:
     """
@@ -45,6 +52,8 @@ class ScreenCapturer:
         fps: Optional[float] = None,
         output_dir: Optional[Path] = None,
         window_locator: Optional[GTAVWindowLocator] = None,
+        image_format: str = IMAGE_FORMAT_JPEG,
+        quality: int = DEFAULT_QUALITY,
     ):
         """
         初始化屏幕截取器。
@@ -53,10 +62,14 @@ class ScreenCapturer:
         :param fps: 每秒截图帧数，当 interval 未指定时使用
         :param output_dir: 输出目录，默认为 cache/frames
         :param window_locator: 窗口定位器，默认为 None（将自动创建）
+        :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
+        :param quality: JPEG 质量（1-100），默认 85
         """
         self.interval = self._calculate_interval(interval, fps)
         self.output_dir = output_dir or FRAMES_DIR
         self.window_locator = window_locator or GTAVWindowLocator()
+        self.image_format = image_format.upper()
+        self.quality = max(1, min(100, quality))
 
         # 确保输出目录存在
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -68,6 +81,13 @@ class ScreenCapturer:
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
         self.gdi32 = ctypes.windll.gdi32
+
+        # 缓存的 GDI 资源（用于复用）
+        self._cached_width: int = 0
+        self._cached_height: int = 0
+        self._cached_dc = None
+        self._cached_bitmap = None
+        self._cached_bmp_info = None
 
     def _calculate_interval(
         self, interval: Optional[float], fps: Optional[float]
@@ -89,12 +109,15 @@ class ScreenCapturer:
 
     def _generate_filename(self) -> str:
         """
-        生成截图文件名，格式为 YYYY-MM-DD_HH-MM-SS-sss.png
+        生成截图文件名，格式为 YYYY-MM-DD_HH-MM-SS-sss.ext
 
         :return: 文件名字符串
         """
         now = get_now()
-        return now.strftime("%Y-%m-%d_%H-%M-%S-") + f"{now.microsecond // 1000:03d}.png"
+        ext = "jpg" if self.image_format == IMAGE_FORMAT_JPEG else "png"
+        return (
+            now.strftime("%Y-%m-%d_%H-%M-%S-") + f"{now.microsecond // 1000:03d}.{ext}"
+        )
 
     def _get_window_info(self) -> Optional[tuple[int, int, int]]:
         """
@@ -157,6 +180,42 @@ class ScreenCapturer:
         )
         return bmp_info
 
+    def _ensure_gdi_resources(self, hwnd_dc: int, width: int, height: int):
+        """
+        确保 GDI 资源已创建并与当前尺寸匹配。
+
+        :param hwnd_dc: 窗口 DC
+        :param width: 宽度
+        :param height: 高度
+        """
+        # 如果尺寸变化，需要重新创建资源
+        if (
+            self._cached_width != width
+            or self._cached_height != height
+            or self._cached_dc is None
+        ):
+            self._release_gdi_resources()
+
+            self._cached_width = width
+            self._cached_height = height
+            self._cached_dc = self.gdi32.CreateCompatibleDC(hwnd_dc)
+            self._cached_bitmap = self.gdi32.CreateCompatibleBitmap(
+                hwnd_dc, width, height
+            )
+            self._cached_bmp_info = self._create_bitmap_info(width, height)
+
+    def _release_gdi_resources(self):
+        """释放缓存的 GDI 资源。"""
+        if self._cached_bitmap:
+            self.gdi32.DeleteObject(self._cached_bitmap)
+            self._cached_bitmap = None
+        if self._cached_dc:
+            self.gdi32.DeleteDC(self._cached_dc)
+            self._cached_dc = None
+        self._cached_bmp_info = None
+        self._cached_width = 0
+        self._cached_height = 0
+
     def _capture_window(self, hwnd: int, width: int, height: int) -> Optional[bytes]:
         """
         直接从窗口截取画面（支持后台窗口）。
@@ -175,60 +234,71 @@ class ScreenCapturer:
             logger.warn("无法获取窗口 DC")
             return None
 
-        # 创建兼容 DC 和位图
-        mfc_dc = self.gdi32.CreateCompatibleDC(hwnd_dc)
-        bitmap = self.gdi32.CreateCompatibleBitmap(hwnd_dc, width, height)
-        old_bitmap = self.gdi32.SelectObject(mfc_dc, bitmap)
+        # 确保 GDI 资源已准备好
+        self._ensure_gdi_resources(hwnd_dc, width, height)
+
+        # 选择位图到 DC
+        old_bitmap = self.gdi32.SelectObject(self._cached_dc, self._cached_bitmap)
 
         # 使用 PrintWindow 截取窗口内容（支持后台窗口）
-        # PW_CLIENTONLY: 只截取客户区
-        # PW_RENDERFULLCONTENT: 完整渲染内容（Windows 8.1+）
         result = self.user32.PrintWindow(
-            hwnd, mfc_dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT
+            hwnd, self._cached_dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT
         )
 
         if not result:
             # 如果 PrintWindow 失败，尝试使用 BitBlt 作为后备方案
-            # 注意：BitBlt 对于后台窗口可能无法正确工作
             client_dc = self.user32.GetDC(hwnd)
-            self.gdi32.BitBlt(mfc_dc, 0, 0, width, height, client_dc, 0, 0, SRCCOPY)
+            self.gdi32.BitBlt(
+                self._cached_dc, 0, 0, width, height, client_dc, 0, 0, SRCCOPY
+            )
             self.user32.ReleaseDC(hwnd, client_dc)
-
-        # 创建位图信息头
-        bmp_info = self._create_bitmap_info(width, height)
 
         # 创建缓冲区并获取位图数据
         buffer_size = width * height * 4
         buffer = ctypes.create_string_buffer(buffer_size)
-        self.gdi32.GetDIBits(mfc_dc, bitmap, 0, height, buffer, bmp_info, 0)
+        self.gdi32.GetDIBits(
+            self._cached_dc,
+            self._cached_bitmap,
+            0,
+            height,
+            buffer,
+            self._cached_bmp_info,
+            0,
+        )
 
-        # 清理 GDI 对象
-        self.gdi32.SelectObject(mfc_dc, old_bitmap)
-        self.gdi32.DeleteObject(bitmap)
-        self.gdi32.DeleteDC(mfc_dc)
+        # 恢复旧位图
+        self.gdi32.SelectObject(self._cached_dc, old_bitmap)
+
+        # 释放窗口 DC
         self.user32.ReleaseDC(hwnd, hwnd_dc)
 
         return buffer.raw
 
     def _save_image(self, raw_data: bytes, width: int, height: int) -> Optional[Path]:
         """
-        将原始位图数据保存为 PNG 文件。
+        将原始位图数据保存为图像文件。
 
         :param raw_data: BGRA 格式的原始位图数据
         :param width: 图像宽度
         :param height: 图像高度
         :return: 保存的文件路径，失败则返回 None
         """
-        # 创建 PIL Image
+        # 创建 PIL Image（直接使用 RGB 模式，跳过 Alpha 通道）
         image = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", 0, 1)
 
-        # 转换为 RGB（去除 Alpha 通道）
-        image = image.convert("RGB")
-
-        # 生成文件路径并保存
+        # 生成文件路径
         filename = self._generate_filename()
         filepath = self.output_dir / filename
-        image.save(filepath, "PNG")
+
+        # 根据格式保存
+        if self.image_format == IMAGE_FORMAT_JPEG:
+            # JPEG 不支持 Alpha，转换为 RGB
+            image = image.convert("RGB")
+            image.save(filepath, "JPEG", quality=self.quality, optimize=False)
+        else:
+            # PNG 格式，使用快速压缩
+            image = image.convert("RGB")
+            image.save(filepath, "PNG", compress_level=1)
 
         return filepath
 
@@ -300,7 +370,14 @@ class ScreenCapturer:
         if self._capture_thread:
             self._capture_thread.join(timeout=self.interval + 1)
             self._capture_thread = None
+
+        # 释放 GDI 资源
+        self._release_gdi_resources()
         logger.okay("自动截图已停止")
+
+    def __del__(self):
+        """析构函数，确保释放 GDI 资源。"""
+        self._release_gdi_resources()
 
     def is_running(self) -> bool:
         """
@@ -314,6 +391,8 @@ class ScreenCapturer:
         return (
             f"ScreenCapturer("
             f"interval={self.interval}, "
+            f"format={self.image_format}, "
+            f"quality={self.quality}, "
             f"output_dir={self.output_dir}, "
             f"running={self._running})"
         )
@@ -322,7 +401,7 @@ class ScreenCapturer:
 def test_screen_capturer():
     """测试屏幕截取器。"""
     # 使用 fps 参数测试
-    FPS = 1
+    FPS = 10
     capturer = ScreenCapturer(fps=FPS)
     logger.note(f"使用 fps={FPS}，计算出的 interval={capturer.interval} 秒")
 
