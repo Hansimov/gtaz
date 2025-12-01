@@ -7,7 +7,7 @@ from tclogger import TCLogger
 from .gamepads import GamepadSimulator, Button, JoystickDirection, TriggerPressure
 
 
-logger = TCLogger(name="GTAVController", prefix=True)
+logger = TCLogger(name="GTAVController", use_prefix=True)
 
 
 class MenuController:

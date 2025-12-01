@@ -5,16 +5,16 @@ References:
 - https://github.com/shibeta/JNTMbot_python/blob/main/gamepad_utils.py
 """
 
-import vgamepad as vg
 import enum
 import time
 import atexit
+import vgamepad as vg
 
 from tclogger import TCLogger
 from typing import Union
 
 
-logger = TCLogger(name="GamepadSimulator", prefix=True)
+logger = TCLogger(name="GamepadSimulator", use_prefix=True)
 
 
 class Button(enum.IntFlag):
