@@ -1,3 +1,10 @@
+"""模拟手柄"""
+
+"""
+References:
+- https://github.com/shibeta/JNTMbot_python/blob/main/gamepad_utils.py
+"""
+
 import vgamepad as vg
 import enum
 import time
@@ -88,30 +95,30 @@ class GamepadSimulator:
         try:
             self.pad = vg.VX360Gamepad()
             logger.okay("虚拟手柄设备已创建。")
-
             # 注册清理函数
             atexit.register(self._cleanup)
-
             # 初始化手柄状态
             self.pad.reset()
-
             # 按一下A键以唤醒手柄
             self.click_button(Button.A)
             logger.okay("初始化虚拟手柄完成。")
 
         except Exception as e:
             logger.err(f"初始化虚拟手柄失败: {e}。请确保已安装 ViGEmBus 驱动，并且没有其他程序正在使用 ViGEmBus 模拟手柄。")
-            logger.line('请运行程序目录下的 "install_vigembus.bat" 来安装驱动。')
+            logger.note("请参考如下文件安装驱动：")
+            logger.file(
+                "https://github.com/shibeta/JNTMbot_python/blob/main/install_vigembus.bat"
+            )
             raise
 
     def _cleanup(self):
         """程序退出时调用的清理函数。"""
         if self.pad:
             try:
-                logger.line("正在重置虚拟手柄状态...")
+                logger.note("正在重置虚拟手柄状态...")
                 self.pad.reset()
                 self.pad.update()
-                logger.line("虚拟手柄状态已重置。")
+                logger.okay("虚拟手柄状态已重置。")
             except Exception as e:
                 logger.warn(f"重置虚拟手柄时出错: {e}")
 
@@ -299,10 +306,14 @@ class GamepadSimulator:
         self.release_right_trigger()
 
 
-if __name__ == "__main__":
+def test_gamepad_simulator():
     simulator = GamepadSimulator()
     simulator.click_button(Button.A)
     simulator.hold_left_joystick(JoystickDirection.FULL_UP, duration_milliseconds=500)
     simulator.hold_right_trigger(TriggerPressure.full, duration_milliseconds=500)
+
+
+if __name__ == "__main__":
+    test_gamepad_simulator()
 
     # python -m gtaz.gamepads
