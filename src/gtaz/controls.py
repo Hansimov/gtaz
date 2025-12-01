@@ -520,14 +520,36 @@ def test_controllers():
     time.sleep(0.5)
 
     logger.note("测试：人物移动 ...")
-    character.run_forward(duration_ms=500)
+    character.walk_forward(duration_ms=500)
     time.sleep(0.5)
-    character.jump()
+    character.look_left(duration_ms=500)
+    time.sleep(0.5)
+    character.walk_backward(duration_ms=500)
+    time.sleep(0.5)
+    character.look_right(duration_ms=500)
+    time.sleep(0.5)
 
     logger.okay("测试完成")
 
 
+def test_keep_moving():
+    gamepad = GamepadSimulator()
+    character = CharacterController(gamepad)
+    logger.note("测试：人物保持移动 ...")
+    for i in range(1000):
+        character.walk_forward(duration_ms=500)
+        time.sleep(10)
+        character.look_left(duration_ms=500)
+        time.sleep(10)
+        character.walk_backward(duration_ms=500)
+        time.sleep(10)
+        character.look_right(duration_ms=500)
+        time.sleep(10)
+    logger.okay("测试完成")
+
+
 if __name__ == "__main__":
-    test_controllers()
+    # test_controllers()
+    test_keep_moving()
 
     # python -m gtaz.controls

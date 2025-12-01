@@ -401,9 +401,9 @@ class ScreenCapturer:
 def test_screen_capturer():
     """测试屏幕截取器。"""
     # 使用 fps 参数测试
-    FPS = 10
-    capturer = ScreenCapturer(fps=FPS)
-    logger.note(f"使用 fps={FPS}，计算出的 interval={capturer.interval} 秒")
+    fps = 2
+    capturer = ScreenCapturer(fps=fps)
+    logger.note(f"使用 fps={fps}，计算出的 interval={capturer.interval} 秒")
 
     if capturer.window_locator.is_window_valid():
         logger.note(f"截取器信息: {capturer}")
@@ -414,10 +414,11 @@ def test_screen_capturer():
         if filepath:
             logger.okay(f"单次截图成功: {filepath}")
 
-        # 自动截图测试（截取 5 秒）
-        logger.note("开始自动截图（5 秒）...")
+        duration = 10
+        # 自动截图测试
+        logger.note(f"自动截图（{duration} 秒）...")
         capturer.start()
-        time.sleep(5)
+        time.sleep(duration)
         capturer.stop()
         logger.okay("自动截图测试完成")
     else:
