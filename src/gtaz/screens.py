@@ -1,5 +1,6 @@
 """GTAV 屏幕截取"""
 
+import argparse
 import ctypes
 import time
 import threading
@@ -7,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 from PIL import Image
-from tclogger import TCLogger, get_now
+from tclogger import TCLogger, logstr, get_now
 
 from .windows import GTAVWindowLocator
 
@@ -66,10 +67,16 @@ class ScreenCapturer:
         :param quality: JPEG 质量（1-100），默认 85
         """
         self.interval = self._calculate_interval(interval, fps)
-        self.output_dir = output_dir or FRAMES_DIR
         self.window_locator = window_locator or GTAVWindowLocator()
         self.image_format = image_format.upper()
         self.quality = max(1, min(100, quality))
+
+        # 生成基于启动时间的会话目录
+        if output_dir is None:
+            session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
+            self.output_dir = FRAMES_DIR / session_name
+        else:
+            self.output_dir = output_dir
 
         # 确保输出目录存在
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -302,10 +309,11 @@ class ScreenCapturer:
 
         return filepath
 
-    def capture_frame(self) -> Optional[Path]:
+    def capture_frame(self, verbose: bool = True) -> Optional[Path]:
         """
         截取当前 GTAV 窗口画面。
 
+        :param verbose: 是否打印保存日志
         :return: 保存的文件路径，失败则返回 None
         """
         try:
@@ -324,7 +332,7 @@ class ScreenCapturer:
 
             # 保存图像
             filepath = self._save_image(raw_data, width, height)
-            if filepath:
+            if filepath and verbose:
                 logger.okay(f"截图已保存: {filepath}")
 
             return filepath
@@ -343,7 +351,7 @@ class ScreenCapturer:
 
     def start(self):
         """
-        开始自动截图。
+        开始连续截图。
 
         在后台线程中按照设定的间隔时间持续截图。
         """
@@ -358,10 +366,10 @@ class ScreenCapturer:
         self._running = True
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
-        logger.okay("自动截图已启动")
+        logger.okay("连续截图已启动")
 
     def stop(self):
-        """停止自动截图。"""
+        """停止连续截图。"""
         if not self._running:
             logger.warn("截图未在运行")
             return
@@ -373,7 +381,7 @@ class ScreenCapturer:
 
         # 释放 GDI 资源
         self._release_gdi_resources()
-        logger.okay("自动截图已停止")
+        logger.okay("连续截图已停止")
 
     def __del__(self):
         """析构函数，确保释放 GDI 资源。"""
@@ -381,7 +389,7 @@ class ScreenCapturer:
 
     def is_running(self) -> bool:
         """
-        检查是否正在运行自动截图。
+        检查是否正在运行连续截图。
 
         :return: 是否正在运行
         """
@@ -398,34 +406,102 @@ class ScreenCapturer:
         )
 
 
-def test_screen_capturer():
-    """测试屏幕截取器。"""
-    # 使用 fps 参数测试
-    fps = 2
+# 进度日志样式映射
+PROGRESS_LOGSTR = {
+    0: logstr.mesg,
+    25: logstr.note,
+    50: logstr.hint,
+    75: logstr.warn,
+    100: logstr.okay,
+}
+
+
+def get_progress_logstr(percent: float):
+    """根据百分比获取对应的日志样式函数。"""
+    for threshold in sorted(PROGRESS_LOGSTR.keys(), reverse=True):
+        if percent >= threshold:
+            return PROGRESS_LOGSTR[threshold]
+    return logstr.file
+
+
+def run_screen_capturer(single: bool = False, fps: float = 3, duration: float = 60):
+    """
+    运行屏幕截取器。
+
+    :param single: 是否只截取单帧
+    :param fps: 每秒截图帧数
+    :param duration: 连续截图持续时间（秒）
+    """
     capturer = ScreenCapturer(fps=fps)
-    logger.note(f"使用 fps={fps}，计算出的 interval={capturer.interval} 秒")
+    logger.note(f"fps={fps}，interval={round(capturer.interval,2)}s")
 
     if capturer.window_locator.is_window_valid():
         logger.note(f"截取器信息: {capturer}")
-
-        # 单次截图测试
-        logger.note("执行单次截图...")
-        filepath = capturer.capture_frame()
-        if filepath:
-            logger.okay(f"单次截图成功: {filepath}")
-
-        duration = 10
-        # 自动截图测试
-        logger.note(f"自动截图（{duration} 秒）...")
-        capturer.start()
-        time.sleep(duration)
-        capturer.stop()
-        logger.okay("自动截图测试完成")
+        if single:
+            # 单次截图
+            logger.note("执行单次截图...")
+            filepath = capturer.capture_frame(verbose=True)
+            if filepath:
+                logger.okay(f"单次截图成功: {filepath}")
+        else:
+            # 连续截图
+            logger.note(f"连续截图（{duration} 秒）...")
+            start_time = time.time()
+            frame_count = 0
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed >= duration:
+                    break
+                filepath = capturer.capture_frame(verbose=False)
+                if filepath:
+                    frame_count += 1
+                    percent = (elapsed / duration) * 100
+                    progress_logstr = get_progress_logstr(percent)
+                    progress_str = progress_logstr(
+                        f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
+                    )
+                    logger.okay(f"{progress_str} 已截取 {frame_count} 帧")
+                time.sleep(capturer.interval)
+            logger.okay(f"连续截图完成，共截取 {frame_count} 帧")
     else:
         logger.err("GTAV 窗口未找到")
 
 
+class ScreenCapturerArgParser:
+    """屏幕截取器命令行参数解析器。"""
+
+    def __init__(self):
+        self.parser = argparse.ArgumentParser(description="GTAV 屏幕截取器")
+        self._add_arguments()
+
+    def _add_arguments(self):
+        """添加命令行参数。"""
+        self.parser.add_argument("-s", "--single", action="store_true", help="只截取当前单帧")
+        self.parser.add_argument(
+            "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
+        )
+        self.parser.add_argument(
+            "-d", "--duration", type=float, default=60, help="连续截图持续时间，单位秒（默认: 60）"
+        )
+
+    def parse(self) -> argparse.Namespace:
+        """解析命令行参数。"""
+        return self.parser.parse_args()
+
+
+def main():
+    """命令行入口。"""
+    args = ScreenCapturerArgParser().parse()
+    run_screen_capturer(
+        single=args.single,
+        fps=args.fps,
+        duration=args.duration,
+    )
+
+
 if __name__ == "__main__":
-    test_screen_capturer()
+    main()
 
     # python -m gtaz.screens
+    # python -m gtaz.screens -s
+    # python -m gtaz.screens -f 3 -d 120
