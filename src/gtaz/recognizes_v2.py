@@ -5,13 +5,14 @@
 
 import random
 import numpy as np
+import shutil
 import sys
 import time
 
 from pathlib import Path
 from typing import Optional, Union
 from dataclasses import dataclass, field
-from tclogger import TCLogger, add_fills
+from tclogger import TCLogger, logstr, add_fills
 from PIL import Image
 
 import torch
@@ -33,6 +34,18 @@ CACHE_DIR = MODULE_DIR / "cache"
 def log_header(header: str):
     header_str = add_fills(header, "=", total_width=80)
     logger.hint(f"{header_str}", use_prefix=False)
+
+
+def logstr_count(right: int, wrong: int, total: int) -> str:
+    ratio = right / total if total > 0 else 0
+    right_str = logstr.okay(right)
+    if wrong > 0:
+        wrong_str = logstr.warn(wrong)
+    else:
+        wrong_str = logstr.okay(wrong)
+    total_str = logstr.mesg(total)
+    ratio_str = f"{ratio:.1%}"
+    return f"{ratio_str} ({right_str}/{wrong_str}/{total_str})"
 
 
 @dataclass
@@ -205,7 +218,7 @@ class FloorRecognizerV2:
         self.model.train()
         for epoch in range(epochs):
             total_loss = 0.0
-            correct = 0
+            right = 0
             total = 0
 
             for images, labels in dataloader:
@@ -220,11 +233,11 @@ class FloorRecognizerV2:
 
                 total_loss += loss.item()
                 _, predicted = outputs.max(1)
-                correct += predicted.eq(labels).sum().item()
+                right += predicted.eq(labels).sum().item()
                 total += labels.size(0)
 
             scheduler.step()
-            acc = correct / total if total > 0 else 0
+            acc = right / total if total > 0 else 0
             logger.mesg(
                 f"Epoch {epoch+1}/{epochs}: Loss={total_loss:.4f}, Acc={acc:.1%}"
             )
@@ -243,7 +256,8 @@ class FloorRecognizerV2:
             },
             self.model_path,
         )
-        logger.okay(f"模型已保存: {self.model_path}")
+        logger.okay(f"模型已保存:")
+        logger.okay(str(self.model_path))
 
     def load_model(self) -> bool:
         """加载模型"""
@@ -253,7 +267,8 @@ class FloorRecognizerV2:
             checkpoint = torch.load(self.model_path, map_location=self.device)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.model.eval()
-            logger.okay("模型已加载")
+            logger.okay("模型已加载:")
+            logger.okay(str(self.model_path))
             return True
         except Exception as e:
             logger.warn(f"加载失败: {e}")
@@ -303,23 +318,42 @@ class FloorRecognizerV2:
             logger.warn(f"读取图像失败: {e}")
             return None
 
-    def evaluate(self, test_dir: Path, expected_floor: int) -> dict:
-        """评估准确率"""
+    def evaluate(
+        self, test_dir: Path, expected_floor: int, collect_errors: bool = False
+    ) -> dict:
+        """评估准确率
+
+        Args:
+            test_dir: 测试目录
+            expected_floor: 期望的楼层
+            collect_errors: 是否收集错误分类的样本
+
+        Returns:
+            包含 accuracy, total, right, errors (如果 collect_errors=True) 的字典
+        """
         files = list(Path(test_dir).glob("*.jpg"))
         if not files:
-            return {"accuracy": 0, "total": 0, "correct": 0}
+            return {"accuracy": 0, "total": 0, "right": 0, "errors": []}
+        right = 0
+        errors = []  # [(file_path, predicted_floor), ...]
 
-        correct = sum(
-            1
-            for f in files
-            if (r := self.recognize_file(f)) and r.floor == expected_floor
-        )
-        return {
+        for f in files:
+            r = self.recognize_file(f)
+            if r:
+                if r.floor == expected_floor:
+                    right += 1
+                elif collect_errors:
+                    errors.append((f, r.floor))
+
+        result = {
             "expected_floor": expected_floor,
             "total": len(files),
-            "correct": correct,
-            "accuracy": correct / len(files),
+            "right": right,
+            "accuracy": right / len(files) if files else 0,
         }
+        if collect_errors:
+            result["errors"] = errors
+        return result
 
     def __repr__(self) -> str:
         return f"FloorRecognizerV2(model={self.model_name}, device={self.device})"
@@ -335,7 +369,7 @@ def test_train():
     log_header("训练模型")
 
     recognizer = FloorRecognizerV2()
-    recognizer.train(epochs=20, batch_size=16, lr=1e-4)
+    recognizer.train(epochs=25, batch_size=16, lr=1e-4)
 
 
 def test_accuracy():
@@ -345,27 +379,52 @@ def test_accuracy():
     recognizer = FloorRecognizerV2()
     if not recognizer.load_model():
         logger.warn("未找到模型，先训练...")
-        recognizer.train(epochs=20)
+        recognizer.train(epochs=25)
 
     logger.note(f"{recognizer}")
 
     locations_dir = CACHE_DIR / "locations"
+    bad_dir = CACHE_DIR / "bad_recognizes_v2"
     results = []
+    all_errors = []
 
     for d in sorted(locations_dir.glob("*_minimap")):
         for floor in range(1, 4):
             if f"floor_{floor}" in d.name:
-                r = recognizer.evaluate(d, floor)
+                r = recognizer.evaluate(d, floor, collect_errors=True)
+                right = r["right"]
+                total = r["total"]
+                wrong = total - right
                 results.append(r)
-                logger.mesg(
-                    f"{d.name}: {r['accuracy']:.1%} ({r['correct']}/{r['total']})"
-                )
+                logger.mesg(f"{d.name}: {logstr_count(right, wrong, total)}")
+                # 收集错误样本，附带原始目录名
+                if r.get("errors"):
+                    for err_path, pred_floor in r["errors"]:
+                        all_errors.append((err_path, pred_floor, d.name))
                 break
 
     if results:
         total = sum(r["total"] for r in results)
-        correct = sum(r["correct"] for r in results)
-        logger.okay(f"总体: {correct/total:.1%} ({correct}/{total})")
+        right = sum(r["right"] for r in results)
+        wrong = total - right
+        logger.okay(f"平均准确率: {logstr_count(right, wrong, total)}")
+
+    # 复制错误分类的图片到 bad_recognizes_v2
+    if all_errors:
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        # 清空旧的错误文件
+        for old_file in bad_dir.glob("*.jpg"):
+            old_file.unlink()
+
+        for err_path, pred_floor, folder_name in all_errors:
+            folder_base = folder_name.replace("_minimap", "")
+            # 新文件名: <original_folder_without_minimap>_as_<result_floor_class>_<original_filename>.jpg
+            new_name = f"{folder_base}_as_{pred_floor}_{err_path.name}"
+            new_path = bad_dir / new_name
+            shutil.copy2(err_path, new_path)
+
+        logger.okay(f"错误分类图片 {len(all_errors)} 张，已复制到:")
+        logger.file(str(bad_dir))
 
 
 def stratified_k_fold(
@@ -484,13 +543,13 @@ def test_cross_validation():
 
         # 验证
         recognizer.model.eval()
-        correct = 0
+        right = 0
         for path, label in val_samples:
             result = recognizer.recognize_file(path)
             if result and result.floor == label + 1:
-                correct += 1
+                right += 1
 
-        acc = correct / len(val_samples)
+        acc = right / len(val_samples)
         fold_results.append(acc)
         logger.mesg(f"Fold {fold + 1} Accuracy: {acc:.1%}")
 
@@ -506,7 +565,7 @@ def test_speed():
     recognizer = FloorRecognizerV2()
     if not recognizer.load_model():
         logger.warn("未找到模型，先训练...")
-        recognizer.train(epochs=10)
+        recognizer.train(epochs=25)
 
     # 收集测试图像
     test_files = []
