@@ -156,30 +156,8 @@ class FloorRecognizer:
                         features = self._extract_features(image)
                         self.floor_samples[floor].append((features, 1.0))
 
-                        # 数据增强：对样本少的楼层进行增强
-                        if floor == 1:  # 楼层1样本最少，进行增强
-                            # 水平翻转
-                            flipped_h = cv2.flip(image, 1)
-                            self.floor_samples[floor].append(
-                                (self._extract_features(flipped_h), 0.8)
-                            )
-                            # 垂直翻转
-                            flipped_v = cv2.flip(image, 0)
-                            self.floor_samples[floor].append(
-                                (self._extract_features(flipped_v), 0.8)
-                            )
-                            # 亮度调整
-                            brighter = cv2.convertScaleAbs(image, alpha=1.1, beta=10)
-                            self.floor_samples[floor].append(
-                                (self._extract_features(brighter), 0.7)
-                            )
-                            darker = cv2.convertScaleAbs(image, alpha=0.9, beta=-10)
-                            self.floor_samples[floor].append(
-                                (self._extract_features(darker), 0.7)
-                            )
-
             count = len(self.floor_samples[floor])
-            logger.okay(f"楼层 {floor}: {count} 个样本")
+            logger.note(f"楼层 {floor} 样本数：{count}")
 
         if save:
             self._save_database()
@@ -323,7 +301,7 @@ def test_cross_validation():
                     all_samples[floor].append((f, features))
 
     for floor, samples in all_samples.items():
-        logger.note(f"楼层 {floor}: {len(samples)} 个样本")
+        logger.note(f"楼层 {floor} 样本数：{len(samples)}")
 
     # 留一法交叉验证
     results = {
