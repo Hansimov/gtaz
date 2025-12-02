@@ -192,14 +192,14 @@ class MinimapCropper:
         input_dir: Union[str, Path],
         output_dir: Optional[Union[str, Path]] = None,
         pattern: str = "*.jpg",
-    ) -> list[Path]:
+    ) -> int:
         """
         批量从目录中的图片文件裁取小地图。
 
         :param input_dir: 输入目录
         :param output_dir: 输出目录（可选，如果不提供则自动生成）
         :param pattern: 文件匹配模式，默认 "*.jpg"
-        :return: 成功保存的文件路径列表
+        :return: 成功保存的文件数
         """
         input_dir = Path(input_dir)
 
@@ -212,20 +212,26 @@ class MinimapCropper:
         else:
             output_dir = Path(output_dir)
 
+        # 清空输出目录（如果存在）
+        if output_dir.exists():
+            for old_file in output_dir.iterdir():
+                if old_file.is_file():
+                    old_file.unlink()
+
         output_dir.mkdir(parents=True, exist_ok=True)
 
         input_files = sorted(input_dir.glob(pattern))
-        logger.mesg(f"找到 {len(input_files)} 个文件待处理")
+        logger.mesg(f"待处理文件数：{len(input_files)}")
 
-        saved_files = []
+        saved_count = 0
         for input_file in input_files:
             output_file = output_dir / input_file.name
             result = self.crop_from_file(input_file, output_file)
             if result:
-                saved_files.append(output_file)
+                saved_count += 1
 
-        logger.okay(f"批量裁取完成，成功处理 {len(saved_files)}/{len(input_files)} 个文件")
-        return saved_files
+        logger.okay(f"批量裁取完成，已处理文件数：{saved_count}/{len(input_files)}")
+        return saved_count
 
     def __repr__(self) -> str:
         return f"MinimapCropper(jpeg_quality={self.jpeg_quality})"
@@ -260,12 +266,15 @@ def test_minimap_cropper():
         logger.warn(f"未找到测试目录: {locations_dir / floor_pattern}")
         return
 
-    logger.note(f"找到 {len(floor_dirs)} 个测试目录")
+    logger.note(f"待处理目录数量：{len(floor_dirs)}")
 
+    saved_total = 0
     for floor_dir in floor_dirs:
         logger.note(f"处理目录: {floor_dir.name}")
         output_dir = locations_dir / f"{floor_dir.name}{minimap_suffix}"
-        cropper.batch_crop(floor_dir, output_dir)
+        saved_count = cropper.batch_crop(floor_dir, output_dir)
+        saved_total += saved_count
+    logger.okay(f"所有测试目录处理完成，累计裁取小地图文件数：{saved_total}")
 
 
 if __name__ == "__main__":
