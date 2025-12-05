@@ -6,9 +6,9 @@ import json
 import time
 import threading
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 from PIL import Image
 from tclogger import TCLogger, logstr, get_now
 
@@ -323,6 +323,9 @@ class ScreenCapturer:
 
         # 帧计数器
         self._frame_count = 0
+
+        # 定时器（用于动态时间补偿）
+        self._next_tick_time: float = 0.0
 
         # 控制截图循环的标志
         self._running = False
@@ -693,17 +696,28 @@ class ScreenCapturer:
         """
         return len(self._cache)
 
+    def reset_tick(self):
+        """重置定时器，将下一次 tick 时间设为当前时间。"""
+        self._next_tick_time = time.time()
+
+    def wait_next_tick(self):
+        """
+        等待到下一个 tick 时间点。
+
+        使用动态时间补偿，确保帧率稳定。
+        """
+        self._next_tick_time += self.interval
+        sleep_time = self._next_tick_time - time.time()
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
     def _capture_loop(self):
         """截图循环（在后台线程中运行）。"""
         logger.note(f"开始截图循环，间隔: {self.interval} 秒")
-        next_capture_time = time.time()
+        self.reset_tick()
         while self._running:
             self.capture_frame()
-            # 动态时间补偿
-            next_capture_time += self.interval
-            sleep_time = next_capture_time - time.time()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            self.wait_next_tick()
         logger.note("截图循环已停止")
 
     def start(self):
@@ -903,19 +917,12 @@ class KeyboardActionCapturer(ScreenCapturer):
     def _capture_loop(self):
         """截图循环（在后台线程中运行）。"""
         logger.note(f"开始键盘触发截图循环，检测间隔: {self.interval} 秒")
-        next_capture_time = time.time()
+        self.reset_tick()
         while self._running:
-            # 检测键盘动作
             action_info = self.keyboard_detector.detect()
-
             if action_info.has_action:
                 self.capture_frame_with_action(action_info)
-
-            # 动态时间补偿
-            next_capture_time += self.interval
-            sleep_time = next_capture_time - time.time()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            self.wait_next_tick()
         logger.note("键盘触发截图循环已停止")
 
     def __repr__(self) -> str:
@@ -950,28 +957,27 @@ def get_progress_logstr(percent: float):
     return logstr.file
 
 
-def run_screen_capturer(
+def run_capturer(
+    capturer: Union[ScreenCapturer, KeyboardActionCapturer],
     single: bool = False,
-    fps: float = 3,
     duration: float = 60,
-    minimap_only: bool = False,
+    keyboard_trigger: bool = False,
 ):
     """
-    运行屏幕截取器（普通模式）。
+    运行截图器的通用函数。
 
-    使用缓存模式：先将截图缓存在内存中，时间窗口结束后批量保存到文件。
-
+    :param capturer: 截图器实例（ScreenCapturer 或 KeyboardActionCapturer）
     :param single: 是否只截取单帧
-    :param fps: 每秒截图帧数
     :param duration: 连续截图持续时间（秒）
-    :param minimap_only: 是否仅截取小地图区域
+    :param keyboard_trigger: 是否为键盘触发模式
     """
-    # 单帧模式不使用缓存
-    use_cache = not single
-    capturer = ScreenCapturer(fps=fps, use_cache=use_cache, minimap_only=minimap_only)
-    minimap_str = "（仅小地图）" if minimap_only else ""
+    # 打印配置信息
+    minimap_str = "（仅小地图）" if capturer.minimap_only else ""
+    mode_str = "键盘触发模式，" if keyboard_trigger else ""
     logger.note(
-        f"fps={fps}，interval={round(capturer.interval,2)}s，use_cache={use_cache}{minimap_str}"
+        f"{mode_str}fps={1/capturer.interval:.1f}，"
+        f"interval={round(capturer.interval, 2)}s，"
+        f"use_cache={capturer.use_cache}{minimap_str}"
     )
 
     if not capturer.window_locator.is_window_valid():
@@ -980,128 +986,65 @@ def run_screen_capturer(
 
     logger.note(f"截取器信息: {capturer}")
 
+    # 单帧模式
     if single:
-        # 单次截图（不使用缓存，直接保存）
-        logger.note("执行单次截图...")
-        filepath = capturer.capture_frame(verbose=True)
-        if filepath:
-            logger.okay(f"单次截图成功: {filepath}")
+        if keyboard_trigger:
+            logger.note("执行单次截图，等待键盘输入...")
+            while True:
+                action_info = capturer.keyboard_detector.detect()
+                if action_info.has_action:
+                    filepath = capturer.capture_frame_with_action(
+                        action_info, verbose=True
+                    )
+                    if filepath:
+                        logger.okay(f"单次截图成功: {filepath}")
+                    break
+                time.sleep(capturer.interval)
+        else:
+            logger.note("执行单次截图...")
+            filepath = capturer.capture_frame(verbose=True)
+            if filepath:
+                logger.okay(f"单次截图成功: {filepath}")
         return
 
-    # 连续截图（使用缓存）
-    logger.note(f"连续截图（{duration} 秒），缓存模式...")
+    # 连续截图模式
+    mode_desc = "键盘触发连续截图" if keyboard_trigger else "连续截图"
+    logger.note(f"{mode_desc}（{duration} 秒），缓存模式...")
     start_time = time.time()
-    frame_count = 0
-    next_capture_time = start_time  # 下一次截图的目标时间
+    capturer.reset_tick()
 
     while True:
-        loop_start = time.time()
-        elapsed = loop_start - start_time
+        elapsed = time.time() - start_time
         if elapsed >= duration:
             break
 
-        filename = capturer.capture_frame(verbose=False)
+        # 根据模式执行截图
+        extra_info = ""
+        if keyboard_trigger:
+            action_info = capturer.keyboard_detector.detect()
+            if action_info.has_action:
+                filename = capturer.capture_frame_with_action(
+                    action_info, verbose=False
+                )
+                extra_info = f" (按键: {', '.join(action_info.pressed_keys)})"
+            else:
+                filename = None
+        else:
+            filename = capturer.capture_frame(verbose=False)
+
         if filename:
-            frame_count += 1
             percent = (elapsed / duration) * 100
             progress_logstr = get_progress_logstr(percent)
             progress_str = progress_logstr(
                 f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
             )
             cached_count = capturer.get_cached_frame_count()
-            logger.okay(f"{progress_str} 已缓存 {cached_count} 帧")
+            logger.okay(f"{progress_str} 已缓存 {cached_count} 帧{extra_info}")
 
-        # 动态时间补偿：计算下一次截图的目标时间，然后 sleep 到该时间
-        next_capture_time += capturer.interval
-        sleep_time = next_capture_time - time.time()
-        if sleep_time > 0:
-            time.sleep(sleep_time)
+        capturer.wait_next_tick()
 
     # 时间窗口结束，保存缓存中的帧
-    logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
-    saved_count = capturer.flush_cache(verbose=True)
-    logger.okay(f"连续截图完成，共保存 {saved_count} 帧")
-
-
-def run_keyboard_action_capturer(
-    single: bool = False,
-    fps: float = 3,
-    duration: float = 60,
-    minimap_only: bool = False,
-):
-    """
-    运行键盘动作触发截取器。
-
-    仅在检测到键盘输入时进行截图，并保存键盘动作信息。
-    使用缓存模式：先将截图缓存在内存中，时间窗口结束后批量保存到文件。
-
-    :param single: 是否只截取单帧
-    :param fps: 每秒检测帧数
-    :param duration: 连续截图持续时间（秒）
-    :param minimap_only: 是否仅截取小地图区域
-    """
-    # 单帧模式不使用缓存
-    use_cache = not single
-    capturer = KeyboardActionCapturer(
-        fps=fps, use_cache=use_cache, minimap_only=minimap_only
-    )
-    minimap_str = "（仅小地图）" if minimap_only else ""
-    logger.note(
-        f"键盘触发模式，fps={fps}，interval={round(capturer.interval,2)}s，use_cache={use_cache}{minimap_str}"
-    )
-
-    if not capturer.window_locator.is_window_valid():
-        logger.err("GTAV 窗口未找到")
-        return
-
-    logger.note(f"截取器信息: {capturer}")
-
-    if single:
-        # 单次截图（等待键盘输入，不使用缓存）
-        logger.note("执行单次截图，等待键盘输入...")
-        while True:
-            action_info = capturer.keyboard_detector.detect()
-            if action_info.has_action:
-                filepath = capturer.capture_frame_with_action(action_info, verbose=True)
-                if filepath:
-                    logger.okay(f"单次截图成功: {filepath}")
-                break
-            time.sleep(capturer.interval)
-        return
-
-    # 连续截图（键盘触发，使用缓存）
-    logger.note(f"键盘触发连续截图（{duration} 秒），按键时截图，缓存模式...")
-    start_time = time.time()
-    frame_count = 0
-    next_capture_time = start_time  # 下一次检测的目标时间
-
-    while True:
-        loop_start = time.time()
-        elapsed = loop_start - start_time
-        if elapsed >= duration:
-            break
-
-        action_info = capturer.keyboard_detector.detect()
-        if action_info.has_action:
-            filename = capturer.capture_frame_with_action(action_info, verbose=False)
-            if filename:
-                frame_count += 1
-                percent = (elapsed / duration) * 100
-                progress_logstr = get_progress_logstr(percent)
-                progress_str = progress_logstr(
-                    f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
-                )
-                keys_str = ", ".join(action_info.pressed_keys)
-                cached_count = capturer.get_cached_frame_count()
-                logger.okay(f"{progress_str} 已缓存 {cached_count} 帧 (按键: {keys_str})")
-
-        # 动态时间补偿：计算下一次检测的目标时间，然后 sleep 到该时间
-        next_capture_time += capturer.interval
-        sleep_time = next_capture_time - time.time()
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-
-    # 时间窗口结束，保存缓存中的帧
+    frame_count = capturer.get_cached_frame_count()
     logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
     saved_count = capturer.flush_cache(verbose=True)
     logger.okay(f"连续截图完成，共保存 {saved_count} 帧")
@@ -1144,20 +1087,26 @@ class ScreenCapturerArgParser:
 def main():
     """命令行入口。"""
     args = ScreenCapturerArgParser().parse()
+
+    # 单帧模式不使用缓存
+    use_cache = not args.single
+
+    # 根据模式创建对应的截图器
     if args.keyboard_trigger:
-        run_keyboard_action_capturer(
-            single=args.single,
-            fps=args.fps,
-            duration=args.duration,
-            minimap_only=args.minimap,
+        capturer = KeyboardActionCapturer(
+            fps=args.fps, use_cache=use_cache, minimap_only=args.minimap
         )
     else:
-        run_screen_capturer(
-            single=args.single,
-            fps=args.fps,
-            duration=args.duration,
-            minimap_only=args.minimap,
+        capturer = ScreenCapturer(
+            fps=args.fps, use_cache=use_cache, minimap_only=args.minimap
         )
+
+    run_capturer(
+        capturer=capturer,
+        single=args.single,
+        duration=args.duration,
+        keyboard_trigger=args.keyboard_trigger,
+    )
 
 
 if __name__ == "__main__":
