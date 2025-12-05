@@ -696,9 +696,14 @@ class ScreenCapturer:
     def _capture_loop(self):
         """截图循环（在后台线程中运行）。"""
         logger.note(f"开始截图循环，间隔: {self.interval} 秒")
+        next_capture_time = time.time()
         while self._running:
             self.capture_frame()
-            time.sleep(self.interval)
+            # 动态时间补偿
+            next_capture_time += self.interval
+            sleep_time = next_capture_time - time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
         logger.note("截图循环已停止")
 
     def start(self):
@@ -898,6 +903,7 @@ class KeyboardActionCapturer(ScreenCapturer):
     def _capture_loop(self):
         """截图循环（在后台线程中运行）。"""
         logger.note(f"开始键盘触发截图循环，检测间隔: {self.interval} 秒")
+        next_capture_time = time.time()
         while self._running:
             # 检测键盘动作
             action_info = self.keyboard_detector.detect()
@@ -905,7 +911,11 @@ class KeyboardActionCapturer(ScreenCapturer):
             if action_info.has_action:
                 self.capture_frame_with_action(action_info)
 
-            time.sleep(self.interval)
+            # 动态时间补偿
+            next_capture_time += self.interval
+            sleep_time = next_capture_time - time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
         logger.note("键盘触发截图循环已停止")
 
     def __repr__(self) -> str:
@@ -924,10 +934,10 @@ class KeyboardActionCapturer(ScreenCapturer):
 
 # 进度日志样式映射
 PROGRESS_LOGSTR = {
-    0: logstr.mesg,
-    25: logstr.note,
-    50: logstr.hint,
-    75: logstr.warn,
+    0: logstr.file,
+    25: logstr.mesg,
+    50: logstr.note,
+    75: logstr.hint,
     100: logstr.okay,
 }
 
@@ -982,9 +992,11 @@ def run_screen_capturer(
     logger.note(f"连续截图（{duration} 秒），缓存模式...")
     start_time = time.time()
     frame_count = 0
+    next_capture_time = start_time  # 下一次截图的目标时间
 
     while True:
-        elapsed = time.time() - start_time
+        loop_start = time.time()
+        elapsed = loop_start - start_time
         if elapsed >= duration:
             break
 
@@ -997,9 +1009,13 @@ def run_screen_capturer(
                 f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
             )
             cached_count = capturer.get_cached_frame_count()
-            logger.okay(f"{progress_str} 已截取 {frame_count} 帧 (缓存: {cached_count})")
+            logger.okay(f"{progress_str} 已缓存 {cached_count} 帧")
 
-        time.sleep(capturer.interval)
+        # 动态时间补偿：计算下一次截图的目标时间，然后 sleep 到该时间
+        next_capture_time += capturer.interval
+        sleep_time = next_capture_time - time.time()
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
     # 时间窗口结束，保存缓存中的帧
     logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
@@ -1057,9 +1073,11 @@ def run_keyboard_action_capturer(
     logger.note(f"键盘触发连续截图（{duration} 秒），按键时截图，缓存模式...")
     start_time = time.time()
     frame_count = 0
+    next_capture_time = start_time  # 下一次检测的目标时间
 
     while True:
-        elapsed = time.time() - start_time
+        loop_start = time.time()
+        elapsed = loop_start - start_time
         if elapsed >= duration:
             break
 
@@ -1075,11 +1093,13 @@ def run_keyboard_action_capturer(
                 )
                 keys_str = ", ".join(action_info.pressed_keys)
                 cached_count = capturer.get_cached_frame_count()
-                logger.okay(
-                    f"{progress_str} 已截取 {frame_count} 帧 (缓存: {cached_count}, 按键: {keys_str})"
-                )
+                logger.okay(f"{progress_str} 已缓存 {cached_count} 帧 (按键: {keys_str})")
 
-        time.sleep(capturer.interval)
+        # 动态时间补偿：计算下一次检测的目标时间，然后 sleep 到该时间
+        next_capture_time += capturer.interval
+        sleep_time = next_capture_time - time.time()
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
     # 时间窗口结束，保存缓存中的帧
     logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
