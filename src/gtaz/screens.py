@@ -14,6 +14,7 @@ from tclogger import TCLogger, logstr, get_now
 
 from .windows import GTAVWindowLocator
 from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
+from .segments import calc_minimap_crop_region
 
 
 logger = TCLogger(name="ScreenCapturer", use_prefix=True, use_prefix_ms=True)
@@ -279,6 +280,7 @@ class ScreenCapturer:
         image_format: str = IMAGE_FORMAT_JPEG,
         quality: int = DEFAULT_QUALITY,
         use_cache: bool = True,
+        minimap_only: bool = False,
     ):
         """
         初始化屏幕截取器。
@@ -290,12 +292,17 @@ class ScreenCapturer:
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
         :param quality: JPEG 质量（1-100），默认 85
         :param use_cache: 是否使用缓存模式（先缓存后批量保存），默认 True
+        :param minimap_only: 是否仅截取小地图区域，默认 False
         """
         self.interval = self._calculate_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
         self.image_format = image_format.upper()
         self.quality = max(1, min(100, quality))
         self.use_cache = use_cache
+        self.minimap_only = minimap_only
+
+        # 小地图裁剪区域（首次截图时计算）
+        self._minimap_crop_region: Optional[tuple[int, int, int, int]] = None
 
         # 生成基于启动时间的会话目录
         if output_dir is None:
@@ -307,7 +314,7 @@ class ScreenCapturer:
         # 确保输出目录存在
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 初始化缓存管理器
+        # 初始化缓存管理器（minimap_crop_region 在首次截图时设置）
         self._cache = CapturesCache(
             output_dir=self.output_dir,
             image_format=self.image_format,
@@ -459,6 +466,38 @@ class ScreenCapturer:
         self._cached_width = 0
         self._cached_height = 0
 
+    def _crop_raw_data(
+        self,
+        raw_data: bytes,
+        src_width: int,
+        src_height: int,
+        crop_region: tuple[int, int, int, int],
+    ) -> tuple[bytes, int, int]:
+        """
+        在字节级别裁剪 BGRA 原始数据。
+
+        :param raw_data: BGRA 格式的原始位图数据
+        :param src_width: 源图像宽度
+        :param src_height: 源图像高度
+        :param crop_region: 裁剪区域 (left, top, right, bottom)
+        :return: (裁剪后的数据, 新宽度, 新高度)
+        """
+        left, top, right, bottom = crop_region
+        crop_width = right - left
+        crop_height = bottom - top
+        bytes_per_pixel = 4  # BGRA
+        src_stride = src_width * bytes_per_pixel
+        crop_stride = crop_width * bytes_per_pixel
+
+        # 逐行提取裁剪区域的数据
+        cropped_rows = []
+        for y in range(top, bottom):
+            row_start = y * src_stride + left * bytes_per_pixel
+            row_end = row_start + crop_stride
+            cropped_rows.append(raw_data[row_start:row_end])
+
+        return b"".join(cropped_rows), crop_width, crop_height
+
     def _capture_window(self, hwnd: int, width: int, height: int) -> Optional[bytes]:
         """
         直接从窗口截取画面（支持后台窗口）。
@@ -526,7 +565,7 @@ class ScreenCapturer:
         :param height: 图像高度
         :return: 保存的文件路径，失败则返回 None
         """
-        # 创建 PIL Image（直接使用 RGB 模式，跳过 Alpha 通道）
+        # 创建 PIL Image
         image = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", 0, 1)
 
         # 生成文件路径
@@ -577,6 +616,21 @@ class ScreenCapturer:
         self._cache.add_frame(frame)
         return filename
 
+    def _ensure_minimap_crop_region(self, width: int, height: int):
+        """
+        确保小地图裁剪区域已计算。
+
+        仅在首次截图时根据窗口分辨率计算，后续复用。
+
+        :param width: 窗口宽度
+        :param height: 窗口高度
+        """
+        if self.minimap_only and self._minimap_crop_region is None:
+            self._minimap_crop_region = calc_minimap_crop_region(width, height)
+            logger.note(
+                f"小地图裁剪区域已计算: {self._minimap_crop_region} " f"(窗口: {width}x{height})"
+            )
+
     def capture_frame(self, verbose: bool = True) -> Optional[str]:
         """
         截取当前 GTAV 窗口画面。
@@ -593,21 +647,31 @@ class ScreenCapturer:
 
         hwnd, width, height = window_info
 
+        # 确保小地图裁剪区域已计算（仅首次）
+        self._ensure_minimap_crop_region(width, height)
+
         # 截取窗口画面（支持后台窗口）
         raw_data = self._capture_window(hwnd, width, height)
         if not raw_data:
             logger.warn("截取窗口画面失败")
             return None
 
+        # 如果仅截取小地图，在字节级别裁剪原始数据
+        frame_width, frame_height = width, height
+        if self._minimap_crop_region:
+            raw_data, frame_width, frame_height = self._crop_raw_data(
+                raw_data, width, height, self._minimap_crop_region
+            )
+
         if self.use_cache:
             # 缓存模式：添加到缓存
-            filename = self._cache_frame(raw_data, width, height)
+            filename = self._cache_frame(raw_data, frame_width, frame_height)
             if verbose:
                 logger.okay(f"截图已缓存: {filename}")
             return filename
         else:
             # 直接保存模式
-            filepath = self._save_image(raw_data, width, height)
+            filepath = self._save_image(raw_data, frame_width, frame_height)
             if filepath and verbose:
                 logger.okay(f"截图已保存: {filepath}")
             return str(filepath) if filepath else None
@@ -699,6 +763,7 @@ class ScreenCapturer:
             f"quality={self.quality}, "
             f"output_dir={self.output_dir}, "
             f"use_cache={self.use_cache}, "
+            f"minimap_only={self.minimap_only}, "
             f"cached_frames={len(self._cache)}, "
             f"running={self._running})"
         )
@@ -721,6 +786,7 @@ class KeyboardActionCapturer(ScreenCapturer):
         quality: int = DEFAULT_QUALITY,
         game_keys_only: bool = True,
         use_cache: bool = True,
+        minimap_only: bool = False,
     ):
         """
         初始化键盘动作截图器。
@@ -733,6 +799,7 @@ class KeyboardActionCapturer(ScreenCapturer):
         :param quality: JPEG 质量（1-100），默认 85
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键，默认 True
         :param use_cache: 是否使用缓存模式（先缓存后批量保存），默认 True
+        :param minimap_only: 是否仅截取小地图区域，默认 False
         """
         # 生成基于启动时间的会话目录（使用 actions 目录）
         if output_dir is None:
@@ -747,6 +814,7 @@ class KeyboardActionCapturer(ScreenCapturer):
             image_format=image_format,
             quality=quality,
             use_cache=use_cache,
+            minimap_only=minimap_only,
         )
 
         # 初始化键盘动作检测器
@@ -771,23 +839,35 @@ class KeyboardActionCapturer(ScreenCapturer):
 
         hwnd, width, height = window_info
 
+        # 确保小地图裁剪区域已计算（仅首次）
+        self._ensure_minimap_crop_region(width, height)
+
         # 截取窗口画面（支持后台窗口）
         raw_data = self._capture_window(hwnd, width, height)
         if not raw_data:
             logger.warn("截取窗口画面失败")
             return None
 
+        # 如果仅截取小地图，在字节级别裁剪原始数据
+        frame_width, frame_height = width, height
+        if self._minimap_crop_region:
+            raw_data, frame_width, frame_height = self._crop_raw_data(
+                raw_data, width, height, self._minimap_crop_region
+            )
+
         keys_str = ", ".join(action_info.pressed_keys)
 
         if self.use_cache:
             # 缓存模式：添加到缓存（包含动作信息）
-            filename = self._cache_frame(raw_data, width, height, action_info)
+            filename = self._cache_frame(
+                raw_data, frame_width, frame_height, action_info
+            )
             if verbose:
                 logger.okay(f"截图已缓存: {filename} (按键: {keys_str})")
             return filename
         else:
             # 直接保存模式
-            filepath = self._save_image(raw_data, width, height)
+            filepath = self._save_image(raw_data, frame_width, frame_height)
             if not filepath:
                 return None
 
@@ -800,8 +880,8 @@ class KeyboardActionCapturer(ScreenCapturer):
                 json_filepath,
                 CapturedFrame(
                     raw_data=raw_data,
-                    width=width,
-                    height=height,
+                    width=frame_width,
+                    height=frame_height,
                     timestamp=time.time(),
                     filename=filepath.name,
                     action_info=action_info,
@@ -860,7 +940,12 @@ def get_progress_logstr(percent: float):
     return logstr.file
 
 
-def run_screen_capturer(single: bool = False, fps: float = 3, duration: float = 60):
+def run_screen_capturer(
+    single: bool = False,
+    fps: float = 3,
+    duration: float = 60,
+    minimap_only: bool = False,
+):
     """
     运行屏幕截取器（普通模式）。
 
@@ -869,12 +954,14 @@ def run_screen_capturer(single: bool = False, fps: float = 3, duration: float = 
     :param single: 是否只截取单帧
     :param fps: 每秒截图帧数
     :param duration: 连续截图持续时间（秒）
+    :param minimap_only: 是否仅截取小地图区域
     """
     # 单帧模式不使用缓存
     use_cache = not single
-    capturer = ScreenCapturer(fps=fps, use_cache=use_cache)
+    capturer = ScreenCapturer(fps=fps, use_cache=use_cache, minimap_only=minimap_only)
+    minimap_str = "（仅小地图）" if minimap_only else ""
     logger.note(
-        f"fps={fps}，interval={round(capturer.interval,2)}s，use_cache={use_cache}"
+        f"fps={fps}，interval={round(capturer.interval,2)}s，use_cache={use_cache}{minimap_str}"
     )
 
     if not capturer.window_locator.is_window_valid():
@@ -921,7 +1008,10 @@ def run_screen_capturer(single: bool = False, fps: float = 3, duration: float = 
 
 
 def run_keyboard_action_capturer(
-    single: bool = False, fps: float = 3, duration: float = 60
+    single: bool = False,
+    fps: float = 3,
+    duration: float = 60,
+    minimap_only: bool = False,
 ):
     """
     运行键盘动作触发截取器。
@@ -932,12 +1022,16 @@ def run_keyboard_action_capturer(
     :param single: 是否只截取单帧
     :param fps: 每秒检测帧数
     :param duration: 连续截图持续时间（秒）
+    :param minimap_only: 是否仅截取小地图区域
     """
     # 单帧模式不使用缓存
     use_cache = not single
-    capturer = KeyboardActionCapturer(fps=fps, use_cache=use_cache)
+    capturer = KeyboardActionCapturer(
+        fps=fps, use_cache=use_cache, minimap_only=minimap_only
+    )
+    minimap_str = "（仅小地图）" if minimap_only else ""
     logger.note(
-        f"键盘触发模式，fps={fps}，interval={round(capturer.interval,2)}s，use_cache={use_cache}"
+        f"键盘触发模式，fps={fps}，interval={round(capturer.interval,2)}s，use_cache={use_cache}{minimap_str}"
     )
 
     if not capturer.window_locator.is_window_valid():
@@ -1015,6 +1109,12 @@ class ScreenCapturerArgParser:
             action="store_true",
             help="仅在检测到键盘输入时截图，帧保存到 actions 目录",
         )
+        self.parser.add_argument(
+            "-m",
+            "--minimap",
+            action="store_true",
+            help="仅截取小地图区域",
+        )
 
     def parse(self) -> argparse.Namespace:
         """解析命令行参数。"""
@@ -1029,12 +1129,14 @@ def main():
             single=args.single,
             fps=args.fps,
             duration=args.duration,
+            minimap_only=args.minimap,
         )
     else:
         run_screen_capturer(
             single=args.single,
             fps=args.fps,
             duration=args.duration,
+            minimap_only=args.minimap,
         )
 
 
@@ -1052,3 +1154,9 @@ if __name__ == "__main__":
 
     # Case: 键盘触发模式
     # python -m gtaz.screens -k -d 60
+
+    # Case: 仅截取小地图
+    # python -m gtaz.screens -m
+
+    # Case: 键盘触发 + 仅小地图
+    # python -m gtaz.screens -k -m -f 10 -d 30
