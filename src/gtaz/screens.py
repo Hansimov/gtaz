@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 from PIL import Image
-from tclogger import TCLogger, logstr, get_now
+from tclogger import TCLogger, TCLogbar, logstr, get_now
 
 from .windows import GTAVWindowLocator
 from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
@@ -49,6 +49,39 @@ START_CAPTURE_KEY = "1"
 STOP_CAPTURE_KEY = "2"
 START_CAPTURE_VK = 0x31  # Virtual key code for '1'
 STOP_CAPTURE_VK = 0x32  # Virtual key code for '2'
+
+
+# 进度日志样式映射
+PROGRESS_LOGSTR = {
+    0: logstr.file,
+    25: logstr.mesg,
+    50: logstr.note,
+    75: logstr.hint,
+    100: logstr.okay,
+}
+
+
+def get_progress_logstr(percent: float):
+    """根据百分比获取对应的日志样式函数。"""
+    for threshold in sorted(PROGRESS_LOGSTR.keys(), reverse=True):
+        if percent >= threshold:
+            return PROGRESS_LOGSTR[threshold]
+    return logstr.file
+
+
+def brq(s) -> str:
+    """为字符串添加单引号。"""
+    return f"'{s}'"
+
+
+def key_hint(s) -> str:
+    """为按键添加提示样式。"""
+    return logstr.hint(brq(s))
+
+
+def val_mesg(s) -> str:
+    """为值添加消息样式。"""
+    return logstr.mesg(s)
 
 
 @dataclass
@@ -102,6 +135,8 @@ class CapturesCache:
 
         # 缓存的帧列表
         self._frames: list[CapturedFrame] = []
+        # 帧计数器（避免每次计算 len）
+        self._frame_count: int = 0
         # 线程锁，确保线程安全
         self._lock = threading.Lock()
 
@@ -113,6 +148,7 @@ class CapturesCache:
         """
         with self._lock:
             self._frames.append(frame)
+            self._frame_count += 1
 
     def get_frame_count(self) -> int:
         """
@@ -121,7 +157,7 @@ class CapturesCache:
         :return: 帧数
         """
         with self._lock:
-            return len(self._frames)
+            return self._frame_count
 
     def clear(self):
         """
@@ -129,6 +165,7 @@ class CapturesCache:
         """
         with self._lock:
             self._frames.clear()
+            self._frame_count = 0
 
     def _save_single_image(self, frame: CapturedFrame) -> Path:
         """
@@ -231,13 +268,18 @@ class CapturesCache:
         with self._lock:
             frames_to_save = self._frames.copy()
             self._frames.clear()
+            self._frame_count = 0
 
         if not frames_to_save:
             return 0
 
+        # 确保输出目录存在
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
         if verbose:
             logger.note(f"开始保存 {len(frames_to_save)} 帧到文件...")
 
+        bar = TCLogbar(total=len(frames_to_save), desc="* 保存截图")
         saved_count = 0
         for i, frame in enumerate(frames_to_save):
             filepath = self._save_single_image(frame)
@@ -249,11 +291,13 @@ class CapturesCache:
                     json_filepath = filepath.with_suffix(".json")
                     self._save_action_info(json_filepath, frame, filepath)
 
-                if verbose and (i + 1) % 10 == 0:
-                    logger.mesg(f"已保存 {i + 1}/{len(frames_to_save)} 帧")
+                if verbose:
+                    bar.update(1)
+        bar.update(flush=True)
+        print()
 
         if verbose:
-            logger.okay(f"保存完成，共保存 {saved_count}/{len(frames_to_save)} 帧")
+            logger.okay(f"保存完成，共 {saved_count}/{len(frames_to_save)} 帧")
 
         return saved_count
 
@@ -317,9 +361,6 @@ class ScreenCapturer:
         else:
             self.output_dir = output_dir
 
-        # 确保输出目录存在
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
         # 初始化缓存管理器（minimap_crop_region 在首次截图时设置）
         self._cache = CapturesCache(
             output_dir=self.output_dir,
@@ -366,16 +407,18 @@ class ScreenCapturer:
             return 1.0 / fps
         return DEFAULT_INTERVAL
 
-    def _generate_filename(self) -> str:
+    def _generate_filename(self, frame_index: int) -> str:
         """
-        生成截图文件名，格式为 YYYY-MM-DD_HH-MM-SS-sss.ext
+        生成截图文件名，格式为 YYYY-MM-DD_HH-MM-SS-sss_<frame_idx>.ext
 
+        :param frame_index: 帧索引（0000-9999）
         :return: 文件名字符串
         """
         now = get_now()
         ext = "jpg" if self.image_format == IMAGE_FORMAT_JPEG else "png"
         return (
-            now.strftime("%Y-%m-%d_%H-%M-%S-") + f"{now.microsecond // 1000:03d}.{ext}"
+            now.strftime("%Y-%m-%d_%H-%M-%S-") 
+            + f"{now.microsecond // 1000:03d}_{frame_index:04d}.{ext}"
         )
 
     def _get_window_info(self) -> Optional[tuple[int, int, int]]:
@@ -574,11 +617,17 @@ class ScreenCapturer:
         :param height: 图像高度
         :return: 保存的文件路径，失败则返回 None
         """
+        # 确保输出目录存在
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 更新帧计数（直接保存模式需要手动计数）
+        self._frame_count += 1
+
         # 创建 PIL Image
         image = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", 0, 1)
 
         # 生成文件路径
-        filename = self._generate_filename()
+        filename = self._generate_filename(self._frame_count)
         filepath = self.output_dir / filename
 
         # 根据格式保存
@@ -610,7 +659,7 @@ class ScreenCapturer:
         :return: 预生成的文件名
         """
         self._frame_count += 1
-        filename = self._generate_filename()
+        filename = self._generate_filename(self._frame_count)
 
         frame = CapturedFrame(
             raw_data=raw_data,
@@ -676,7 +725,8 @@ class ScreenCapturer:
             # 缓存模式：添加到缓存
             filename = self._cache_frame(raw_data, frame_width, frame_height)
             if verbose:
-                logger.okay(f"截图已缓存: {filename}")
+                cached_count = self.get_cached_frame_count()
+                logger.okay(f"已截取并缓存 {cached_count} 帧")
             return filename
         else:
             # 直接保存模式
@@ -692,7 +742,10 @@ class ScreenCapturer:
         :param verbose: 是否打印保存日志
         :return: 成功保存的帧数
         """
-        return self._cache.flush(verbose=verbose)
+        saved_count = self._cache.flush(verbose=verbose)
+        # 保存完成后重置帧计数
+        self._frame_count = 0
+        return saved_count
 
     def get_cached_frame_count(self) -> int:
         """
@@ -700,7 +753,7 @@ class ScreenCapturer:
 
         :return: 帧数
         """
-        return len(self._cache)
+        return self._cache.get_frame_count()
 
     def reset_tick(self):
         """重置定时器，将下一次 tick 时间设为当前时间。"""
@@ -888,7 +941,8 @@ class KeyboardActionCapturer(ScreenCapturer):
                 raw_data, frame_width, frame_height, action_info
             )
             if verbose:
-                logger.okay(f"截图已缓存: {filename} (按键: {keys_str})")
+                cached_count = self.get_cached_frame_count()
+                logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
             return filename
         else:
             # 直接保存模式
@@ -986,7 +1040,9 @@ class InteractiveController:
         if not self.capture_active:
             self.capture_active = True
             self.capturer.start()
-            logger.okay(f"{mode_desc}已开始（按 '{STOP_CAPTURE_KEY}' 停止）")
+            logger.okay(
+                f"{mode_desc}已开始（按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）"
+            )
 
     def stop_capture(self):
         """停止截图并保存。"""
@@ -1030,9 +1086,9 @@ class InteractiveController:
         """
         logger.note("交互式截图模式已启动")
         logger.note(
-            f"按 '{START_CAPTURE_KEY}' 开始截图，"
-            f"按 '{STOP_CAPTURE_KEY}' 停止截图，"
-            f"按 Ctrl+C 退出"
+            f"按 {key_hint(START_CAPTURE_KEY)} {val_mesg('开始截图')}，"
+            f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}，"
+            f"按 {key_hint('Ctrl+C')} {val_mesg('退出')}"
         )
 
         try:
@@ -1046,24 +1102,6 @@ class InteractiveController:
                 self.stop_capture()
 
         logger.note("交互式截图模式已退出")
-
-
-# 进度日志样式映射
-PROGRESS_LOGSTR = {
-    0: logstr.file,
-    25: logstr.mesg,
-    50: logstr.note,
-    75: logstr.hint,
-    100: logstr.okay,
-}
-
-
-def get_progress_logstr(percent: float):
-    """根据百分比获取对应的日志样式函数。"""
-    for threshold in sorted(PROGRESS_LOGSTR.keys(), reverse=True):
-        if percent >= threshold:
-            return PROGRESS_LOGSTR[threshold]
-    return logstr.file
 
 
 class CapturerRunner:
@@ -1155,7 +1193,7 @@ class CapturerRunner:
             duration = max_duration
             logger.note(
                 f"{self.mode_desc}（持续模式，最大 {max_duration} 秒，"
-                f"按 '{STOP_CAPTURE_KEY}' 键停止），缓存模式..."
+                f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}），缓存模式..."
             )
             stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_VK])
             return duration, True, stop_detector, False
@@ -1399,7 +1437,7 @@ if __name__ == "__main__":
     # Case: 键盘触发 + 仅小地图
     # python -m gtaz.screens -k -m -f 10 -d 30
 
-    # Case: 交互式控制（按 '1' 开始，按 '2' 停止）
+    # Case: 交互式控制模式
     # python -m gtaz.screens -i
 
     # Case: 交互式 + 键盘触发 + 仅小地图 + FPS + 持续截图
