@@ -47,13 +47,18 @@ NUM_KEYS = 4
 
 # ===== 配置类 ===== #
 
+# src/gtaz
+SRC_DIR =  Path(__file__).parent.parent
+DATA_DIR = SRC_DIR / "cache/agency_move"
+CKPT_DIR = SRC_DIR / "checkpoints/agency_move"
+
 
 @dataclass
 class Config:
     """统一配置管理"""
 
     # 数据相关
-    data_dir: str = "E:/_codes/gtaz/src/gtaz/cache/agency_move"
+    data_dir: str = str(DATA_DIR)
     history_frames: int = 4  # 模型输入的历史参考帧数量
     image_size: tuple[int, int] = (160, 220)  # (H, W)
     use_key_history: bool = True
@@ -86,7 +91,7 @@ class Config:
     num_workers: int = 4
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
-    save_dir: str = "E:/_codes/gtaz/src/gtaz/checkpoints/agency_move"
+    save_dir: str = str(CKPT_DIR)
     log_interval: int = 10
     threshold: float = 0.5  # 预测阈值
     overwrite: bool = False  # 是否覆盖旧模型，不使用checkpoint恢复
@@ -1480,7 +1485,7 @@ class ArgumentParser:
             "-d",
             "--data-dir",
             type=str,
-            default="E:/_codes/gtaz/src/gtaz/cache/agency_move",
+            default=str(DATA_DIR),
             help="数据目录路径",
         )
         parser.add_argument(
