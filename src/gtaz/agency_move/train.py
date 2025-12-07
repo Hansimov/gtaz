@@ -1748,10 +1748,10 @@ if __name__ == "__main__":
         main()
 
     # Case: 训练模式：50个epoch，批次大小32
-    # python -m gtaz.models.agency_move -m train -e 50 -b 32
+    # python -m gtaz.agency_move.train -m train -e 50 -b 32
 
     # Case: 分析模式：分析数据集
-    # python -m gtaz.models.agency_move -m analyze
+    # python -m gtaz.agency_move.train -m analyze
 
     # Case: 测试模式：使用最新模型进行测试
-    # python -m gtaz.models.agency_move -m test
+    # python -m gtaz.agency_move.train -m test
