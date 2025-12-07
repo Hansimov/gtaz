@@ -372,8 +372,7 @@ class DataManager:
                     sequences = self.create_sequences(segment)
                     all_sequences.extend(sequences)
             bar.update(1)
-        bar.update(flush=True)
-        print()
+        bar.update(flush=True, linebreak=True)
 
         self._sequences = all_sequences
         logger.okay(
@@ -856,16 +855,38 @@ class Trainer:
         self.latest_epoch = 0
         self.start_epoch = 0
 
-    def _format_metric_change(self, current: float, previous: float) -> str:
-        """格式化指标变化（百分比）"""
-        if previous == 0:
+        # 跟踪最佳指标（用于计算百分比变化）
+        self.best_metrics = {
+            "train_loss": float("inf"),
+            "val_loss": float("inf"),
+            "train_f1": 0.0,
+            "val_f1": 0.0,
+            "train_exact_match": 0.0,
+            "val_exact_match": 0.0,
+        }
+
+    def _format_metric_change(
+        self, current: float, best: float, is_loss: bool = False
+    ) -> str:
+        """格式化指标变化（百分比，相对于最佳值）
+
+        Args:
+            current: 当前值
+            best: 最佳值
+            is_loss: 是否为损失指标（True表示越小越好，False表示越大越好）
+        """
+        if best == 0 or (is_loss and best == float("inf")):
             return ""
 
-        percent_diff = ((current - previous) / abs(previous)) * 100
+        percent_diff = ((current - best) / abs(best)) * 100
         abs_percent_diff = abs(percent_diff)
+
+        # 对于loss，负数表示改善；对于其他指标，正数表示改善
+        is_better = (percent_diff < 0) if is_loss else (percent_diff > 0)
+
         if abs_percent_diff < 0.05:
-            return f" ({logstr.mesg(f'→ {abs_percent_diff:.1f}%')})"
-        elif percent_diff > 0:
+            return f" ({logstr.mesg(f'≈ best')})"
+        elif is_better:
             return f" ({logstr.okay(f'↑ {abs_percent_diff:.1f}%')})"
         else:
             return f" ({logstr.warn(f'↓ {abs_percent_diff:.1f}%')})"
@@ -875,9 +896,9 @@ class Trainer:
         logger.okay(f"> 从 checkpoint 恢复训练")
         info_dict = {
             "路径": checkpoint_path,
-            "起始 Epoch": self.start_epoch,
-            "上次验证 F1": f"{self.latest_val_f1:.4f} (Epoch {self.latest_epoch})",
-            "当前学习率": f"{self.optimizer.param_groups[0]['lr']:.6f}",
+            "起始轮次": self.start_epoch,
+            "上次F1": f"{self.latest_val_f1:.4f} (Epoch {self.latest_epoch})",
+            "学习率": f"{self.optimizer.param_groups[0]['lr']:.6f}",
         }
         logger.mesg(dict_to_str(info_dict), indent=2)
 
@@ -893,35 +914,38 @@ class Trainer:
         current_lr = self.optimizer.param_groups[0]["lr"]
         logger.mesg(f"学习率: {logstr.file(f'{current_lr:.6f}')}")
 
-        # 计算训练指标的变化
+        # 计算训练指标的变化（相对于最佳值）
         train_loss_change = ""
         train_f1_change = ""
         train_exact_change = ""
-        if epoch > 0 and len(self.history["train_loss"]) >= 2:
+        if epoch > 0:
             train_loss_change = self._format_metric_change(
-                train_loss, self.history["train_loss"][-2]
+                train_loss, self.best_metrics["train_loss"], is_loss=True
             )
             train_f1_change = self._format_metric_change(
-                train_metrics["avg_f1"], self.history["train_f1"][-2]
+                train_metrics["avg_f1"], self.best_metrics["train_f1"], is_loss=False
             )
             train_exact_change = self._format_metric_change(
                 train_metrics["exact_match_accuracy"],
-                self.history["train_exact_match"][-2],
+                self.best_metrics["train_exact_match"],
+                is_loss=False,
             )
 
-        # 计算验证指标的变化
+        # 计算验证指标的变化（相对于最佳值）
         val_loss_change = ""
         val_f1_change = ""
         val_exact_change = ""
-        if epoch > 0 and len(self.history["val_loss"]) >= 2:
+        if epoch > 0:
             val_loss_change = self._format_metric_change(
-                val_loss, self.history["val_loss"][-2]
+                val_loss, self.best_metrics["val_loss"], is_loss=True
             )
             val_f1_change = self._format_metric_change(
-                val_metrics["avg_f1"], self.history["val_f1"][-2]
+                val_metrics["avg_f1"], self.best_metrics["val_f1"], is_loss=False
             )
             val_exact_change = self._format_metric_change(
-                val_metrics["exact_match_accuracy"], self.history["val_exact_match"][-2]
+                val_metrics["exact_match_accuracy"],
+                self.best_metrics["val_exact_match"],
+                is_loss=False,
             )
 
         # 打印训练指标
@@ -971,6 +995,20 @@ class Trainer:
             if "history" in checkpoint:
                 self.history = checkpoint["history"]
 
+                # 从历史记录中恢复最佳指标
+                for key in ["train_loss", "val_loss"]:
+                    if self.history[key]:
+                        self.best_metrics[key] = min(self.history[key])
+
+                for key in [
+                    "train_f1",
+                    "val_f1",
+                    "train_exact_match",
+                    "val_exact_match",
+                ]:
+                    if self.history[key]:
+                        self.best_metrics[key] = max(self.history[key])
+
             # 恢复最新指标
             self.latest_val_f1 = checkpoint.get(
                 "latest_val_f1", checkpoint.get("val_f1", 0.0)
@@ -1011,8 +1049,7 @@ class Trainer:
             metrics.update(logits, targets)
 
             bar.update(1, desc=f"{train_desc} [loss={loss.item():.4f}]")
-        bar.update(flush=True)
-        print()
+        bar.update(flush=True, linebreak=True)
 
         return total_loss / len(train_loader), metrics.compute()
 
@@ -1038,8 +1075,7 @@ class Trainer:
                 total_loss += loss.item()
                 metrics.update(logits, targets)
                 bar.update(1)
-        bar.update(flush=True)
-        print()
+        bar.update(flush=True, linebreak=True)
 
         return total_loss / len(val_loader), metrics.compute()
 
@@ -1071,6 +1107,26 @@ class Trainer:
                 train_metrics["exact_match_accuracy"]
             )
             self.history["val_exact_match"].append(val_metrics["exact_match_accuracy"])
+
+            # 更新最佳指标
+            self.best_metrics["train_loss"] = min(
+                train_loss, self.best_metrics["train_loss"]
+            )
+            self.best_metrics["val_loss"] = min(val_loss, self.best_metrics["val_loss"])
+            self.best_metrics["train_f1"] = max(
+                train_metrics["avg_f1"], self.best_metrics["train_f1"]
+            )
+            self.best_metrics["val_f1"] = max(
+                val_metrics["avg_f1"], self.best_metrics["val_f1"]
+            )
+            self.best_metrics["train_exact_match"] = max(
+                train_metrics["exact_match_accuracy"],
+                self.best_metrics["train_exact_match"],
+            )
+            self.best_metrics["val_exact_match"] = max(
+                val_metrics["exact_match_accuracy"],
+                self.best_metrics["val_exact_match"],
+            )
 
             # 打印结果（使用辅助方法）
             self._log_epoch_metrics(
@@ -1106,12 +1162,12 @@ class Trainer:
         params_count = sum(p.numel() for p in self.model.parameters())
         train_info = {
             "设备": str(self.device),
-            "模型参数量": f"{params_count:,}",
+            "参数量": f"{params_count:,}",
         }
         if self.start_epoch > 0:
-            train_info["训练状态"] = f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
+            train_info["状态"] = f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
         else:
-            train_info["训练状态"] = "从头开始"
+            train_info["状态"] = "从头开始"
         logger.mesg(dict_to_str(train_info), indent=2)
         print()
 
@@ -1323,8 +1379,8 @@ class AgencyMovePipeline:
         logger.okay("> 测试集结果:")
         test_results = {
             "Loss": f"{test_loss:.4f}",
-            "Avg F1": f"{test_metrics['avg_f1']:.4f}",
-            "Exact Match Accuracy": f"{test_metrics['exact_match_accuracy']:.4f}",
+            "平均F1": f"{test_metrics['avg_f1']:.4f}",
+            "完全匹配": f"{test_metrics['exact_match_accuracy']:.4f}",
         }
         logger.mesg(dict_to_str(test_results), indent=2)
 
@@ -1366,8 +1422,8 @@ class AgencyMovePipeline:
         logger.okay("> 测试集结果:")
         test_results = {
             "Loss": f"{test_loss:.4f}",
-            "Avg F1": f"{test_metrics['avg_f1']:.4f}",
-            "Exact Match Accuracy": f"{test_metrics['exact_match_accuracy']:.4f}",
+            "平均F1": f"{test_metrics['avg_f1']:.4f}",
+            "完全匹配": f"{test_metrics['exact_match_accuracy']:.4f}",
         }
         logger.mesg(dict_to_str(test_results), indent=2)
 
