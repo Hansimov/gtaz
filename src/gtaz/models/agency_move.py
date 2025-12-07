@@ -63,6 +63,7 @@ class Config:
     image_size: tuple[int, int] = (160, 220)  # (H, W)
     use_key_history: bool = True
     min_gap_threshold: float = 1.0  # 帧间隔阈值（秒）
+    use_image_cache: bool = True  # 是否使用图像缓存（提升性能但增加内存占用）
 
     # 模型相关
     backbone: str = "resnet18"
@@ -88,7 +89,9 @@ class Config:
 
     # 其他
     # num_workers: int = 0 if platform.system() == "Windows" else 4
-    num_workers: int = 4
+    num_workers: int = 4 if torch.cuda.is_available() else 2  # GPU可用时使用更多worker
+    prefetch_factor: int = 4  # 预取因子，每个worker预取的batch数
+    persistent_workers: bool = True  # 保持worker进程存活，避免重复创建
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     save_dir: str = str(CKPT_DIR)
@@ -257,13 +260,17 @@ class AgencyMoveDataset(Dataset):
         use_key_history: bool = True,
         image_size: tuple[int, int] = (160, 220),
         augment: bool = False,
+        use_cache: bool = True,
     ):
         self.sequences = sequences
         self.history_frames = history_frames
         self.use_key_history = use_key_history
         self.image_size = image_size
         self.augment = augment
+        self.use_cache = use_cache
         self.transform = self._build_transform()
+        # 缓存预处理后的tensor而非PIL Image，减少CPU处理
+        self._tensor_cache = {} if use_cache else None
 
     def _build_transform(self) -> transforms.Compose:
         """构建图像变换"""
@@ -293,21 +300,66 @@ class AgencyMoveDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.sequences)
+    
+    def warmup_cache(self):
+        """预热缓存：预先加载所有图像到缓存中（仅对验证/测试集）"""
+        if not self.use_cache or self.augment:
+            return
+        
+        # 收集所有唯一的图像路径
+        unique_paths = set()
+        for seq in self.sequences:
+            for sample in seq:
+                unique_paths.add(sample.image_path)
+        
+        if not unique_paths:
+            return
+        
+        logger.note(f"预热缓存: 加载 {len(unique_paths)} 张图像...")
+        warmup_desc = logstr.note("* 预热缓存")
+        bar = TCLogbar(total=len(unique_paths), desc=warmup_desc)
+        
+        for img_path in unique_paths:
+            if img_path not in self._tensor_cache:
+                img = Image.open(img_path).convert("RGB")
+                img_tensor = self.transform(img)
+                self._tensor_cache[img_path] = img_tensor
+            bar.update(1)
+        
+        bar.update(flush=True, linebreak=True)
+        logger.okay(f"缓存预热完成: {len(self._tensor_cache)} 张图像")
+
+    def _load_and_transform_image(self, image_path: str) -> torch.Tensor:
+        """加载并转换图像为tensor，支持缓存"""
+        # 对于验证/测试集，缓存预处理后的tensor
+        if self.use_cache and not self.augment and image_path in self._tensor_cache:
+            return self._tensor_cache[image_path]
+        
+        # 加载并转换图像
+        img = Image.open(image_path).convert("RGB")
+        img_tensor = self.transform(img)
+        
+        # 对于验证/测试集缓存tensor（训练集有数据增强所以不缓存）
+        if self.use_cache and not self.augment:
+            self._tensor_cache[image_path] = img_tensor
+        
+        return img_tensor
 
     def __getitem__(self, idx: int) -> dict:
         sequence = self.sequences[idx]
 
-        # 加载并处理图像
-        images = [
-            self.transform(Image.open(s.image_path).convert("RGB")) for s in sequence
-        ]
+        # 加载并处理图像 - 直接获取tensor
+        images = [self._load_and_transform_image(s.image_path) for s in sequence]
         images = torch.stack(images, dim=0)
 
-        # 获取按键信息
-        key_history = torch.tensor(
-            np.array([s.key_vector for s in sequence]), dtype=torch.float32
-        )
-        target = torch.tensor(sequence[-1].key_vector, dtype=torch.float32)
+        # 获取按键信息 - 预分配numpy数组提升效率
+        seq_len = len(sequence)
+        key_vectors = np.empty((seq_len, NUM_KEYS), dtype=np.float32)
+        for i, s in enumerate(sequence):
+            key_vectors[i] = s.key_vector
+        
+        key_history = torch.from_numpy(key_vectors)
+        target = key_history[-1]
 
         result = {"images": images, "target": target}
         if self.use_key_history:
@@ -423,6 +475,7 @@ class DataManager:
             self.config.use_key_history,
             self.config.image_size,
             augment=True,
+            use_cache=self.config.use_image_cache,
         )
         val_ds = AgencyMoveDataset(
             val_seqs,
@@ -430,6 +483,7 @@ class DataManager:
             self.config.use_key_history,
             self.config.image_size,
             augment=False,
+            use_cache=self.config.use_image_cache,
         )
         test_ds = AgencyMoveDataset(
             test_seqs,
@@ -437,7 +491,13 @@ class DataManager:
             self.config.use_key_history,
             self.config.image_size,
             augment=False,
+            use_cache=self.config.use_image_cache,
         )
+        
+        # 预热验证和测试集缓存
+        if self.config.use_image_cache:
+            val_ds.warmup_cache()
+            test_ds.warmup_cache()
 
         return train_ds, val_ds, test_ds
 
@@ -448,27 +508,32 @@ class DataManager:
 
         train_ds, val_ds, test_ds = self.create_datasets()
 
+        # 优化的DataLoader配置
+        common_kwargs = {
+            "num_workers": self.config.num_workers,
+            "pin_memory": True,
+            "prefetch_factor": self.config.prefetch_factor if self.config.num_workers > 0 else None,
+            "persistent_workers": self.config.persistent_workers if self.config.num_workers > 0 else False,
+        }
+
         train_loader = DataLoader(
             train_ds,
             batch_size=self.config.batch_size,
             shuffle=True,
-            num_workers=self.config.num_workers,
-            pin_memory=True,
             drop_last=True,
+            **common_kwargs,
         )
         val_loader = DataLoader(
             val_ds,
             batch_size=self.config.batch_size,
             shuffle=False,
-            num_workers=self.config.num_workers,
-            pin_memory=True,
+            **common_kwargs,
         )
         test_loader = DataLoader(
             test_ds,
             batch_size=self.config.batch_size,
             shuffle=False,
-            num_workers=self.config.num_workers,
-            pin_memory=True,
+            **common_kwargs,
         )
 
         return train_loader, val_loader, test_loader
@@ -805,6 +870,22 @@ class Trainer:
         self.device = device or torch.device(config.device)
         self.model.to(self.device)
 
+        # 混合精度训练（仅GPU可用）
+        self.use_amp = torch.cuda.is_available()
+        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
+        
+        # 编译模型以提升GPU利用率（PyTorch 2.0+，仅Linux）
+        # Windows上torch.compile需要Triton但不可用，因此禁用
+        self.model_compiled = False
+        if torch.cuda.is_available() and hasattr(torch, 'compile') and platform.system() != 'Windows':
+            try:
+                self.model = torch.compile(self.model, mode='default')
+                self.model_compiled = True
+                logger.note("模型编译成功")
+            except Exception as e:
+                logger.warn(f"模型编译失败，使用普通模式: {e}")
+                self.model_compiled = False
+
         # 损失函数
         self.class_weights = torch.tensor(config.class_weights, dtype=torch.float32).to(
             self.device
@@ -907,6 +988,8 @@ class Trainer:
             "起始轮次": self.start_epoch,
             "上次F1": f"{self.latest_val_f1:.4f} (Epoch {self.latest_epoch})",
             "学习率": f"{self.optimizer.param_groups[0]['lr']:.6f}",
+            "混合精度": "开启" if self.use_amp else "关闭",
+            "模型编译": "开启" if self.model_compiled else "关闭",
         }
         logger.mesg(dict_to_str(info_dict), indent=2)
 
@@ -1054,29 +1137,51 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         metrics = Metrics()
+        num_batches = len(train_loader)
 
         train_desc = logstr.note("* Training")
-        bar = TCLogbar(total=len(train_loader), desc=train_desc)
+        bar = TCLogbar(total=num_batches, desc=train_desc)
+        
         for batch_idx, batch in enumerate(train_loader):
-            images = batch["images"].to(self.device)
-            targets = batch["target"].to(self.device)
+            # 使用非阻塞数据传输
+            images = batch["images"].to(self.device, non_blocking=True)
+            targets = batch["target"].to(self.device, non_blocking=True)
             key_history = batch.get("key_history")
             if key_history is not None:
-                key_history = key_history.to(self.device)
+                key_history = key_history.to(self.device, non_blocking=True)
 
-            self.optimizer.zero_grad()
-            logits = self.model(images, key_history)
-            loss = self.criterion(logits, targets)
-            loss.backward()
-            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
 
-            total_loss += loss.item()
-            metrics.update(logits, targets)
+            # 混合精度训练
+            if self.use_amp:
+                with torch.amp.autocast('cuda'):
+                    logits = self.model(images, key_history)
+                    loss = self.criterion(logits, targets)
+                
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                logits = self.model(images, key_history)
+                loss = self.criterion(logits, targets)
+                loss.backward()
+                self.optimizer.step()
 
-            bar.update(1, desc=f"{train_desc} [loss={loss.item():.4f}]")
+            # 减少.item()调用频率，累积loss
+            total_loss += loss.detach()
+            metrics.update(logits.detach(), targets)
+
+            # 只在需要时调用.item()
+            if batch_idx % 10 == 0:
+                bar.update(10 if batch_idx > 0 else 1, desc=f"{train_desc} [loss={loss.item():.4f}]")
+        
+        # 处理剩余的更新
+        remaining = num_batches % 10
+        if remaining > 0:
+            bar.update(remaining)
         bar.update(flush=True, linebreak=True)
 
-        return total_loss / len(train_loader), metrics.compute()
+        return (total_loss / num_batches).item(), metrics.compute()
 
     def validate(self, val_loader: DataLoader) -> tuple[float, dict]:
         """验证模型"""
@@ -1088,14 +1193,21 @@ class Trainer:
         bar = TCLogbar(total=len(val_loader), desc=val_desc)
         with torch.no_grad():
             for batch in val_loader:
-                images = batch["images"].to(self.device)
-                targets = batch["target"].to(self.device)
+                # 使用非阻塞数据传输
+                images = batch["images"].to(self.device, non_blocking=True)
+                targets = batch["target"].to(self.device, non_blocking=True)
                 key_history = batch.get("key_history")
                 if key_history is not None:
-                    key_history = key_history.to(self.device)
+                    key_history = key_history.to(self.device, non_blocking=True)
 
-                logits = self.model(images, key_history)
-                loss = self.criterion(logits, targets)
+                # 混合精度推理
+                if self.use_amp:
+                    with torch.amp.autocast('cuda'):
+                        logits = self.model(images, key_history)
+                        loss = self.criterion(logits, targets)
+                else:
+                    logits = self.model(images, key_history)
+                    loss = self.criterion(logits, targets)
 
                 total_loss += loss.item()
                 metrics.update(logits, targets)
@@ -1185,9 +1297,15 @@ class Trainer:
 
         logger.note("> 训练配置:")
         params_count = sum(p.numel() for p in self.model.parameters())
+        params_count_str = f"{params_count/1e6:.1f}M"
         train_info = {
             "设备": str(self.device),
-            "参数量": f"{params_count:,}",
+            "参数量": params_count_str,
+            "混合精度": "开启" if self.use_amp else "关闭",
+            "模型编译": "开启" if self.model_compiled else "关闭",
+            "Batch Size": self.config.batch_size,
+            "Num Workers": self.config.num_workers,
+            "Prefetch Factor": self.config.prefetch_factor,
         }
         if self.start_epoch > 0 and self.start_epoch < self.config.num_epochs:
             train_info["状态"] = logstr.mesg(
