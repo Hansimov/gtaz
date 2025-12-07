@@ -3,4 +3,8 @@ cache
 dist/
 src/*.egg-info/
 __pycache__
+checkpoints/
 *.log
+*.chats
+*.notes
+*.lm
