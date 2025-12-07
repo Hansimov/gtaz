@@ -82,7 +82,8 @@ class Config:
     test_ratio: float = 0.1
 
     # 其他
-    num_workers: int = 0 if platform.system() == "Windows" else 4
+    # num_workers: int = 0 if platform.system() == "Windows" else 4
+    num_workers: int = 4
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     save_dir: str = "E:/_codes/gtaz/src/gtaz/checkpoints/agency_move"
@@ -358,7 +359,9 @@ class DataManager:
         logger.note(f"找到 {logstr.mesg(len(session_dirs))} 个会话目录")
 
         total_segments = 0
-        bar = TCLogbar(total=len(session_dirs), desc="* 加载数据")
+
+        load_desc = logstr.note("* 加载数据")
+        bar = TCLogbar(total=len(session_dirs), desc=load_desc)
         for session_dir in session_dirs:
             segments = DataProcessor.collect_session_frames(session_dir)
             total_segments += len(segments)
@@ -882,7 +885,8 @@ class Trainer:
         total_loss = 0.0
         metrics = Metrics()
 
-        bar = TCLogbar(total=len(train_loader), desc="* Training")
+        train_desc = logstr.note("* Training")
+        bar = TCLogbar(total=len(train_loader), desc=train_desc)
         for batch_idx, batch in enumerate(train_loader):
             images = batch["images"].to(self.device)
             targets = batch["target"].to(self.device)
@@ -899,7 +903,7 @@ class Trainer:
             total_loss += loss.item()
             metrics.update(logits, targets)
 
-            bar.update(1, desc=f"* Training [loss={loss.item():.4f}]")
+            bar.update(1, desc=f"{train_desc} [loss={loss.item():.4f}]")
         bar.update(flush=True)
         print()
 
@@ -911,7 +915,8 @@ class Trainer:
         total_loss = 0.0
         metrics = Metrics()
 
-        bar = TCLogbar(total=len(val_loader), desc="* Validation")
+        val_desc = logstr.note("* Validation")
+        bar = TCLogbar(total=len(val_loader), desc=val_desc)
         with torch.no_grad():
             for batch in val_loader:
                 images = batch["images"].to(self.device)
