@@ -893,7 +893,10 @@ class Trainer:
 
     def _log_checkpoint_info(self, checkpoint_path: str):
         """记录checkpoint恢复信息"""
-        logger.okay(f"> 从 checkpoint 恢复训练")
+        if self.latest_epoch >= self.config.num_epochs:
+            logger.okay(f"> 训练已完成")
+        else:
+            logger.note(f"> 从 checkpoint 恢复训练")
         info_dict = {
             "路径": checkpoint_path,
             "起始轮次": self.start_epoch,
@@ -962,16 +965,33 @@ class Trainer:
             f"Exact Match: {logstr.file(f'{val_metrics['exact_match_accuracy']:.4f}')}{val_exact_change}"
         )
 
+    def _format_key_f1_scores(self, metrics: dict, prefix: str = "") -> str:
+        """格式化各按键的F1分数为单行字符串
+
+        Args:
+            metrics: 包含各键F1分数的指标字典
+            prefix: 前缀文本（如"训练"、"验证"、"测试"）
+
+        Returns:
+            格式化的字符串，如 "训练: W: 0.9886, A: 0.8992, S: 0.7273, D: 0.8068"
+        """
+        key_scores = []
+        for key_name in INDEX_TO_KEY.values():
+            f1_score = metrics[f"{key_name}_f1"]
+            key_str = logstr.note(key_name)
+            score_str = logstr.hint(f"{f1_score:.4f}")
+            key_scores.append(f"{key_str}: {score_str}")
+        scores_str = ", ".join(key_scores)
+        if prefix:
+            return f"{prefix}: {scores_str}"
+        return scores_str
+
     def _log_per_key_metrics(self, train_metrics: dict, val_metrics: dict):
         """记录各按键的F1分数"""
-        logger.mesg("各键 F1 分数:")
-        for key_name in INDEX_TO_KEY.values():
-            train_f1 = train_metrics[f"{key_name}_f1"]
-            val_f1 = val_metrics[f"{key_name}_f1"]
-            logger.mesg(
-                f"  {logstr.file(key_name)}: Train {logstr.hint(f'{train_f1:.4f}')}, "
-                f"Val {logstr.hint(f'{val_f1:.4f}')}"
-            )
+        train_line = self._format_key_f1_scores(train_metrics, "训练")
+        val_line = self._format_key_f1_scores(val_metrics, "验证")
+        logger.mesg(train_line)
+        logger.mesg(val_line)
 
     def _log_model_save(self, save_path: Path):
         """记录模型保存信息"""
@@ -1155,7 +1175,7 @@ class Trainer:
         # 如果指定了恢复路径，加载checkpoint
         if resume_from:
             if not self.load_checkpoint(resume_from):
-                logger.warn("无法加载checkpoint，从头开始训练")
+                logger.warn("无法加载 checkpoint，从头开始训练")
                 self.start_epoch = 0
 
         logger.note("> 训练配置:")
@@ -1164,10 +1184,14 @@ class Trainer:
             "设备": str(self.device),
             "参数量": f"{params_count:,}",
         }
-        if self.start_epoch > 0:
-            train_info["状态"] = f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
+        if self.start_epoch > 0 and self.start_epoch < self.config.num_epochs:
+            train_info["状态"] = logstr.mesg(
+                f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
+            )
+        elif self.start_epoch >= self.config.num_epochs:
+            train_info["状态"] = logstr.okay(f"训练已完成")
         else:
-            train_info["状态"] = "从头开始"
+            train_info["状态"] = logstr.mesg(f"从头开始训练")
         logger.mesg(dict_to_str(train_info), indent=2)
         print()
 
@@ -1384,11 +1408,8 @@ class AgencyMovePipeline:
         }
         logger.mesg(dict_to_str(test_results), indent=2)
 
-        logger.mesg("各键 F1 分数:")
-        key_f1_results = {}
-        for key_name in INDEX_TO_KEY.values():
-            key_f1_results[key_name] = f"{test_metrics[f'{key_name}_f1']:.4f}"
-        logger.mesg(dict_to_str(key_f1_results), indent=2)
+        test_line = trainer._format_key_f1_scores(test_metrics, "测试")
+        logger.mesg(test_line)
 
         return model, history
 
@@ -1427,11 +1448,8 @@ class AgencyMovePipeline:
         }
         logger.mesg(dict_to_str(test_results), indent=2)
 
-        logger.mesg("各键 F1 分数:")
-        key_f1_results = {}
-        for key_name in INDEX_TO_KEY.values():
-            key_f1_results[key_name] = f"{test_metrics[f'{key_name}_f1']:.4f}"
-        logger.mesg(dict_to_str(key_f1_results), indent=2)
+        test_line = trainer._format_key_f1_scores(test_metrics, "测试")
+        logger.mesg(test_line)
 
         return test_metrics
 
