@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from tclogger import TCLogger, TCLogbar, logstr, dict_to_str
+from tclogger import TCLogger, TCLogbar, logstr, dict_to_str, Runtimer
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms
 
@@ -895,7 +895,7 @@ class Trainer:
         # 优化器和学习率调度器
         if config.learning_rate is None:
             # 使用自动调整学习率：从较大的初始值开始
-            initial_lr = 3e-4
+            initial_lr = 1e-4
             self.optimizer = torch.optim.AdamW(
                 model.parameters(),
                 lr=initial_lr,
@@ -940,6 +940,7 @@ class Trainer:
         self.latest_val_f1 = 0.0
         self.latest_epoch = 0
         self.start_epoch = 0
+        self.best_val_f1 = 0.0  # 跟踪历史最佳验证F1
 
         # 跟踪最佳指标（用于计算百分比变化）
         self.best_metrics = {
@@ -987,6 +988,7 @@ class Trainer:
             "路径": checkpoint_path,
             "起始轮次": self.start_epoch,
             "上次F1": f"{self.latest_val_f1:.4f} (Epoch {self.latest_epoch})",
+            "最佳F1": f"{self.best_val_f1:.4f}",
             "学习率": f"{self.optimizer.param_groups[0]['lr']:.6f}",
             "混合精度": "开启" if self.use_amp else "关闭",
             "模型编译": "开启" if self.model_compiled else "关闭",
@@ -1086,6 +1088,21 @@ class Trainer:
         logger.okay(f"保存最新模型:")
         logger.file(f"{save_path}")
 
+    def _save_latest_checkpoint(self, save_dir: Path, epoch: int, val_f1: float, val_loss: float):
+        """保存最新模型检查点"""
+        model_name = self.config.get_model_name()
+        save_path = save_dir / f"{model_name}.pth"
+        self._save_checkpoint(save_path, epoch, val_f1, val_loss, is_best=False)
+        self._log_model_save(save_path)
+
+    def _save_best_checkpoint(self, save_dir: Path, epoch: int, val_f1: float, val_loss: float):
+        """保存最佳模型检查点（仅当F1提升时）"""
+        model_name = self.config.get_model_name()
+        best_save_path = save_dir / f"{model_name}_best.pth"
+        self._save_checkpoint(best_save_path, epoch, val_f1, val_loss, is_best=True)
+        logger.okay(f"保存最佳模型 (F1: {logstr.mesg(f'{self.best_val_f1:.4f}')})")
+        logger.file(f"{best_save_path}")
+
     def _log_training_config(self):
         """记录训练配置信息"""
         logger.note("> 训练配置:")
@@ -1121,7 +1138,7 @@ class Trainer:
         best_val_exact = self.history["val_exact_match"][best_val_f1_idx]
 
         logger.okay("> 训练完成！")
-        sep_str = f"\n{'=' * 65}\n"
+        sep_str = f"\n{'=' * 70}\n"
         logger.okay(
             f"{sep_str}"
             f"最佳验证结果 (Epoch {logstr.mesg(best_epoch)}): "
@@ -1179,6 +1196,7 @@ class Trainer:
                 "latest_epoch", checkpoint.get("epoch", 0)
             )
             self.start_epoch = checkpoint.get("epoch", 0)
+            self.best_val_f1 = checkpoint.get("best_val_f1", 0.0)
 
             self._log_checkpoint_info(checkpoint_path)
             return True
@@ -1270,7 +1288,7 @@ class Trainer:
         for epoch in range(self.start_epoch, self.config.num_epochs):
             self._current_epoch = epoch  # 记录当前epoch，用于中断时显示
             epoch_str = f"Epoch {logstr.mesg(epoch + 1)}/{self.config.num_epochs}"
-            logger.note(f"{'='*20} [{epoch_str}] {'='*20}")
+            logger.note(f"{'='*30} [{epoch_str}] {'='*30}")
 
             train_loss, train_metrics = self.train_epoch(train_loader)
             val_loss, val_metrics = self.validate(val_loader)
@@ -1320,10 +1338,15 @@ class Trainer:
             # 保存最新模型（每个epoch都保存）
             self.latest_val_f1 = val_metrics["avg_f1"]
             self.latest_epoch = epoch + 1
-            model_name = self.config.get_model_name()
-            save_path = save_dir / f"{model_name}.pth"
-            self._save_checkpoint(save_path, epoch + 1, val_metrics["avg_f1"], val_loss)
-            self._log_model_save(save_path)
+            self._save_latest_checkpoint(save_dir, epoch + 1, val_metrics["avg_f1"], val_loss)
+            
+            # 保存最佳模型（第1个epoch之后，仅当F1提升时保存）
+            if epoch == 0:
+                # 第1个epoch，初始化best_val_f1但不保存
+                self.best_val_f1 = val_metrics["avg_f1"]
+            elif val_metrics["avg_f1"] > self.best_val_f1:
+                self.best_val_f1 = val_metrics["avg_f1"]
+                self._save_best_checkpoint(save_dir, epoch + 1, val_metrics["avg_f1"], val_loss)
 
     def train(
         self,
@@ -1351,11 +1374,11 @@ class Trainer:
         self._log_training_summary()
 
         # 保存训练历史
-        self._save_training_history(save_dir)
+        # self._save_training_history(save_dir)
 
         return self.history
 
-    def _save_checkpoint(self, path: Path, epoch: int, val_f1: float, val_loss: float):
+    def _save_checkpoint(self, path: Path, epoch: int, val_f1: float, val_loss: float, is_best: bool = False):
         """保存检查点"""
         checkpoint = {
             "epoch": epoch,
@@ -1365,8 +1388,10 @@ class Trainer:
             "val_loss": val_loss,
             "latest_val_f1": self.latest_val_f1,
             "latest_epoch": self.latest_epoch,
+            "best_val_f1": self.best_val_f1,
             "history": self.history,
             "config": self.config.to_dict(),
+            "is_best": is_best,
         }
         # 保存调度器状态
         if self.scheduler is not None:
@@ -1384,6 +1409,8 @@ class Trainer:
             "val_loss": float(val_loss),
             "latest_val_f1": float(self.latest_val_f1),
             "latest_epoch": self.latest_epoch,
+            "best_val_f1": float(self.best_val_f1),
+            "is_best": is_best,
             "current_lr": self.optimizer.param_groups[0]["lr"],
             "config": self.config.to_dict(),
             "history": self.history,
@@ -1717,7 +1744,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with Runtimer():
+        main()
 
     # Case: 训练模式：50个epoch，批次大小32
     # python -m gtaz.models.agency_move -m train -e 50 -b 32
