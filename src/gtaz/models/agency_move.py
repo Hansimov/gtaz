@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from tclogger import TCLogger, TCLogbar, logstr
+from tclogger import TCLogger, TCLogbar, logstr, dict_to_str
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms
 
@@ -398,11 +398,13 @@ class DataManager:
         val_seqs = sequences[train_size : train_size + val_size]
         test_seqs = sequences[train_size + val_size :]
 
-        logger.note(
-            f"训练集: {logstr.mesg(len(train_seqs))}, "
-            f"验证集: {logstr.mesg(len(val_seqs))}, "
-            f"测试集: {logstr.mesg(len(test_seqs))}"
-        )
+        logger.note("> 数据集划分:")
+        split_info = {
+            "训练集": len(train_seqs),
+            "验证集": len(val_seqs),
+            "测试集": len(test_seqs),
+        }
+        logger.mesg(dict_to_str(split_info), indent=2)
         return train_seqs, val_seqs, test_seqs
 
     def create_datasets(
@@ -484,17 +486,22 @@ class DataManager:
                 key_counts[key] += 1
 
         # 打印统计信息
-        logger.note(f"数据集统计: 总样本数 {logstr.mesg(total)}")
+        logger.note(f"> 数据集统计: 总样本数 {logstr.mesg(total)}")
+        
         logger.note("单键分布:")
+        key_dist = {}
         for key, count in key_counts.items():
             ratio = f"{count / total * 100:.2f}%" if total > 0 else "0%"
-            logger.mesg(f"  {logstr.file(key)}: {count} ({ratio})")
+            key_dist[key] = f"{count} ({ratio})"
+        logger.mesg(dict_to_str(key_dist), indent=2)
 
         logger.note("按键组合分布 (Top 10):")
+        combo_dist = {}
         for combo, count in sorted(key_combo_counts.items(), key=lambda x: -x[1])[:10]:
             combo_str = "+".join(combo) if combo else "(无按键)"
             ratio = f"{count / total * 100:.2f}%" if total > 0 else "0%"
-            logger.mesg(f"  {logstr.file(combo_str)}: {count} ({ratio})")
+            combo_dist[combo_str] = f"{count} ({ratio})"
+        logger.mesg(dict_to_str(combo_dist), indent=2)
 
         return {
             "total_samples": total,
@@ -845,9 +852,102 @@ class Trainer:
             "train_exact_match": [],
             "val_exact_match": [],
         }
-        self.best_val_f1 = 0.0
-        self.best_epoch = 0
+        self.latest_val_f1 = 0.0
+        self.latest_epoch = 0
         self.start_epoch = 0
+
+    def _format_metric_change(self, current: float, previous: float) -> str:
+        """格式化指标变化（百分比）"""
+        if previous == 0:
+            return ""
+        
+        percent_diff = ((current - previous) / abs(previous)) * 100
+        abs_percent_diff = abs(percent_diff)
+        if abs_percent_diff < 0.05:
+            return f" ({logstr.mesg(f'→ {abs_percent_diff:.1f}%')})"
+        elif percent_diff > 0:
+            return f" ({logstr.okay(f'↑ {abs_percent_diff:.1f}%')})"
+        else:
+            return f" ({logstr.warn(f'↓ {abs_percent_diff:.1f}%')})"
+
+    def _log_checkpoint_info(self, checkpoint_path: str):
+        """记录checkpoint恢复信息"""
+        logger.okay(f"> 从 checkpoint 恢复训练")
+        info_dict = {
+            "路径": checkpoint_path,
+            "起始 Epoch": self.start_epoch,
+            "上次验证 F1": f"{self.latest_val_f1:.4f} (Epoch {self.latest_epoch})",
+            "当前学习率": f"{self.optimizer.param_groups[0]['lr']:.6f}",
+        }
+        logger.mesg(dict_to_str(info_dict), indent=2)
+
+    def _log_epoch_metrics(self, epoch: int, train_loss: float, train_metrics: dict, 
+                          val_loss: float, val_metrics: dict):
+        """记录epoch训练和验证指标"""
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        logger.mesg(f"学习率: {logstr.file(f'{current_lr:.6f}')}")
+
+        # 计算训练指标的变化
+        train_loss_change = ""
+        train_f1_change = ""
+        train_exact_change = ""
+        if epoch > 0 and len(self.history["train_loss"]) >= 2:
+            train_loss_change = self._format_metric_change(
+                train_loss, self.history["train_loss"][-2]
+            )
+            train_f1_change = self._format_metric_change(
+                train_metrics["avg_f1"], self.history["train_f1"][-2]
+            )
+            train_exact_change = self._format_metric_change(
+                train_metrics["exact_match_accuracy"], 
+                self.history["train_exact_match"][-2]
+            )
+
+        # 计算验证指标的变化
+        val_loss_change = ""
+        val_f1_change = ""
+        val_exact_change = ""
+        if epoch > 0 and len(self.history["val_loss"]) >= 2:
+            val_loss_change = self._format_metric_change(
+                val_loss, self.history["val_loss"][-2]
+            )
+            val_f1_change = self._format_metric_change(
+                val_metrics["avg_f1"], self.history["val_f1"][-2]
+            )
+            val_exact_change = self._format_metric_change(
+                val_metrics["exact_match_accuracy"], 
+                self.history["val_exact_match"][-2]
+            )
+
+        # 打印训练指标
+        logger.mesg(
+            f"训练 - Loss: {logstr.file(f'{train_loss:.4f}')}{train_loss_change}, "
+            f"Avg F1: {logstr.file(f'{train_metrics['avg_f1']:.4f}')}{train_f1_change}, "
+            f"Exact Match: {logstr.file(f'{train_metrics['exact_match_accuracy']:.4f}')}{train_exact_change}"
+        )
+
+        # 打印验证指标
+        logger.mesg(
+            f"验证 - Loss: {logstr.file(f'{val_loss:.4f}')}{val_loss_change}, "
+            f"Avg F1: {logstr.file(f'{val_metrics['avg_f1']:.4f}')}{val_f1_change}, "
+            f"Exact Match: {logstr.file(f'{val_metrics['exact_match_accuracy']:.4f}')}{val_exact_change}"
+        )
+
+    def _log_per_key_metrics(self, train_metrics: dict, val_metrics: dict):
+        """记录各按键的F1分数"""
+        logger.mesg("各键 F1 分数:")
+        for key_name in INDEX_TO_KEY.values():
+            train_f1 = train_metrics[f"{key_name}_f1"]
+            val_f1 = val_metrics[f"{key_name}_f1"]
+            logger.mesg(
+                f"  {logstr.file(key_name)}: Train {logstr.hint(f'{train_f1:.4f}')}, "
+                f"Val {logstr.hint(f'{val_f1:.4f}')}"
+            )
+
+    def _log_model_save(self, save_path: Path):
+        """记录模型保存信息"""
+        logger.okay(f"保存最新模型:")
+        logger.file(f"{save_path}")
 
     def load_checkpoint(self, checkpoint_path: str) -> bool:
         """从checkpoint恢复训练状态"""
@@ -864,16 +964,12 @@ class Trainer:
             if "history" in checkpoint:
                 self.history = checkpoint["history"]
             
-            # 恢复最佳指标
-            self.best_val_f1 = checkpoint.get("best_val_f1", checkpoint.get("val_f1", 0.0))
-            self.best_epoch = checkpoint.get("best_epoch", checkpoint.get("epoch", 0))
+            # 恢复最新指标
+            self.latest_val_f1 = checkpoint.get("latest_val_f1", checkpoint.get("val_f1", 0.0))
+            self.latest_epoch = checkpoint.get("latest_epoch", checkpoint.get("epoch", 0))
             self.start_epoch = checkpoint.get("epoch", 0)
             
-            logger.okay(f"从 checkpoint 恢复训练")
-            logger.mesg(f"  路径: {logstr.file(checkpoint_path)}")
-            logger.mesg(f"  起始 Epoch: {logstr.mesg(self.start_epoch)}")
-            logger.mesg(f"  最佳验证 F1: {logstr.mesg(f'{self.best_val_f1:.4f}')} (Epoch {self.best_epoch})")
-            logger.mesg(f"  当前学习率: {logstr.mesg(f'{self.optimizer.param_groups[0]["lr"]:.6f}')}")
+            self._log_checkpoint_info(checkpoint_path)
             return True
         except Exception as e:
             logger.fail(f"加载 checkpoint 失败: {e}")
@@ -961,46 +1057,19 @@ class Trainer:
             self.history["train_exact_match"].append(train_metrics["exact_match_accuracy"])
             self.history["val_exact_match"].append(val_metrics["exact_match_accuracy"])
 
-            # 打印结果
-            current_lr = self.optimizer.param_groups[0]["lr"]
-            logger.mesg(f"学习率: {logstr.file(f'{current_lr:.6f}')}")
+            # 打印结果（使用辅助方法）
+            self._log_epoch_metrics(epoch, train_loss, train_metrics, val_loss, val_metrics)
+            self._log_per_key_metrics(train_metrics, val_metrics)
 
-            train_avg_f1 = train_metrics["avg_f1"]
-            train_exact = train_metrics["exact_match_accuracy"]
-            logger.mesg(
-                f"训练 - Loss: {logstr.file(f'{train_loss:.4f}')}, "
-                f"Avg F1: {logstr.file(f'{train_avg_f1:.4f}')}, "
-                f"Exact Match: {logstr.file(f'{train_exact:.4f}')}"
+            # 保存最新模型（每个epoch都保存）
+            self.latest_val_f1 = val_metrics["avg_f1"]
+            self.latest_epoch = epoch + 1
+            model_name = self.config.get_model_name()
+            save_path = save_dir / f"{model_name}.pth"
+            self._save_checkpoint(
+                save_path, epoch + 1, val_metrics["avg_f1"], val_loss
             )
-
-            val_avg_f1 = val_metrics["avg_f1"]
-            val_exact = val_metrics["exact_match_accuracy"]
-            logger.mesg(
-                f"验证 - Loss: {logstr.file(f'{val_loss:.4f}')}, "
-                f"Avg F1: {logstr.file(f'{val_avg_f1:.4f}')}, "
-                f"Exact Match: {logstr.file(f'{val_exact:.4f}')}"
-            )
-
-            logger.mesg("各键 F1 分数:")
-            for key_name in INDEX_TO_KEY.values():
-                train_f1 = train_metrics[f"{key_name}_f1"]
-                val_f1 = val_metrics[f"{key_name}_f1"]
-                logger.mesg(
-                    f"  {logstr.file(key_name)}: Train {logstr.hint(f'{train_f1:.4f}')}, "
-                    f"Val {logstr.hint(f'{val_f1:.4f}')}"
-                )
-
-            # 保存最佳模型
-            if val_metrics["avg_f1"] > self.best_val_f1:
-                self.best_val_f1 = val_metrics["avg_f1"]
-                self.best_epoch = epoch + 1
-                model_name = self.config.get_model_name()
-                save_path = save_dir / f"{model_name}.pth"
-                self._save_checkpoint(
-                    save_path, epoch + 1, val_metrics["avg_f1"], val_loss
-                )
-                logger.okay(f"保存最佳模型:")
-                logger.file(f"{save_path}")
+            self._log_model_save(save_path)
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader, resume_from: Optional[str] = None) -> dict:
         """完整训练流程"""
@@ -1013,20 +1082,25 @@ class Trainer:
                 logger.warn("无法加载checkpoint，从头开始训练")
                 self.start_epoch = 0
 
-        logger.note(f"使用设备: {logstr.mesg(self.device)}")
+        logger.note("> 训练配置:")
         params_count = sum(p.numel() for p in self.model.parameters())
-        logger.note(f"模型参数量: {logstr.mesg(f'{params_count:,}')}")
+        train_info = {
+            "设备": str(self.device),
+            "模型参数量": f"{params_count:,}",
+        }
         if self.start_epoch > 0:
-            logger.okay(f"继续训练... (从 Epoch {self.start_epoch + 1} 开始)")
+            train_info["训练状态"] = f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
         else:
-            logger.okay("开始训练...")
+            train_info["训练状态"] = "从头开始"
+        logger.mesg(dict_to_str(train_info), indent=2)
+        print()
 
         # 运行训练循环
         self._run_training_loop(train_loader, val_loader, save_dir)
 
         logger.okay(
-            f"训练完成！最佳验证 F1: {logstr.mesg(f'{self.best_val_f1:.4f}')} "
-            f"(Epoch {self.best_epoch})"
+            f"训练完成！最终验证 F1: {logstr.mesg(f'{self.latest_val_f1:.4f}')} "
+            f"(Epoch {self.latest_epoch})"
         )
 
         # 保存训练历史
@@ -1047,8 +1121,8 @@ class Trainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "val_f1": val_f1,
             "val_loss": val_loss,
-            "best_val_f1": self.best_val_f1,
-            "best_epoch": self.best_epoch,
+            "latest_val_f1": self.latest_val_f1,
+            "latest_epoch": self.latest_epoch,
             "history": self.history,
             "config": self.config.to_dict(),
         }
@@ -1066,8 +1140,8 @@ class Trainer:
             "epoch": epoch,
             "val_f1": float(val_f1),
             "val_loss": float(val_loss),
-            "best_val_f1": float(self.best_val_f1),
-            "best_epoch": self.best_epoch,
+            "latest_val_f1": float(self.latest_val_f1),
+            "latest_epoch": self.latest_epoch,
             "current_lr": self.optimizer.param_groups[0]["lr"],
             "config": self.config.to_dict(),
             "history": self.history,
@@ -1075,9 +1149,6 @@ class Trainer:
         }
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(checkpoint_info, f, indent=2, ensure_ascii=False)
-        
-        logger.mesg(f"保存模型信息:")
-        logger.file(f"{json_path}")
 
 
 # ===== 预测器 ===== #
@@ -1207,9 +1278,9 @@ class AgencyMovePipeline:
         if not self.config.overwrite:
             resume_from = self.find_checkpoint_for_config(self.config)
             if resume_from:
-                logger.note(f"找到已有 checkpoint: {logstr.file(resume_from)}")
+                logger.note(f"已有 checkpoint: {logstr.file(resume_from)}")
             else:
-                logger.note("未找到已有 checkpoint，将从头开始训练")
+                logger.note(f"没有 checkpoint，将从头开始训练")
         else:
             logger.note("覆盖模式：忽略已有 checkpoint，从头开始训练")
         
@@ -1228,16 +1299,20 @@ class AgencyMovePipeline:
         # 测试集评估
         logger.note("在测试集上评估...")
         test_loss, test_metrics = trainer.validate(test_loader)
-        logger.okay("测试集结果:")
-        logger.mesg(f"  Loss: {logstr.file(f'{test_loss:.4f}')}")
-        test_avg_f1 = test_metrics["avg_f1"]
-        test_exact = test_metrics["exact_match_accuracy"]
-        logger.mesg(f"  Avg F1: {logstr.file(f'{test_avg_f1:.4f}')}")
-        logger.mesg(f"  Exact Match Accuracy: {logstr.file(f'{test_exact:.4f}')}")
+        
+        logger.okay("> 测试集结果:")
+        test_results = {
+            "Loss": f"{test_loss:.4f}",
+            "Avg F1": f"{test_metrics['avg_f1']:.4f}",
+            "Exact Match Accuracy": f"{test_metrics['exact_match_accuracy']:.4f}",
+        }
+        logger.mesg(dict_to_str(test_results), indent=2)
+        
         logger.mesg("各键 F1 分数:")
+        key_f1_results = {}
         for key_name in INDEX_TO_KEY.values():
-            key_f1 = test_metrics[f"{key_name}_f1"]
-            logger.mesg(f"  {logstr.file(key_name)}: {logstr.hint(f'{key_f1:.4f}')}")
+            key_f1_results[key_name] = f"{test_metrics[f'{key_name}_f1']:.4f}"
+        logger.mesg(dict_to_str(key_f1_results), indent=2)
 
         return model, history
 
@@ -1268,16 +1343,19 @@ class AgencyMovePipeline:
         trainer = Trainer(self.config, model)
         test_loss, test_metrics = trainer.validate(test_loader)
 
-        logger.okay("测试集结果:")
-        logger.mesg(f"  Loss: {logstr.file(f'{test_loss:.4f}')}")
-        test_avg_f1 = test_metrics["avg_f1"]
-        test_exact = test_metrics["exact_match_accuracy"]
-        logger.mesg(f"  Avg F1: {logstr.file(f'{test_avg_f1:.4f}')}")
-        logger.mesg(f"  Exact Match Accuracy: {logstr.file(f'{test_exact:.4f}')}")
+        logger.okay("> 测试集结果:")
+        test_results = {
+            "Loss": f"{test_loss:.4f}",
+            "Avg F1": f"{test_metrics['avg_f1']:.4f}",
+            "Exact Match Accuracy": f"{test_metrics['exact_match_accuracy']:.4f}",
+        }
+        logger.mesg(dict_to_str(test_results), indent=2)
+        
         logger.mesg("各键 F1 分数:")
+        key_f1_results = {}
         for key_name in INDEX_TO_KEY.values():
-            key_f1 = test_metrics[f"{key_name}_f1"]
-            logger.mesg(f"  {logstr.file(key_name)}: {logstr.hint(f'{key_f1:.4f}')}")
+            key_f1_results[key_name] = f"{test_metrics[f'{key_name}_f1']:.4f}"
+        logger.mesg(dict_to_str(key_f1_results), indent=2)
 
         return test_metrics
 
