@@ -19,6 +19,7 @@ GTAV 行为克隆 (Behavior Cloning) 模型训练
 
 import json
 import random
+import platform
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -81,13 +82,13 @@ class Config:
     test_ratio: float = 0.1
 
     # 其他
-    num_workers: int = 4
+    num_workers: int = 0 if platform.system() == "Windows" else 4
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     save_dir: str = "E:/_codes/gtaz/src/gtaz/checkpoints/agency_move"
     log_interval: int = 10
-    save_best_only: bool = True
     threshold: float = 0.5  # 预测阈值
+    overwrite: bool = False  # 是否覆盖旧模型，不使用checkpoint恢复
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -693,7 +694,7 @@ class ModelFactory:
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         config_dict = checkpoint.get("config", {})
 
         model = TemporalResNet(
@@ -843,6 +844,37 @@ class Trainer:
         }
         self.best_val_f1 = 0.0
         self.best_epoch = 0
+        self.start_epoch = 0
+
+    def load_checkpoint(self, checkpoint_path: str) -> bool:
+        """从checkpoint恢复训练状态"""
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            
+            # 恢复调度器状态（如果存在）
+            if "scheduler_state_dict" in checkpoint and self.scheduler is not None:
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            
+            # 恢复训练历史
+            if "history" in checkpoint:
+                self.history = checkpoint["history"]
+            
+            # 恢复最佳指标
+            self.best_val_f1 = checkpoint.get("best_val_f1", checkpoint.get("val_f1", 0.0))
+            self.best_epoch = checkpoint.get("best_epoch", checkpoint.get("epoch", 0))
+            self.start_epoch = checkpoint.get("epoch", 0)
+            
+            logger.okay(f"从 checkpoint 恢复训练")
+            logger.mesg(f"  路径: {logstr.file(checkpoint_path)}")
+            logger.mesg(f"  起始 Epoch: {logstr.mesg(self.start_epoch)}")
+            logger.mesg(f"  最佳验证 F1: {logstr.mesg(f'{self.best_val_f1:.4f}')} (Epoch {self.best_epoch})")
+            logger.mesg(f"  当前学习率: {logstr.mesg(f'{self.optimizer.param_groups[0]["lr"]:.6f}')}")
+            return True
+        except Exception as e:
+            logger.fail(f"加载 checkpoint 失败: {e}")
+            return False
 
     def train_epoch(self, train_loader: DataLoader) -> tuple[float, dict]:
         """训练一个 epoch"""
@@ -899,17 +931,10 @@ class Trainer:
 
         return total_loss / len(val_loader), metrics.compute()
 
-    def train(self, train_loader: DataLoader, val_loader: DataLoader) -> dict:
-        """完整训练流程"""
-        save_dir = Path(self.config.save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.note(f"使用设备: {logstr.mesg(self.device)}")
-        params_count = sum(p.numel() for p in self.model.parameters())
-        logger.note(f"模型参数量: {logstr.mesg(f'{params_count:,}')}")
-        logger.okay("开始训练...")
-
-        for epoch in range(self.config.num_epochs):
+    def _run_training_loop(self, train_loader: DataLoader, val_loader: DataLoader, save_dir: Path):
+        """运行训练循环"""
+        for epoch in range(self.start_epoch, self.config.num_epochs):
+            self._current_epoch = epoch  # 记录当前epoch，用于中断时显示
             epoch_str = f"Epoch {epoch + 1}/{self.config.num_epochs}"
             logger.note(f"{'='*50}")
             logger.note(epoch_str)
@@ -919,7 +944,6 @@ class Trainer:
 
             # 调整学习率
             if self.use_plateau_scheduler:
-                # ReduceLROnPlateau 需要验证指标
                 self.scheduler.step(val_metrics["avg_f1"])
             else:
                 self.scheduler.step()
@@ -929,9 +953,7 @@ class Trainer:
             self.history["val_loss"].append(val_loss)
             self.history["train_f1"].append(train_metrics["avg_f1"])
             self.history["val_f1"].append(val_metrics["avg_f1"])
-            self.history["train_exact_match"].append(
-                train_metrics["exact_match_accuracy"]
-            )
+            self.history["train_exact_match"].append(train_metrics["exact_match_accuracy"])
             self.history["val_exact_match"].append(val_metrics["exact_match_accuracy"])
 
             # 打印结果
@@ -968,12 +990,34 @@ class Trainer:
                 self.best_val_f1 = val_metrics["avg_f1"]
                 self.best_epoch = epoch + 1
                 model_name = self.config.get_model_name()
-                save_path = save_dir / f"{model_name}_best.pth"
+                save_path = save_dir / f"{model_name}.pth"
                 self._save_checkpoint(
                     save_path, epoch + 1, val_metrics["avg_f1"], val_loss
                 )
-                logger.okay(f"保存最佳模型到:")
+                logger.okay(f"保存最佳模型:")
                 logger.file(f"{save_path}")
+
+    def train(self, train_loader: DataLoader, val_loader: DataLoader, resume_from: Optional[str] = None) -> dict:
+        """完整训练流程"""
+        save_dir = Path(self.config.save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # 如果指定了恢复路径，加载checkpoint
+        if resume_from:
+            if not self.load_checkpoint(resume_from):
+                logger.warn("无法加载checkpoint，从头开始训练")
+                self.start_epoch = 0
+
+        logger.note(f"使用设备: {logstr.mesg(self.device)}")
+        params_count = sum(p.numel() for p in self.model.parameters())
+        logger.note(f"模型参数量: {logstr.mesg(f'{params_count:,}')}")
+        if self.start_epoch > 0:
+            logger.okay(f"继续训练... (从 Epoch {self.start_epoch + 1} 开始)")
+        else:
+            logger.okay("开始训练...")
+
+        # 运行训练循环
+        self._run_training_loop(train_loader, val_loader, save_dir)
 
         logger.okay(
             f"训练完成！最佳验证 F1: {logstr.mesg(f'{self.best_val_f1:.4f}')} "
@@ -985,23 +1029,50 @@ class Trainer:
         history_path = save_dir / f"{model_name}_history.json"
         with open(history_path, "w") as f:
             json.dump(self.history, f, indent=2)
-        logger.okay(f"训练历史保存到: {logstr.file(history_path)}")
+        logger.okay(f"保存训练历史:")
+        logger.file(f"{history_path}")
 
         return self.history
 
     def _save_checkpoint(self, path: Path, epoch: int, val_f1: float, val_loss: float):
         """保存检查点"""
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": self.model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "val_f1": val_f1,
-                "val_loss": val_loss,
-                "config": self.config.to_dict(),
-            },
-            path,
-        )
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "val_f1": val_f1,
+            "val_loss": val_loss,
+            "best_val_f1": self.best_val_f1,
+            "best_epoch": self.best_epoch,
+            "history": self.history,
+            "config": self.config.to_dict(),
+        }
+        # 保存调度器状态
+        if self.scheduler is not None:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        
+        torch.save(checkpoint, path)
+        
+        # 保存同名 JSON 文件记录 checkpoint 信息
+        json_path = path.with_suffix(".json")
+        checkpoint_info = {
+            "checkpoint_path": str(path),
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "epoch": epoch,
+            "val_f1": float(val_f1),
+            "val_loss": float(val_loss),
+            "best_val_f1": float(self.best_val_f1),
+            "best_epoch": self.best_epoch,
+            "current_lr": self.optimizer.param_groups[0]["lr"],
+            "config": self.config.to_dict(),
+            "history": self.history,
+            "model_params": sum(p.numel() for p in self.model.parameters()),
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(checkpoint_info, f, indent=2, ensure_ascii=False)
+        
+        logger.mesg(f"保存模型信息:")
+        logger.file(f"{json_path}")
 
 
 # ===== 预测器 ===== #
@@ -1100,8 +1171,8 @@ class AgencyMovePipeline:
         if not save_path.exists():
             return None
 
-        # 查找所有 _best.pth 文件
-        model_files = list(save_path.glob("agency_move_*_best.pth"))
+        # 查找所有 .pth 文件
+        model_files = list(save_path.glob("agency_move_*.pth"))
         if not model_files:
             return None
 
@@ -1109,8 +1180,34 @@ class AgencyMovePipeline:
         latest_model = max(model_files, key=lambda p: p.stat().st_mtime)
         return str(latest_model)
 
+    @staticmethod
+    def find_checkpoint_for_config(config: Config) -> Optional[str]:
+        """根据配置查找匹配的checkpoint文件"""
+        save_path = Path(config.save_dir)
+        if not save_path.exists():
+            return None
+        
+        # 生成当前配置的模型名称
+        model_name = config.get_model_name()
+        checkpoint_path = save_path / f"{model_name}.pth"
+        
+        if checkpoint_path.exists():
+            return str(checkpoint_path)
+        return None
+
     def train(self) -> tuple[nn.Module, dict]:
         """执行训练流程"""
+        # 查找匹配的checkpoint
+        resume_from = None
+        if not self.config.overwrite:
+            resume_from = self.find_checkpoint_for_config(self.config)
+            if resume_from:
+                logger.note(f"找到已有 checkpoint: {logstr.file(resume_from)}")
+            else:
+                logger.note("未找到已有 checkpoint，将从头开始训练")
+        else:
+            logger.note("覆盖模式：忽略已有 checkpoint，从头开始训练")
+        
         # 数据准备
         data_manager = DataManager(self.config)
         data_manager.load_all_data()
@@ -1121,7 +1218,7 @@ class AgencyMovePipeline:
 
         # 训练
         trainer = Trainer(self.config, model)
-        history = trainer.train(train_loader, val_loader)
+        history = trainer.train(train_loader, val_loader, resume_from=resume_from)
 
         # 测试集评估
         logger.note("在测试集上评估...")
@@ -1238,7 +1335,7 @@ class ArgumentParser:
             help="训练轮数",
         )
         parser.add_argument(
-            "-r",
+            "-l",
             "--lr",
             type=float,
             default=None,
@@ -1251,6 +1348,12 @@ class ArgumentParser:
             default="temporal",
             choices=["temporal", "simple"],
             help="模型类型: temporal(时序模型), simple(简单CNN)",
+        )
+        parser.add_argument(
+            "-w",
+            "--overwrite",
+            action="store_true",
+            help="覆盖模式：不加载已有 checkpoint，从头开始训练",
         )
         return parser
 
@@ -1267,6 +1370,7 @@ class ArgumentParser:
             num_epochs=args.epochs,
             learning_rate=args.lr,
             model_type=args.model_type,
+            overwrite=args.overwrite,
         )
 
 
@@ -1289,9 +1393,8 @@ def main():
         elif args.mode == "test":
             pipeline.test(args.model_path)
     except KeyboardInterrupt:
-        logger.warn("\n用户中断操作 (Ctrl+C)")
-        logger.note("程序已安全退出")
-        return
+        print()
+        logger.warn("用户中断操作 (Ctrl+C)，退出程序")
 
 
 if __name__ == "__main__":
