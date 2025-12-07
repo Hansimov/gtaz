@@ -982,7 +982,7 @@ class Trainer:
         if self.latest_epoch >= self.config.num_epochs:
             logger.okay(f"> 训练已完成")
         else:
-            logger.note(f"> 从 checkpoint 恢复训练")
+            logger.note(f"> 从 checkpoint 恢复训练:")
         info_dict = {
             "路径": checkpoint_path,
             "起始轮次": self.start_epoch,
@@ -1086,6 +1086,60 @@ class Trainer:
         logger.okay(f"保存最新模型:")
         logger.file(f"{save_path}")
 
+    def _log_training_config(self):
+        """记录训练配置信息"""
+        logger.note("> 训练配置:")
+        params_count = sum(p.numel() for p in self.model.parameters())
+        params_count_str = f"{params_count/1e6:.1f}M"
+        train_info = {
+            "设备": str(self.device),
+            "参数量": params_count_str,
+            "混合精度": "开启" if self.use_amp else "关闭",
+            "模型编译": "开启" if self.model_compiled else "关闭",
+            "批次大小": self.config.batch_size,
+            "工作进程": self.config.num_workers,
+            "预取因子": self.config.prefetch_factor,
+        }
+        if self.start_epoch > 0 and self.start_epoch < self.config.num_epochs:
+            train_info["状态"] = logstr.mesg(
+                f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
+            )
+        elif self.start_epoch >= self.config.num_epochs:
+            train_info["状态"] = logstr.okay(f"训练已完成")
+        else:
+            train_info["状态"] = logstr.mesg(f"从头开始训练")
+        logger.mesg(dict_to_str(train_info), indent=2)
+        print()
+
+    def _log_training_summary(self):
+        """记录训练总结信息"""
+        # 找到验证集最佳epoch
+        best_val_f1_idx = self.history["val_f1"].index(max(self.history["val_f1"]))
+        best_epoch = best_val_f1_idx + 1
+        best_val_f1 = self.history["val_f1"][best_val_f1_idx]
+        best_val_loss = self.history["val_loss"][best_val_f1_idx]
+        best_val_exact = self.history["val_exact_match"][best_val_f1_idx]
+
+        logger.okay("> 训练完成！")
+        sep_str = f"\n{'=' * 65}\n"
+        logger.okay(
+            f"{sep_str}"
+            f"最佳验证结果 (Epoch {logstr.mesg(best_epoch)}): "
+            f"Loss={logstr.file(f'{best_val_loss:.4f}')}, "
+            f"F1={logstr.mesg(f'{best_val_f1:.4f}')}, "
+            f"Exact Match={logstr.file(f'{best_val_exact:.4f}')}"
+            f"{sep_str}",
+        )
+
+    def _save_training_history(self, save_dir: Path):
+        """保存训练历史到文件"""
+        model_name = self.config.get_model_name()
+        history_path = save_dir / f"{model_name}.history.json"
+        with open(history_path, "w") as f:
+            json.dump(self.history, f, indent=2)
+        logger.okay(f"保存训练历史:")
+        logger.file(f"{history_path}")
+
     def load_checkpoint(self, checkpoint_path: str) -> bool:
         """从checkpoint恢复训练状态"""
         try:
@@ -1139,7 +1193,7 @@ class Trainer:
         metrics = Metrics()
         num_batches = len(train_loader)
 
-        train_desc = logstr.note("* Training")
+        train_desc = logstr.note("* Training  ")
         bar = TCLogbar(total=num_batches, desc=train_desc)
         
         for batch_idx, batch in enumerate(train_loader):
@@ -1170,15 +1224,8 @@ class Trainer:
             # 减少.item()调用频率，累积loss
             total_loss += loss.detach()
             metrics.update(logits.detach(), targets)
-
-            # 只在需要时调用.item()
-            if batch_idx % 10 == 0:
-                bar.update(10 if batch_idx > 0 else 1, desc=f"{train_desc} [loss={loss.item():.4f}]")
+            bar.update(1)
         
-        # 处理剩余的更新
-        remaining = num_batches % 10
-        if remaining > 0:
-            bar.update(remaining)
         bar.update(flush=True, linebreak=True)
 
         return (total_loss / num_batches).item(), metrics.compute()
@@ -1222,9 +1269,8 @@ class Trainer:
         """运行训练循环"""
         for epoch in range(self.start_epoch, self.config.num_epochs):
             self._current_epoch = epoch  # 记录当前epoch，用于中断时显示
-            epoch_str = f"Epoch {epoch + 1}/{self.config.num_epochs}"
-            logger.note(f"{'='*50}")
-            logger.note(epoch_str)
+            epoch_str = f"Epoch {logstr.mesg(epoch + 1)}/{self.config.num_epochs}"
+            logger.note(f"{'='*20} [{epoch_str}] {'='*20}")
 
             train_loss, train_metrics = self.train_epoch(train_loader)
             val_loss, val_metrics = self.validate(val_loader)
@@ -1235,17 +1281,12 @@ class Trainer:
             else:
                 self.scheduler.step()
 
-            # 记录历史
-            self.history["train_loss"].append(train_loss)
-            self.history["val_loss"].append(val_loss)
-            self.history["train_f1"].append(train_metrics["avg_f1"])
-            self.history["val_f1"].append(val_metrics["avg_f1"])
-            self.history["train_exact_match"].append(
-                train_metrics["exact_match_accuracy"]
+            # 打印结果（使用旧的 best_metrics 进行比较）
+            self._log_epoch_metrics(
+                epoch, train_loss, train_metrics, val_loss, val_metrics
             )
-            self.history["val_exact_match"].append(val_metrics["exact_match_accuracy"])
 
-            # 更新最佳指标
+            # 更新最佳指标（在打印之后更新）
             self.best_metrics["train_loss"] = min(
                 train_loss, self.best_metrics["train_loss"]
             )
@@ -1265,10 +1306,15 @@ class Trainer:
                 self.best_metrics["val_exact_match"],
             )
 
-            # 打印结果（使用辅助方法）
-            self._log_epoch_metrics(
-                epoch, train_loss, train_metrics, val_loss, val_metrics
+            # 记录历史
+            self.history["train_loss"].append(train_loss)
+            self.history["val_loss"].append(val_loss)
+            self.history["train_f1"].append(train_metrics["avg_f1"])
+            self.history["val_f1"].append(val_metrics["avg_f1"])
+            self.history["train_exact_match"].append(
+                train_metrics["exact_match_accuracy"]
             )
+            self.history["val_exact_match"].append(val_metrics["exact_match_accuracy"])
             self._log_per_key_metrics(train_metrics, val_metrics)
 
             # 保存最新模型（每个epoch都保存）
@@ -1289,50 +1335,23 @@ class Trainer:
         save_dir = Path(self.config.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # 如果指定了恢复路径，加载checkpoint
+        # 加载checkpoint（如果指定）
         if resume_from:
             if not self.load_checkpoint(resume_from):
                 logger.warn("无法加载 checkpoint，从头开始训练")
                 self.start_epoch = 0
 
-        logger.note("> 训练配置:")
-        params_count = sum(p.numel() for p in self.model.parameters())
-        params_count_str = f"{params_count/1e6:.1f}M"
-        train_info = {
-            "设备": str(self.device),
-            "参数量": params_count_str,
-            "混合精度": "开启" if self.use_amp else "关闭",
-            "模型编译": "开启" if self.model_compiled else "关闭",
-            "Batch Size": self.config.batch_size,
-            "Num Workers": self.config.num_workers,
-            "Prefetch Factor": self.config.prefetch_factor,
-        }
-        if self.start_epoch > 0 and self.start_epoch < self.config.num_epochs:
-            train_info["状态"] = logstr.mesg(
-                f"继续训练 (从 Epoch {self.start_epoch + 1} 开始)"
-            )
-        elif self.start_epoch >= self.config.num_epochs:
-            train_info["状态"] = logstr.okay(f"训练已完成")
-        else:
-            train_info["状态"] = logstr.mesg(f"从头开始训练")
-        logger.mesg(dict_to_str(train_info), indent=2)
-        print()
+        # 记录训练配置
+        self._log_training_config()
 
         # 运行训练循环
         self._run_training_loop(train_loader, val_loader, save_dir)
 
-        logger.okay(
-            f"训练完成！最终验证 F1: {logstr.mesg(f'{self.latest_val_f1:.4f}')} "
-            f"(Epoch {self.latest_epoch})"
-        )
+        # 记录训练总结
+        self._log_training_summary()
 
         # 保存训练历史
-        model_name = self.config.get_model_name()
-        history_path = save_dir / f"{model_name}_history.json"
-        with open(history_path, "w") as f:
-            json.dump(self.history, f, indent=2)
-        logger.okay(f"保存训练历史:")
-        logger.file(f"{history_path}")
+        self._save_training_history(save_dir)
 
         return self.history
 
