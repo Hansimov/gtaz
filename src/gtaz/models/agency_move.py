@@ -487,7 +487,7 @@ class DataManager:
 
         # 打印统计信息
         logger.note(f"> 数据集统计: 总样本数 {logstr.mesg(total)}")
-        
+
         logger.note("单键分布:")
         key_dist = {}
         for key, count in key_counts.items():
@@ -860,7 +860,7 @@ class Trainer:
         """格式化指标变化（百分比）"""
         if previous == 0:
             return ""
-        
+
         percent_diff = ((current - previous) / abs(previous)) * 100
         abs_percent_diff = abs(percent_diff)
         if abs_percent_diff < 0.05:
@@ -881,8 +881,14 @@ class Trainer:
         }
         logger.mesg(dict_to_str(info_dict), indent=2)
 
-    def _log_epoch_metrics(self, epoch: int, train_loss: float, train_metrics: dict, 
-                          val_loss: float, val_metrics: dict):
+    def _log_epoch_metrics(
+        self,
+        epoch: int,
+        train_loss: float,
+        train_metrics: dict,
+        val_loss: float,
+        val_metrics: dict,
+    ):
         """记录epoch训练和验证指标"""
         current_lr = self.optimizer.param_groups[0]["lr"]
         logger.mesg(f"学习率: {logstr.file(f'{current_lr:.6f}')}")
@@ -899,8 +905,8 @@ class Trainer:
                 train_metrics["avg_f1"], self.history["train_f1"][-2]
             )
             train_exact_change = self._format_metric_change(
-                train_metrics["exact_match_accuracy"], 
-                self.history["train_exact_match"][-2]
+                train_metrics["exact_match_accuracy"],
+                self.history["train_exact_match"][-2],
             )
 
         # 计算验证指标的变化
@@ -915,8 +921,7 @@ class Trainer:
                 val_metrics["avg_f1"], self.history["val_f1"][-2]
             )
             val_exact_change = self._format_metric_change(
-                val_metrics["exact_match_accuracy"], 
-                self.history["val_exact_match"][-2]
+                val_metrics["exact_match_accuracy"], self.history["val_exact_match"][-2]
             )
 
         # 打印训练指标
@@ -952,23 +957,29 @@ class Trainer:
     def load_checkpoint(self, checkpoint_path: str) -> bool:
         """从checkpoint恢复训练状态"""
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            checkpoint = torch.load(
+                checkpoint_path, map_location=self.device, weights_only=False
+            )
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            
+
             # 恢复调度器状态（如果存在）
             if "scheduler_state_dict" in checkpoint and self.scheduler is not None:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            
+
             # 恢复训练历史
             if "history" in checkpoint:
                 self.history = checkpoint["history"]
-            
+
             # 恢复最新指标
-            self.latest_val_f1 = checkpoint.get("latest_val_f1", checkpoint.get("val_f1", 0.0))
-            self.latest_epoch = checkpoint.get("latest_epoch", checkpoint.get("epoch", 0))
+            self.latest_val_f1 = checkpoint.get(
+                "latest_val_f1", checkpoint.get("val_f1", 0.0)
+            )
+            self.latest_epoch = checkpoint.get(
+                "latest_epoch", checkpoint.get("epoch", 0)
+            )
             self.start_epoch = checkpoint.get("epoch", 0)
-            
+
             self._log_checkpoint_info(checkpoint_path)
             return True
         except Exception as e:
@@ -1032,7 +1043,9 @@ class Trainer:
 
         return total_loss / len(val_loader), metrics.compute()
 
-    def _run_training_loop(self, train_loader: DataLoader, val_loader: DataLoader, save_dir: Path):
+    def _run_training_loop(
+        self, train_loader: DataLoader, val_loader: DataLoader, save_dir: Path
+    ):
         """运行训练循环"""
         for epoch in range(self.start_epoch, self.config.num_epochs):
             self._current_epoch = epoch  # 记录当前epoch，用于中断时显示
@@ -1054,11 +1067,15 @@ class Trainer:
             self.history["val_loss"].append(val_loss)
             self.history["train_f1"].append(train_metrics["avg_f1"])
             self.history["val_f1"].append(val_metrics["avg_f1"])
-            self.history["train_exact_match"].append(train_metrics["exact_match_accuracy"])
+            self.history["train_exact_match"].append(
+                train_metrics["exact_match_accuracy"]
+            )
             self.history["val_exact_match"].append(val_metrics["exact_match_accuracy"])
 
             # 打印结果（使用辅助方法）
-            self._log_epoch_metrics(epoch, train_loss, train_metrics, val_loss, val_metrics)
+            self._log_epoch_metrics(
+                epoch, train_loss, train_metrics, val_loss, val_metrics
+            )
             self._log_per_key_metrics(train_metrics, val_metrics)
 
             # 保存最新模型（每个epoch都保存）
@@ -1066,12 +1083,15 @@ class Trainer:
             self.latest_epoch = epoch + 1
             model_name = self.config.get_model_name()
             save_path = save_dir / f"{model_name}.pth"
-            self._save_checkpoint(
-                save_path, epoch + 1, val_metrics["avg_f1"], val_loss
-            )
+            self._save_checkpoint(save_path, epoch + 1, val_metrics["avg_f1"], val_loss)
             self._log_model_save(save_path)
 
-    def train(self, train_loader: DataLoader, val_loader: DataLoader, resume_from: Optional[str] = None) -> dict:
+    def train(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        resume_from: Optional[str] = None,
+    ) -> dict:
         """完整训练流程"""
         save_dir = Path(self.config.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -1129,9 +1149,9 @@ class Trainer:
         # 保存调度器状态
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
-        
+
         torch.save(checkpoint, path)
-        
+
         # 保存同名 JSON 文件记录 checkpoint 信息
         json_path = path.with_suffix(".json")
         checkpoint_info = {
@@ -1262,11 +1282,11 @@ class AgencyMovePipeline:
         save_path = Path(config.save_dir)
         if not save_path.exists():
             return None
-        
+
         # 生成当前配置的模型名称
         model_name = config.get_model_name()
         checkpoint_path = save_path / f"{model_name}.pth"
-        
+
         if checkpoint_path.exists():
             return str(checkpoint_path)
         return None
@@ -1283,7 +1303,7 @@ class AgencyMovePipeline:
                 logger.note(f"没有 checkpoint，将从头开始训练")
         else:
             logger.note("覆盖模式：忽略已有 checkpoint，从头开始训练")
-        
+
         # 数据准备
         data_manager = DataManager(self.config)
         data_manager.load_all_data()
@@ -1299,7 +1319,7 @@ class AgencyMovePipeline:
         # 测试集评估
         logger.note("在测试集上评估...")
         test_loss, test_metrics = trainer.validate(test_loader)
-        
+
         logger.okay("> 测试集结果:")
         test_results = {
             "Loss": f"{test_loss:.4f}",
@@ -1307,7 +1327,7 @@ class AgencyMovePipeline:
             "Exact Match Accuracy": f"{test_metrics['exact_match_accuracy']:.4f}",
         }
         logger.mesg(dict_to_str(test_results), indent=2)
-        
+
         logger.mesg("各键 F1 分数:")
         key_f1_results = {}
         for key_name in INDEX_TO_KEY.values():
@@ -1350,7 +1370,7 @@ class AgencyMovePipeline:
             "Exact Match Accuracy": f"{test_metrics['exact_match_accuracy']:.4f}",
         }
         logger.mesg(dict_to_str(test_results), indent=2)
-        
+
         logger.mesg("各键 F1 分数:")
         key_f1_results = {}
         for key_name in INDEX_TO_KEY.values():

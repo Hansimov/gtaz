@@ -104,7 +104,9 @@ class GamepadSimulator:
             logger.okay("初始化虚拟手柄完成。")
 
         except Exception as e:
-            logger.err(f"初始化虚拟手柄失败: {e}。请确保已安装 ViGEmBus 驱动，并且没有其他程序正在使用 ViGEmBus 模拟手柄。")
+            logger.err(
+                f"初始化虚拟手柄失败: {e}。请确保已安装 ViGEmBus 驱动，并且没有其他程序正在使用 ViGEmBus 模拟手柄。"
+            )
             logger.note("请参考如下文件安装驱动：")
             logger.file(
                 "https://github.com/shibeta/JNTMbot_python/blob/main/install_vigembus.bat"

@@ -417,7 +417,7 @@ class ScreenCapturer:
         now = get_now()
         ext = "jpg" if self.image_format == IMAGE_FORMAT_JPEG else "png"
         return (
-            now.strftime("%Y-%m-%d_%H-%M-%S-") 
+            now.strftime("%Y-%m-%d_%H-%M-%S-")
             + f"{now.microsecond // 1000:03d}_{frame_index:04d}.{ext}"
         )
 
@@ -686,7 +686,8 @@ class ScreenCapturer:
         if self.minimap_only and self._minimap_crop_region is None:
             self._minimap_crop_region = calc_minimap_crop_region(width, height)
             logger.note(
-                f"小地图裁剪区域已计算: {self._minimap_crop_region} " f"(窗口: {width}x{height})"
+                f"小地图裁剪区域已计算: {self._minimap_crop_region} "
+                f"(窗口: {width}x{height})"
             )
 
     def capture_frame(self, verbose: bool = True) -> Optional[str]:
@@ -1355,7 +1356,9 @@ class ScreenCapturerArgParser:
 
     def _add_arguments(self):
         """添加命令行参数。"""
-        self.parser.add_argument("-s", "--single", action="store_true", help="只截取当前单帧")
+        self.parser.add_argument(
+            "-s", "--single", action="store_true", help="只截取当前单帧"
+        )
         self.parser.add_argument(
             "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
         )

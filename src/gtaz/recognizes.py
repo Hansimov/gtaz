@@ -424,7 +424,9 @@ def test_speed():
         recognizer.recognize_file(f)
     elapsed = time.time() - start
 
-    logger.okay(f"平均: {elapsed/len(test_files)*1000:.1f} ms/张 ({len(test_files)} 张)")
+    logger.okay(
+        f"平均: {elapsed/len(test_files)*1000:.1f} ms/张 ({len(test_files)} 张)"
+    )
 
 
 if __name__ == "__main__":

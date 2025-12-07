@@ -536,7 +536,7 @@ def test_keep_moving():
     gamepad = GamepadSimulator()
     character = CharacterController(gamepad)
     logger.note("测试：人物保持移动 ...")
-    for i in range(1000):
+    for i in range(2000):
         character.walk_forward(duration_ms=500)
         time.sleep(10)
         character.look_left(duration_ms=500)
