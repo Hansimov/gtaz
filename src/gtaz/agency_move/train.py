@@ -17,6 +17,7 @@ GTAV 行为克隆 (Behavior Cloning) 模型训练
 - AgencyMovePipeline: 顶层流程编排
 """
 
+import argparse
 import json
 import random
 import platform
@@ -1626,7 +1627,7 @@ class AgencyMovePipeline:
 # ===== 参数解析器 ===== #
 
 
-class ArgumentParser:
+class TrainerArgParser:
     """命令行参数解析器"""
 
     def __init__(self):
@@ -1634,8 +1635,6 @@ class ArgumentParser:
 
     def _create_parser(self):
         """创建参数解析器"""
-        import argparse
-
         parser = argparse.ArgumentParser(description="GTAV 行为克隆模型训练")
         parser.add_argument(
             "-m",
@@ -1725,7 +1724,7 @@ class ArgumentParser:
 
 def main():
     """主函数"""
-    arg_parser = ArgumentParser()
+    arg_parser = TrainerArgParser()
     args = arg_parser.parse_args()
     config = arg_parser.create_config(args)
 

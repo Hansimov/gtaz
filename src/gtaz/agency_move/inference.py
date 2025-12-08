@@ -3,18 +3,19 @@ GTAV 行为克隆模型推理模块
 
 支持 PyTorch (.pth)、ONNX Runtime 和 TensorRT (.engine) 三种推理方式，并进行性能对比。
 
-## 主要功能:
+## 主要功能
 
 1. 模型导出和转换: PyTorch .pth → ONNX → TensorRT .engine
 2. 模型推理: 支持 PyTorch、ONNX Runtime 和 TensorRT 三种推理后端
 3. 性能对比: 对比三种推理后端的速度
 
 ## 性能对比结果 (RTX 2060 SUPER, batch_size=1):
+
 - PyTorch:      ~5.08 ms (196.8 FPS) - 1.00x
 - ONNX Runtime: ~4.77 ms (209.8 FPS) - 1.07x
 - TensorRT:     ~2.20 ms (455.3 FPS) - 2.31x
 
-## 依赖安装:
+## 依赖安装
 
 ```sh
 # 安装PyTorch：Windows下安装CUDA版本需要指定--index-url
@@ -47,12 +48,13 @@ tensorrt_cu12_libs       10.14.1.48.post1
 torch_tensorrt           2.9.0
 ```
 
-## 注意事项：
-1. cuda-python 包在新版本中 API 有变化，本模块使用 PyTorch 的 CUDA 接口
-进行 GPU 内存管理，避免了 cuda-python 的兼容性问题。
-2. TensorRT engine 与 GPU 架构绑定，更换 GPU 后需要重新构建。
+## 注意事项
+
+1. 安装依赖时出现的大部分问题，都是版本冲突造成的，卸载冲突版本及其依赖，一般都能解决
+2. TensorRT engine 与 GPU 架构绑定，更换 GPU 后需要重新构建
 """
 
+import argparse
 import json
 import time
 from dataclasses import dataclass
@@ -1170,96 +1172,335 @@ def decode_prediction(preds: np.ndarray) -> list[str]:
     return keys if keys else ["None"]
 
 
+# ===== 参数解析器 ===== #
+
+
+class InferenceArgParser:
+    """命令行参数解析器"""
+
+    def __init__(self):
+        self.parser = self._create_parser()
+
+    def _create_parser(self):
+        """创建参数解析器"""
+        parser = argparse.ArgumentParser(
+            description="GTAV 行为克隆模型推理工具",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+
+        # ===== 基础参数 ===== #
+        parser.add_argument(
+            "-m",
+            "--mode",
+            type=lambda s: s.split(","),
+            default="benchmark",
+            help="运行模式（可指定多个，用逗号分隔）: export (模型导出), infer (推理演示), benchmark (性能测试), validate (输出验证), all (全部，优先级最高）。示例: -m export,infer 或 -m benchmark",
+        )
+
+        parser.add_argument(
+            "--model",
+            type=str,
+            default=None,
+            help="PyTorch 模型路径 (.pth)。如果未指定，使用最新的 best 模型",
+        )
+
+        # ===== 模型参数 ===== #
+        model_group = parser.add_argument_group("模型参数")
+
+        model_group.add_argument(
+            "--history-frames",
+            type=int,
+            default=4,
+            help="历史帧数量 (默认: 4)",
+        )
+
+        model_group.add_argument(
+            "--hidden-dim",
+            type=int,
+            default=256,
+            help="隐藏层维度 (默认: 256)",
+        )
+
+        model_group.add_argument(
+            "--no-key-history",
+            action="store_true",
+            help="不使用按键历史 (默认: False，即使用按键历史)",
+        )
+
+        model_group.add_argument(
+            "--dropout",
+            type=float,
+            default=0.3,
+            help="Dropout 概率 (默认: 0.3)",
+        )
+
+        model_group.add_argument(
+            "--image-size",
+            type=int,
+            nargs=2,
+            default=[160, 220],
+            metavar=("H", "W"),
+            help="图像尺寸 (高度 宽度) (默认: 160 220)",
+        )
+
+        # ===== 推理参数 ===== #
+        infer_group = parser.add_argument_group("推理参数")
+
+        infer_group.add_argument(
+            "--threshold",
+            type=float,
+            default=0.5,
+            help="预测阈值 (默认: 0.5)",
+        )
+
+        infer_group.add_argument(
+            "--device",
+            type=str,
+            default="cuda" if torch.cuda.is_available() else "cpu",
+            choices=["cuda", "cpu"],
+            help="设备 (默认: cuda 如果可用，否则 cpu)",
+        )
+
+        infer_group.add_argument(
+            "--data-dir",
+            type=str,
+            default=str(DATA_DIR),
+            help=f"测试数据目录 (默认: {DATA_DIR})",
+        )
+
+        infer_group.add_argument(
+            "--backend",
+            type=lambda s: s.split(","),
+            default="torch",
+            help="推理引擎（可指定多个，用逗号分隔）: torch (PyTorch), onnx (ONNX Runtime), tensorrt (TensorRT)。示例: --backend torch,onnx 或 --backend torch (默认: torch)",
+        )
+
+        # ===== TensorRT 参数 ===== #
+        trt_group = parser.add_argument_group("TensorRT 参数")
+
+        trt_group.add_argument(
+            "--no-fp16",
+            action="store_true",
+            help="不使用 FP16 精度 (默认: False，即使用 FP16)",
+        )
+
+        trt_group.add_argument(
+            "--max-workspace-size",
+            type=int,
+            default=4,
+            help="最大工作空间大小 (GB) (默认: 4)",
+        )
+
+        trt_group.add_argument(
+            "--min-batch-size",
+            type=int,
+            default=1,
+            help="最小批次大小 (默认: 1)",
+        )
+
+        trt_group.add_argument(
+            "--opt-batch-size",
+            type=int,
+            default=1,
+            help="优化批次大小 (默认: 1)",
+        )
+
+        trt_group.add_argument(
+            "--max-batch-size",
+            type=int,
+            default=8,
+            help="最大批次大小 (默认: 8)",
+        )
+
+        # ===== 性能测试参数 ===== #
+        bench_group = parser.add_argument_group("性能测试参数")
+
+        bench_group.add_argument(
+            "--iterations",
+            type=int,
+            default=100,
+            help="性能测试迭代次数 (默认: 100)",
+        )
+
+        bench_group.add_argument(
+            "--warmup",
+            type=int,
+            default=10,
+            help="性能测试预热次数 (默认: 10)",
+        )
+
+        bench_group.add_argument(
+            "--batch-size",
+            type=int,
+            default=1,
+            help="性能测试批次大小 (默认: 1)",
+        )
+
+        # ===== 导出参数 ===== #
+        export_group = parser.add_argument_group("导出参数")
+
+        export_group.add_argument(
+            "--skip-if-exists",
+            action="store_true",
+            help="如果 ONNX/Engine 文件已存在则跳过导出 (默认: False)",
+        )
+
+        export_group.add_argument(
+            "--output-dir",
+            type=str,
+            default=None,
+            help="输出目录 (默认: 与模型相同目录)",
+        )
+
+        return parser
+
+    def parse_args(self):
+        """解析命令行参数"""
+        return self.parser.parse_args()
+
+    def create_config(self, args) -> InferenceConfig:
+        """根据参数创建配置"""
+        config = InferenceConfig(
+            history_frames=args.history_frames,
+            num_keys=NUM_KEYS,
+            hidden_dim=args.hidden_dim,
+            use_key_history=not args.no_key_history,
+            dropout=args.dropout,
+            image_size=tuple(args.image_size),
+            threshold=args.threshold,
+            device=args.device,
+            fp16=not args.no_fp16,
+            max_workspace_size=args.max_workspace_size << 30,  # GB to bytes
+            min_batch_size=args.min_batch_size,
+            opt_batch_size=args.opt_batch_size,
+            max_batch_size=args.max_batch_size,
+        )
+        return config
+
+
 # ===== 主函数 ===== #
 
 
-def main():
-    """主函数：演示完整的模型转换和推理流程"""
+def run_export(args, config: InferenceConfig):
+    """运行模型导出"""
+    logger.note("=" * 60)
+    logger.note("模式: 模型导出")
+    logger.note("=" * 60)
 
-    # 配置
-    config = InferenceConfig()
-
-    # 模型路径
-    pth_path = CKPT_DIR / "agency_move_temporal_f4_b64_e30_lr_auto_best.pth"
-
-    if not pth_path.exists():
+    pth_path = args.model
+    if not Path(pth_path).exists():
         logger.err(f"模型文件不存在: {pth_path}")
         return
 
-    logger.note(f"\n{'='*60}")
-    logger.note("GTAV 行为克隆模型推理演示")
-    logger.note(f"{'='*60}\n")
-
-    # ===== 第一部分：模型转换 ===== #
-    logger.note("=" * 40)
-    logger.note("第一部分：模型导出和转换")
-    logger.note("=" * 40)
-
     exporter = ModelExporter(config)
-    onnx_path, engine_path = exporter.convert_model(str(pth_path), skip_if_exists=True)
+    output_dir = args.output_dir if args.output_dir else None
+    onnx_path, engine_path = exporter.convert_model(
+        pth_path, output_dir=output_dir, skip_if_exists=args.skip_if_exists
+    )
+    logger.okay(f"导出完成: ONNX={onnx_path}, Engine={engine_path}")
 
-    # ===== 第二部分：推理演示 ===== #
-    logger.note("\n" + "=" * 40)
-    logger.note("第二部分：推理演示")
-    logger.note("=" * 40)
+
+def run_infer(args, config: InferenceConfig):
+    """运行推理演示"""
+    logger.note("=" * 60)
+    logger.note("模式: 推理演示")
+    logger.note("=" * 60)
+
+    pth_path = args.model
+    onnx_path = str(Path(pth_path).with_suffix(".onnx"))
+    engine_path = str(Path(pth_path).with_suffix(".engine"))
+
+    if not Path(pth_path).exists():
+        logger.err(f"模型文件不存在: {pth_path}")
+        return
+
+    # 获取要使用的推理引擎
+    backends = args.backend if isinstance(args.backend, list) else [args.backend]
+
+    # 验证所有 backend 是否有效
+    valid_backends = {"torch", "onnx", "tensorrt"}
+    invalid_backends = [b for b in backends if b not in valid_backends]
+    if invalid_backends:
+        logger.err(f"无效的推理引擎: {', '.join(invalid_backends)}")
+        logger.mesg(f"有效的推理引擎: {', '.join(valid_backends)}")
+        return
 
     # 加载测试数据
     try:
         image_paths, key_history = load_test_sequence(
-            str(DATA_DIR), config.history_frames
+            args.data_dir, config.history_frames
         )
         logger.okay(f"加载测试序列: {len(image_paths)} 帧")
+        logger.mesg(f"推理引擎: {', '.join(backends)}\n")
 
         # PyTorch 推理
-        pt_inferencer = PyTorchInferencer(str(pth_path), config)
-        pt_result = pt_inferencer.infer_from_files(image_paths, key_history)
-
-        logger.note("PyTorch 推理结果:")
-        logger.mesg(f"  概率: {pt_result['probs']}")
-        logger.mesg(f"  预测: {decode_prediction(pt_result['preds'])}")
+        if "torch" in backends:
+            logger.note("PyTorch 推理:")
+            pt_inferencer = PyTorchInferencer(pth_path, config)
+            pt_result = pt_inferencer.infer_from_files(image_paths, key_history)
+            logger.mesg(f"  概率: {pt_result['probs']}")
+            logger.mesg(f"  预测: {decode_prediction(pt_result['preds'])}")
 
         # ONNX Runtime 推理
-        if ONNX_AVAILABLE and onnx_path and Path(onnx_path).exists():
-            ort_inferencer = ONNXRuntimeInferencer(onnx_path, config)
-            ort_result = ort_inferencer.infer_from_files(image_paths, key_history)
-
-            logger.note("ONNX Runtime 推理结果:")
-            logger.mesg(f"  概率: {ort_result['probs']}")
-            logger.mesg(f"  预测: {decode_prediction(ort_result['preds'])}")
+        if "onnx" in backends:
+            if ONNX_AVAILABLE and Path(onnx_path).exists():
+                logger.note("\nONNX Runtime 推理:")
+                ort_inferencer = ONNXRuntimeInferencer(onnx_path, config)
+                ort_result = ort_inferencer.infer_from_files(image_paths, key_history)
+                logger.mesg(f"  概率: {ort_result['probs']}")
+                logger.mesg(f"  预测: {decode_prediction(ort_result['preds'])}")
+            else:
+                logger.warn("ONNX Runtime 不可用或 ONNX 模型不存在，跳过 ONNX 推理")
 
         # TensorRT 推理
-        if TENSORRT_AVAILABLE and engine_path and Path(engine_path).exists():
-            trt_inferencer = TensorRTInferencer(engine_path, config)
-            trt_result = trt_inferencer.infer_from_files(image_paths, key_history)
+        if "tensorrt" in backends:
+            if TENSORRT_AVAILABLE and Path(engine_path).exists():
+                logger.note("\nTensorRT 推理:")
+                trt_inferencer = TensorRTInferencer(engine_path, config)
+                trt_result = trt_inferencer.infer_from_files(image_paths, key_history)
+                logger.mesg(f"  概率: {trt_result['probs']}")
+                logger.mesg(f"  预测: {decode_prediction(trt_result['preds'])}")
+            else:
+                logger.warn("TensorRT 不可用或 Engine 不存在，跳过 TensorRT 推理")
 
-            logger.note("TensorRT 推理结果:")
-            logger.mesg(f"  概率: {trt_result['probs']}")
-            logger.mesg(f"  预测: {decode_prediction(trt_result['preds'])}")
     except Exception as e:
-        logger.warn(f"推理演示跳过: {e}")
+        logger.warn(f"推理演示失败: {e}")
+        import traceback
 
-    # ===== 第三部分：性能对比 ===== #
-    logger.note("\n" + "=" * 40)
-    logger.note("第三部分：性能对比")
-    logger.note("=" * 40)
+        traceback.print_exc()
+
+
+def run_benchmark(args, config: InferenceConfig):
+    """运行性能测试"""
+    logger.note("=" * 60)
+    logger.note("模式: 性能测试")
+    logger.note("=" * 60)
+
+    pth_path = args.model
+    onnx_path = str(Path(pth_path).with_suffix(".onnx"))
+    engine_path = str(Path(pth_path).with_suffix(".engine"))
+
+    if not Path(pth_path).exists():
+        logger.err(f"模型文件不存在: {pth_path}")
+        return
 
     benchmark = PerformanceBenchmark(
-        str(pth_path),
-        onnx_path=onnx_path,
-        engine_path=engine_path if TENSORRT_AVAILABLE else None,
+        pth_path,
+        onnx_path=onnx_path if Path(onnx_path).exists() else None,
+        engine_path=engine_path if Path(engine_path).exists() else None,
         config=config,
     )
 
-    # 验证输出一致性
-    benchmark.validate_outputs()
-
     # 性能对比
-    results = benchmark.compare(num_iterations=100, warmup=10, batch_size=1)
+    results = benchmark.compare(
+        num_iterations=args.iterations,
+        warmup=args.warmup,
+        batch_size=args.batch_size,
+    )
 
     # 保存结果
     results_path = CKPT_DIR / "benchmark_results.json"
     with open(results_path, "w") as f:
-        # 转换为可序列化格式
         serializable_results = {
             "pytorch": results.get("pytorch"),
             "onnxruntime": results.get("onnxruntime"),
@@ -1272,6 +1513,183 @@ def main():
     logger.okay(f"性能测试结果保存到: {results_path}")
 
 
+def run_validate(args, config: InferenceConfig):
+    """运行输出验证"""
+    logger.note("=" * 60)
+    logger.note("模式: 输出验证")
+    logger.note("=" * 60)
+
+    pth_path = args.model
+    onnx_path = str(Path(pth_path).with_suffix(".onnx"))
+    engine_path = str(Path(pth_path).with_suffix(".engine"))
+
+    if not Path(pth_path).exists():
+        logger.err(f"模型文件不存在: {pth_path}")
+        return
+
+    benchmark = PerformanceBenchmark(
+        pth_path,
+        onnx_path=onnx_path if Path(onnx_path).exists() else None,
+        engine_path=engine_path if Path(engine_path).exists() else None,
+        config=config,
+    )
+
+    # 验证输出一致性
+    all_passed = benchmark.validate_outputs()
+
+    if all_passed:
+        logger.okay("所有模型输出验证通过！")
+    else:
+        logger.warn("部分模型输出验证失败，请检查日志")
+
+
+def run_all(args, config: InferenceConfig):
+    """运行所有功能"""
+    logger.note("=" * 60)
+    logger.note("模式: 完整演示 (导出 + 推理 + 验证 + 性能测试)")
+    logger.note("=" * 60)
+    print()
+
+    # 1. 导出
+    logger.note("[1/4] 模型导出")
+    run_export(args, config)
+    print()
+
+    # 2. 推理
+    logger.note("[2/4] 推理演示")
+    run_infer(args, config)
+    print()
+
+    # 3. 验证
+    logger.note("[3/4] 输出验证")
+    run_validate(args, config)
+    print()
+
+    # 4. 性能测试
+    logger.note("[4/4] 性能测试")
+    run_benchmark(args, config)
+
+
+def find_latest_best_model(ckpt_dir: Path) -> str:
+    """在检查点目录中查找最新的 best 模型
+
+    Args:
+        ckpt_dir: 检查点目录
+
+    Returns:
+        最新的 best 模型路径
+
+    Raises:
+        FileNotFoundError: 如果没有找到 best 模型
+    """
+    # 查找所有 _best.pth 文件
+    best_models = list(ckpt_dir.glob("*_best.pth"))
+
+    if not best_models:
+        raise FileNotFoundError(f"未在 {ckpt_dir} 中找到 _best.pth 模型文件")
+
+    # 按修改时间排序，获取最新的
+    best_models.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    latest_model = best_models[0]
+
+    if len(best_models) > 1:
+        logger.note(f"找到 {len(best_models)} 个 best 模型，使用最新的:")
+
+    return str(latest_model)
+
+
+def main():
+    """主函数"""
+    # 解析参数
+    arg_parser = InferenceArgParser()
+    args = arg_parser.parse_args()
+    config = arg_parser.create_config(args)
+
+    # 确定模型路径
+    if args.model is None:
+        try:
+            args.model = find_latest_best_model(CKPT_DIR)
+            logger.note(f"使用最新的 best 模型: {args.model}")
+        except FileNotFoundError as e:
+            logger.err(str(e))
+            return
+
+    # mode 现在是列表，支持多个模式
+    modes = args.mode if isinstance(args.mode, list) else [args.mode]
+
+    # 验证所有模式是否有效
+    valid_modes = {"export", "infer", "benchmark", "validate", "all"}
+    invalid_modes = [m for m in modes if m not in valid_modes]
+    if invalid_modes:
+        logger.err(f"无效的模式: {', '.join(invalid_modes)}")
+        logger.mesg(f"有效的模式: {', '.join(valid_modes)}")
+        return
+
+    # 如果包含 "all"，优先执行 all 模式
+    if "all" in modes:
+        run_all(args, config)
+        return
+
+    # 定义模式到函数的映射
+    mode_handlers = {
+        "export": run_export,
+        "infer": run_infer,
+        "validate": run_validate,
+        "benchmark": run_benchmark,
+    }
+
+    # 定义执行顺序（固定顺序）
+    mode_order = ["export", "infer", "validate", "benchmark"]
+
+    # 过滤出用户指定的模式，并按固定顺序排序
+    modes_to_run = [mode for mode in mode_order if mode in modes]
+
+    # 按固定顺序执行所有指定的模式
+    for i, mode in enumerate(modes_to_run):
+        if mode in mode_handlers:
+            if len(modes_to_run) > 1:
+                logger.note(f"\n{'='*60}")
+                logger.note(f"执行模式 [{i+1}/{len(modes_to_run)}]: {mode}")
+                logger.note(f"{'='*60}\n")
+            mode_handlers[mode](args, config)
+            if i < len(modes_to_run) - 1:  # 不是最后一个模式
+                print()  # 添加空行分隔
+        else:
+            logger.err(f"未知模式: {mode}")
+
+
 if __name__ == "__main__":
     with Runtimer():
         main()
+
+    # 使用示例:
+    # Case: 模型导出 (PyTorch -> ONNX -> TensorRT)
+    # python -m gtaz.agency_move.inference -m export --model path/to/model.pth
+
+    # Case: 推理演示 (使用最新的 best 模型，默认使用 PyTorch 引擎)
+    # python -m gtaz.agency_move.inference -m infer
+
+    # Case: 推理演示 - 指定推理引擎
+    # python -m gtaz.agency_move.inference -m infer --backend onnx
+    # python -m gtaz.agency_move.inference -m infer --backend tensorrt
+    # python -m gtaz.agency_move.inference -m infer --backend torch,onnx,tensorrt
+
+    # Case: 性能测试 (默认模式)
+    # python -m gtaz.agency_move.inference -m benchmark
+
+    # Case: 输出验证
+    # python -m gtaz.agency_move.inference -m validate
+
+    # Case: 完整演示 (导出 + 推理 + 验证 + 性能测试，all 优先级最高)
+    # python -m gtaz.agency_move.inference -m all
+
+    # Case: 执行多个模式 (用逗号分隔，按固定顺序: export -> infer -> validate -> benchmark)
+    # python -m gtaz.agency_move.inference -m export,infer
+    # python -m gtaz.agency_move.inference -m infer,validate,benchmark
+    # python -m gtaz.agency_move.inference -m export,infer,validate,benchmark
+
+    # Case: 自定义参数的性能测试
+    # python -m gtaz.agency_move.inference -m benchmark --iterations 200 --batch-size 4
+
+    # Case: 指定模型和禁用 FP16
+    # python -m gtaz.agency_move.inference -m export --model path/to/model.pth --no-fp16
