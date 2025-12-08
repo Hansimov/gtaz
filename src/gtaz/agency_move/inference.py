@@ -685,6 +685,11 @@ class TensorRTInferencer:
         if key_history is not None and len(self.input_names) > 1:
             key_shape = (batch_size, self.config.history_frames - 1, NUM_KEYS)
             self.context.set_input_shape("key_history", key_shape)
+        else:
+            # 如果没有 key_history 但模型需要它，设置为零张量
+            if len(self.input_names) > 1:
+                key_shape = (batch_size, self.config.history_frames - 1, NUM_KEYS)
+                self.context.set_input_shape("key_history", key_shape)
 
         # 使用 PyTorch 管理 GPU 内存（更稳定）
         device = torch.device("cuda")
@@ -698,14 +703,21 @@ class TensorRTInferencer:
             key_tensor = (
                 torch.from_numpy(key_history.astype(np.float32)).contiguous().to(device)
             )
+        elif len(self.input_names) > 1:
+            # 创建零张量作为占位符
+            key_tensor = torch.zeros(
+                (batch_size, self.config.history_frames - 1, NUM_KEYS),
+                dtype=torch.float32,
+                device=device,
+            )
 
-        # 获取输出形状并分配内存
+        # 获取输出形状并分配内存（必须在所有输入 shape 设置后）
         output_shape = tuple(self.context.get_tensor_shape("output"))
         output_tensor = torch.empty(output_shape, dtype=torch.float32, device=device)
 
         # 设置 tensor 地址
         self.context.set_tensor_address("images", images_tensor.data_ptr())
-        if key_history is not None and len(self.input_names) > 1:
+        if len(self.input_names) > 1:
             self.context.set_tensor_address("key_history", key_tensor.data_ptr())
         self.context.set_tensor_address("output", output_tensor.data_ptr())
 
