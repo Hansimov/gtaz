@@ -5,17 +5,15 @@ Visual-based AI for real-time tasks in GTAV.
 
 ## Thanks to
 
-Some ideas and codes (especially `GamepadSimulator` ) are inspired by and inherited from:
+Some ideas and codes (like `GamepadSimulator` ) are inspired by and inherited from:
 
 - [shibeta/JNTMbot_python](https://github.com/shibeta/JNTMbot_python)
 
 Without the original author's great work, this project would not be possible.
 
-## Install package
+## Install and Setup
 
-```sh
-pip install gtaz --upgrade
-```
+TBD
 
 ## Demos
 
@@ -35,6 +33,6 @@ https://github.com/user-attachments/assets/b8f11ecf-4cc4-4458-8905-debdf7b7a654
 
 ![recognizes_v2_validation](./img/recognize_v2_validation.png)
 
-## How to use
+## Developer Notes
 
-TBD
+See [Developer Notes](./DEV.md) for details of data collection, model training, runtime exporting, and real-time inference.
