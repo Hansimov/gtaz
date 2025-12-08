@@ -49,7 +49,7 @@ NUM_KEYS = 4
 # ===== 配置类 ===== #
 
 # src/gtaz
-SRC_DIR =  Path(__file__).parent.parent
+SRC_DIR = Path(__file__).parent.parent
 DATA_DIR = SRC_DIR / "cache/agency_move"
 CKPT_DIR = SRC_DIR / "checkpoints/agency_move"
 
@@ -84,9 +84,9 @@ class Config:
     class_weights: tuple[float, float, float, float] = (1.0, 2.0, 2.0, 2.0)
 
     # 数据划分
-    train_ratio: float = 0.8
+    train_ratio: float = 0.9
     val_ratio: float = 0.1
-    test_ratio: float = 0.1
+    test_ratio: float = 0.1  # 不浪费训练和验证数据，随机选取一定比例测试
 
     # 其他
     # num_workers: int = 0 if platform.system() == "Windows" else 4
@@ -301,32 +301,32 @@ class AgencyMoveDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.sequences)
-    
+
     def warmup_cache(self):
         """预热缓存：预先加载所有图像到缓存中（仅对验证/测试集）"""
         if not self.use_cache or self.augment:
             return
-        
+
         # 收集所有唯一的图像路径
         unique_paths = set()
         for seq in self.sequences:
             for sample in seq:
                 unique_paths.add(sample.image_path)
-        
+
         if not unique_paths:
             return
-        
+
         logger.note(f"预热缓存: 加载 {len(unique_paths)} 张图像...")
         warmup_desc = logstr.note("* 预热缓存")
         bar = TCLogbar(total=len(unique_paths), desc=warmup_desc)
-        
+
         for img_path in unique_paths:
             if img_path not in self._tensor_cache:
                 img = Image.open(img_path).convert("RGB")
                 img_tensor = self.transform(img)
                 self._tensor_cache[img_path] = img_tensor
             bar.update(1)
-        
+
         bar.update(flush=True, linebreak=True)
         logger.okay(f"缓存预热完成: {len(self._tensor_cache)} 张图像")
 
@@ -335,15 +335,15 @@ class AgencyMoveDataset(Dataset):
         # 对于验证/测试集，缓存预处理后的tensor
         if self.use_cache and not self.augment and image_path in self._tensor_cache:
             return self._tensor_cache[image_path]
-        
+
         # 加载并转换图像
         img = Image.open(image_path).convert("RGB")
         img_tensor = self.transform(img)
-        
+
         # 对于验证/测试集缓存tensor（训练集有数据增强所以不缓存）
         if self.use_cache and not self.augment:
             self._tensor_cache[image_path] = img_tensor
-        
+
         return img_tensor
 
     def __getitem__(self, idx: int) -> dict:
@@ -358,7 +358,7 @@ class AgencyMoveDataset(Dataset):
         key_vectors = np.empty((seq_len, NUM_KEYS), dtype=np.float32)
         for i, s in enumerate(sequence):
             key_vectors[i] = s.key_vector
-        
+
         key_history = torch.from_numpy(key_vectors)
         target = key_history[-1]
 
@@ -449,11 +449,12 @@ class DataManager:
 
         total = len(sequences)
         train_size = int(total * self.config.train_ratio)
-        val_size = int(total * self.config.val_ratio)
 
         train_seqs = sequences[:train_size]
-        val_seqs = sequences[train_size : train_size + val_size]
-        test_seqs = sequences[train_size + val_size :]
+        val_seqs = sequences[train_size:]
+
+        test_size = int(total * self.config.test_ratio)
+        test_seqs = sequences[-test_size:]
 
         logger.note("> 数据集划分:")
         split_info = {
@@ -494,7 +495,7 @@ class DataManager:
             augment=False,
             use_cache=self.config.use_image_cache,
         )
-        
+
         # 预热验证和测试集缓存
         if self.config.use_image_cache:
             val_ds.warmup_cache()
@@ -513,8 +514,12 @@ class DataManager:
         common_kwargs = {
             "num_workers": self.config.num_workers,
             "pin_memory": True,
-            "prefetch_factor": self.config.prefetch_factor if self.config.num_workers > 0 else None,
-            "persistent_workers": self.config.persistent_workers if self.config.num_workers > 0 else False,
+            "prefetch_factor": (
+                self.config.prefetch_factor if self.config.num_workers > 0 else None
+            ),
+            "persistent_workers": (
+                self.config.persistent_workers if self.config.num_workers > 0 else False
+            ),
         }
 
         train_loader = DataLoader(
@@ -873,14 +878,18 @@ class Trainer:
 
         # 混合精度训练（仅GPU可用）
         self.use_amp = torch.cuda.is_available()
-        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
-        
+        self.scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
+
         # 编译模型以提升GPU利用率（PyTorch 2.0+，仅Linux）
         # Windows上torch.compile需要Triton但不可用，因此禁用
         self.model_compiled = False
-        if torch.cuda.is_available() and hasattr(torch, 'compile') and platform.system() != 'Windows':
+        if (
+            torch.cuda.is_available()
+            and hasattr(torch, "compile")
+            and platform.system() != "Windows"
+        ):
             try:
-                self.model = torch.compile(self.model, mode='default')
+                self.model = torch.compile(self.model, mode="default")
                 self.model_compiled = True
                 logger.note("模型编译成功")
             except Exception as e:
@@ -1089,14 +1098,18 @@ class Trainer:
         logger.okay(f"保存最新模型:")
         logger.file(f"{save_path}")
 
-    def _save_latest_checkpoint(self, save_dir: Path, epoch: int, val_f1: float, val_loss: float):
+    def _save_latest_checkpoint(
+        self, save_dir: Path, epoch: int, val_f1: float, val_loss: float
+    ):
         """保存最新模型检查点"""
         model_name = self.config.get_model_name()
         save_path = save_dir / f"{model_name}.pth"
         self._save_checkpoint(save_path, epoch, val_f1, val_loss, is_best=False)
         self._log_model_save(save_path)
 
-    def _save_best_checkpoint(self, save_dir: Path, epoch: int, val_f1: float, val_loss: float):
+    def _save_best_checkpoint(
+        self, save_dir: Path, epoch: int, val_f1: float, val_loss: float
+    ):
         """保存最佳模型检查点（仅当F1提升时）"""
         model_name = self.config.get_model_name()
         best_save_path = save_dir / f"{model_name}_best.pth"
@@ -1214,7 +1227,7 @@ class Trainer:
 
         train_desc = logstr.note("* Training  ")
         bar = TCLogbar(total=num_batches, desc=train_desc)
-        
+
         for batch_idx, batch in enumerate(train_loader):
             # 使用非阻塞数据传输
             images = batch["images"].to(self.device, non_blocking=True)
@@ -1227,10 +1240,10 @@ class Trainer:
 
             # 混合精度训练
             if self.use_amp:
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast("cuda"):
                     logits = self.model(images, key_history)
                     loss = self.criterion(logits, targets)
-                
+
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
@@ -1244,7 +1257,7 @@ class Trainer:
             total_loss += loss.detach()
             metrics.update(logits.detach(), targets)
             bar.update(1)
-        
+
         bar.update(flush=True, linebreak=True)
 
         return (total_loss / num_batches).item(), metrics.compute()
@@ -1268,7 +1281,7 @@ class Trainer:
 
                 # 混合精度推理
                 if self.use_amp:
-                    with torch.amp.autocast('cuda'):
+                    with torch.amp.autocast("cuda"):
                         logits = self.model(images, key_history)
                         loss = self.criterion(logits, targets)
                 else:
@@ -1339,15 +1352,19 @@ class Trainer:
             # 保存最新模型（每个epoch都保存）
             self.latest_val_f1 = val_metrics["avg_f1"]
             self.latest_epoch = epoch + 1
-            self._save_latest_checkpoint(save_dir, epoch + 1, val_metrics["avg_f1"], val_loss)
-            
+            self._save_latest_checkpoint(
+                save_dir, epoch + 1, val_metrics["avg_f1"], val_loss
+            )
+
             # 保存最佳模型（第1个epoch之后，仅当F1提升时保存）
             if epoch == 0:
                 # 第1个epoch，初始化best_val_f1但不保存
                 self.best_val_f1 = val_metrics["avg_f1"]
             elif val_metrics["avg_f1"] > self.best_val_f1:
                 self.best_val_f1 = val_metrics["avg_f1"]
-                self._save_best_checkpoint(save_dir, epoch + 1, val_metrics["avg_f1"], val_loss)
+                self._save_best_checkpoint(
+                    save_dir, epoch + 1, val_metrics["avg_f1"], val_loss
+                )
 
     def train(
         self,
@@ -1379,7 +1396,14 @@ class Trainer:
 
         return self.history
 
-    def _save_checkpoint(self, path: Path, epoch: int, val_f1: float, val_loss: float, is_best: bool = False):
+    def _save_checkpoint(
+        self,
+        path: Path,
+        epoch: int,
+        val_f1: float,
+        val_loss: float,
+        is_best: bool = False,
+    ):
         """保存检查点"""
         checkpoint = {
             "epoch": epoch,
@@ -1748,6 +1772,7 @@ if __name__ == "__main__":
 
     # Case: 训练模式：50个epoch，批次大小32
     # python -m gtaz.agency_move.train -m train -e 50 -b 32
+    # python -m gtaz.agency_move.train -m train -e 50 -b 64 -w
 
     # Case: 分析模式：分析数据集
     # python -m gtaz.agency_move.train -m analyze
