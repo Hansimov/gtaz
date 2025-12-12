@@ -108,7 +108,7 @@ class CapturedFrame:
     """帧序号"""
 
 
-class CapturesCache:
+class CaptureCacher:
     """
     截图缓存管理器。
 
@@ -118,18 +118,18 @@ class CapturesCache:
 
     def __init__(
         self,
-        output_dir: Path,
+        save_dir: Path,
         image_format: str = IMAGE_FORMAT_JPEG,
         quality: int = DEFAULT_QUALITY,
     ):
         """
         初始化缓存管理器。
 
-        :param output_dir: 输出目录
+        :param save_dir: 保存目录
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"
         :param quality: JPEG 质量（1-100），默认 85
         """
-        self.output_dir = output_dir
+        self.save_dir = save_dir
         self.image_format = image_format.upper()
         self.quality = max(1, min(100, quality))
 
@@ -180,7 +180,7 @@ class CapturesCache:
         )
 
         # 生成文件路径
-        filepath = self.output_dir / frame.filename
+        filepath = self.save_dir / frame.filename
 
         # 根据格式保存
         if self.image_format == IMAGE_FORMAT_JPEG:
@@ -249,7 +249,6 @@ class CapturesCache:
             "file": {
                 "image": image_filepath.name,
                 "json": json_filepath.name,
-                "directory": str(self.output_dir),
             },
         }
 
@@ -273,8 +272,7 @@ class CapturesCache:
         if not frames_to_save:
             return 0
 
-        # 确保输出目录存在
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
 
         if verbose:
             logger.note(f"开始保存 {len(frames_to_save)} 帧到文件...")
@@ -306,10 +304,10 @@ class CapturesCache:
 
     def __repr__(self) -> str:
         return (
-            f"CapturesCache("
+            f"CaptureCacher("
             f"frames={len(self)}, "
             f"format={self.image_format}, "
-            f"output_dir={self.output_dir})"
+            f"save_dir={self.save_dir})"
         )
 
 
@@ -329,7 +327,6 @@ class ScreenCapturer:
         window_locator: Optional[GTAVWindowLocator] = None,
         image_format: str = IMAGE_FORMAT_JPEG,
         quality: int = DEFAULT_QUALITY,
-        use_cache: bool = True,
         minimap_only: bool = False,
     ):
         """
@@ -341,29 +338,27 @@ class ScreenCapturer:
         :param window_locator: 窗口定位器，默认为 None（将自动创建）
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
         :param quality: JPEG 质量（1-100），默认 85
-        :param use_cache: 是否使用缓存模式（先缓存后批量保存），默认 True
         :param minimap_only: 是否仅截取小地图区域，默认 False
         """
         self.interval = self._calculate_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
         self.image_format = image_format.upper()
         self.quality = max(1, min(100, quality))
-        self.use_cache = use_cache
         self.minimap_only = minimap_only
 
         # 小地图裁剪区域（首次截图时计算）
         self._minimap_crop_region: Optional[tuple[int, int, int, int]] = None
 
         # 生成基于启动时间的会话目录
+        session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
         if output_dir is None:
-            session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.output_dir = FRAMES_DIR / session_name
+            save_dir = FRAMES_DIR / session_name
         else:
-            self.output_dir = output_dir
+            save_dir = output_dir / session_name
 
         # 初始化缓存管理器（minimap_crop_region 在首次截图时设置）
-        self._cache = CapturesCache(
-            output_dir=self.output_dir,
+        self.cacher = CaptureCacher(
+            save_dir=save_dir,
             image_format=self.image_format,
             quality=self.quality,
         )
@@ -608,40 +603,6 @@ class ScreenCapturer:
 
         return buffer.raw
 
-    def _save_image(self, raw_data: bytes, width: int, height: int) -> Optional[Path]:
-        """
-        将原始位图数据保存为图像文件（直接保存，不使用缓存）。
-
-        :param raw_data: BGRA 格式的原始位图数据
-        :param width: 图像宽度
-        :param height: 图像高度
-        :return: 保存的文件路径，失败则返回 None
-        """
-        # 确保输出目录存在
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 更新帧计数（直接保存模式需要手动计数）
-        self._frame_count += 1
-
-        # 创建 PIL Image
-        image = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", 0, 1)
-
-        # 生成文件路径
-        filename = self._generate_filename(self._frame_count)
-        filepath = self.output_dir / filename
-
-        # 根据格式保存
-        if self.image_format == IMAGE_FORMAT_JPEG:
-            # JPEG 不支持 Alpha，转换为 RGB
-            image = image.convert("RGB")
-            image.save(filepath, "JPEG", quality=self.quality, optimize=False)
-        else:
-            # PNG 格式，使用快速压缩
-            image = image.convert("RGB")
-            image.save(filepath, "PNG", compress_level=1)
-
-        return filepath
-
     def _cache_frame(
         self,
         raw_data: bytes,
@@ -671,7 +632,7 @@ class ScreenCapturer:
             frame_index=self._frame_count,
         )
 
-        self._cache.add_frame(frame)
+        self.cacher.add_frame(frame)
         return filename
 
     def _ensure_minimap_crop_region(self, width: int, height: int):
@@ -694,10 +655,8 @@ class ScreenCapturer:
         """
         截取当前 GTAV 窗口画面。
 
-        根据 use_cache 参数决定是直接保存还是缓存到内存。
-
         :param verbose: 是否打印保存日志
-        :return: 文件名（缓存模式）或保存的文件路径（直接保存模式），失败则返回 None
+        :return: 预生成的文件名，失败则返回 None
         """
         # 获取窗口信息
         window_info = self._get_window_info()
@@ -722,19 +681,11 @@ class ScreenCapturer:
                 raw_data, width, height, self._minimap_crop_region
             )
 
-        if self.use_cache:
-            # 缓存模式：添加到缓存
-            filename = self._cache_frame(raw_data, frame_width, frame_height)
-            if verbose:
-                cached_count = self.get_cached_frame_count()
-                logger.okay(f"已截取并缓存 {cached_count} 帧")
-            return filename
-        else:
-            # 直接保存模式
-            filepath = self._save_image(raw_data, frame_width, frame_height)
-            if filepath and verbose:
-                logger.okay(f"截图已保存: {filepath}")
-            return str(filepath) if filepath else None
+        filename = self._cache_frame(raw_data, frame_width, frame_height)
+        if verbose:
+            cached_count = self.get_cached_frame_count()
+            logger.okay(f"已截取并缓存 {cached_count} 帧")
+        return filename
 
     def flush_cache(self, verbose: bool = True) -> int:
         """
@@ -743,7 +694,7 @@ class ScreenCapturer:
         :param verbose: 是否打印保存日志
         :return: 成功保存的帧数
         """
-        saved_count = self._cache.flush(verbose=verbose)
+        saved_count = self.cacher.flush(verbose=verbose)
         # 保存完成后重置帧计数
         self._frame_count = 0
         return saved_count
@@ -754,7 +705,7 @@ class ScreenCapturer:
 
         :return: 帧数
         """
-        return self._cache.get_frame_count()
+        return self.cacher.get_frame_count()
 
     def reset_tick(self):
         """重置定时器，将下一次 tick 时间设为当前时间。"""
@@ -815,7 +766,7 @@ class ScreenCapturer:
             self._capture_thread = None
 
         # 保存缓存中的帧
-        if flush and self.use_cache:
+        if flush:
             self.flush_cache()
 
         # 释放 GDI 资源
@@ -840,10 +791,9 @@ class ScreenCapturer:
             f"interval={self.interval}, "
             f"format={self.image_format}, "
             f"quality={self.quality}, "
-            f"output_dir={self.output_dir}, "
-            f"use_cache={self.use_cache}, "
+            f"output_dir={self.cacher.save_dir}, "
             f"minimap_only={self.minimap_only}, "
-            f"cached_frames={len(self._cache)}, "
+            f"cached_frames={len(self.cacher)}, "
             f"running={self._running})"
         )
 
@@ -864,7 +814,6 @@ class KeyboardActionCapturer(ScreenCapturer):
         image_format: str = IMAGE_FORMAT_JPEG,
         quality: int = DEFAULT_QUALITY,
         game_keys_only: bool = True,
-        use_cache: bool = True,
         minimap_only: bool = False,
     ):
         """
@@ -877,13 +826,10 @@ class KeyboardActionCapturer(ScreenCapturer):
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
         :param quality: JPEG 质量（1-100），默认 85
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键，默认 True
-        :param use_cache: 是否使用缓存模式（先缓存后批量保存），默认 True
         :param minimap_only: 是否仅截取小地图区域，默认 False
         """
-        # 生成基于启动时间的会话目录（使用 actions 目录）
         if output_dir is None:
-            session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
-            output_dir = ACTIONS_DIR / session_name
+            output_dir = ACTIONS_DIR
 
         super().__init__(
             interval=interval,
@@ -892,7 +838,6 @@ class KeyboardActionCapturer(ScreenCapturer):
             window_locator=window_locator,
             image_format=image_format,
             quality=quality,
-            use_cache=use_cache,
             minimap_only=minimap_only,
         )
 
@@ -905,11 +850,9 @@ class KeyboardActionCapturer(ScreenCapturer):
         """
         截取当前 GTAV 窗口画面，并记录键盘动作信息。
 
-        根据 use_cache 参数决定是直接保存还是缓存到内存。
-
         :param action_info: 键盘动作信息
         :param verbose: 是否打印保存日志
-        :return: 文件名（缓存模式）或保存的文件路径（直接保存模式），失败则返回 None
+        :return: 预生成的文件名，失败则返回 None
         """
         # 获取窗口信息
         window_info = self._get_window_info()
@@ -935,45 +878,11 @@ class KeyboardActionCapturer(ScreenCapturer):
             )
 
         keys_str = ", ".join(action_info.pressed_keys)
-
-        if self.use_cache:
-            # 缓存模式：添加到缓存（包含动作信息）
-            filename = self._cache_frame(
-                raw_data, frame_width, frame_height, action_info
-            )
-            if verbose:
-                cached_count = self.get_cached_frame_count()
-                logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
-            return filename
-        else:
-            # 直接保存模式
-            filepath = self._save_image(raw_data, frame_width, frame_height)
-            if not filepath:
-                return None
-
-            # 更新帧计数
-            self._frame_count += 1
-
-            # 保存 JSON 文件
-            json_filepath = filepath.with_suffix(".json")
-            self._cache._save_action_info(
-                json_filepath,
-                CapturedFrame(
-                    raw_data=raw_data,
-                    width=frame_width,
-                    height=frame_height,
-                    timestamp=time.time(),
-                    filename=filepath.name,
-                    action_info=action_info,
-                    frame_index=self._frame_count,
-                ),
-                filepath,
-            )
-
-            if verbose:
-                logger.okay(f"截图已保存: {filepath.name} (按键: {keys_str})")
-
-            return str(filepath)
+        filename = self._cache_frame(raw_data, frame_width, frame_height, action_info)
+        if verbose:
+            cached_count = self.get_cached_frame_count()
+            logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
+        return filename
 
     def _capture_loop(self):
         """截图循环（在后台线程中运行）。"""
@@ -992,9 +901,8 @@ class KeyboardActionCapturer(ScreenCapturer):
             f"interval={self.interval}, "
             f"format={self.image_format}, "
             f"quality={self.quality}, "
-            f"output_dir={self.output_dir}, "
-            f"use_cache={self.use_cache}, "
-            f"cached_frames={len(self._cache)}, "
+            f"output_dir={self.cacher.save_dir}, "
+            f"cached_frames={len(self.cacher)}, "
             f"running={self._running}, "
             f"frame_count={self._frame_count})"
         )
@@ -1139,7 +1047,7 @@ class CapturerRunner:
         logger.note(
             f"{interactive_str}{mode_str}fps={1/self.capturer.interval:.1f}，"
             f"interval={round(self.capturer.interval, 2)}s，"
-            f"use_cache={self.capturer.use_cache}{minimap_str}"
+            f"cache_dir={self.capturer.cacher.save_dir}{minimap_str}"
         )
 
     def _validate_window(self) -> bool:
@@ -1160,18 +1068,20 @@ class CapturerRunner:
             while True:
                 action_info = self.capturer.keyboard_detector.detect()
                 if action_info.has_action:
-                    filepath = self.capturer.capture_frame_with_action(
+                    filename = self.capturer.capture_frame_with_action(
                         action_info, verbose=True
                     )
-                    if filepath:
-                        logger.okay(f"单次截图成功: {filepath}")
+                    if filename:
+                        self.capturer.flush_cache(verbose=True)
+                        logger.okay(f"单次截图成功: {filename}")
                     break
                 time.sleep(self.capturer.interval)
         else:
             logger.note("执行单次截图...")
-            filepath = self.capturer.capture_frame(verbose=True)
-            if filepath:
-                logger.okay(f"单次截图成功: {filepath}")
+            filename = self.capturer.capture_frame(verbose=True)
+            if filename:
+                self.capturer.flush_cache(verbose=True)
+                logger.okay(f"单次截图成功: {filename}")
 
     def run_interactive(self):
         """运行交互式控制模式。"""
@@ -1397,18 +1307,11 @@ def main():
     """命令行入口。"""
     args = ScreenCapturerArgParser().parse()
 
-    # 单帧模式不使用缓存
-    use_cache = not args.single
-
     # 根据模式创建对应的截图器
     if args.keyboard_trigger:
-        capturer = KeyboardActionCapturer(
-            fps=args.fps, use_cache=use_cache, minimap_only=args.minimap
-        )
+        capturer = KeyboardActionCapturer(fps=args.fps, minimap_only=args.minimap)
     else:
-        capturer = ScreenCapturer(
-            fps=args.fps, use_cache=use_cache, minimap_only=args.minimap
-        )
+        capturer = ScreenCapturer(fps=args.fps, minimap_only=args.minimap)
 
     # 创建并运行截图器运行器
     runner = CapturerRunner(capturer, keyboard_trigger=args.keyboard_trigger)
