@@ -126,6 +126,67 @@ VK_CODES = {
 # 需要监控的按键范围（0-255）
 MONITORED_KEY_RANGE = range(256)
 
+
+def _normalize_key_name(key: str) -> str:
+    """标准化键名（大小写/别名等）。"""
+    k = key.strip()
+    if not k:
+        return ""
+
+    k = k.replace(" ", "").upper()
+
+    aliases = {
+        "CONTROL": "CTRL",
+        "LCTRL": "LCtrl".upper(),
+        "RCTRL": "RCtrl".upper(),
+        "LSHIFT": "LShift".upper(),
+        "RSHIFT": "RShift".upper(),
+        "LALT": "LAlt".upper(),
+        "RALT": "RAlt".upper(),
+    }
+    return aliases.get(k, k)
+
+
+def build_key_name_to_vk_map() -> dict[str, int]:
+    """构建 key_name -> VK 的映射（大小写无关）。"""
+    mapping: dict[str, int] = {}
+    for vk, name in VK_CODES.items():
+        mapping[_normalize_key_name(name)] = vk
+    return mapping
+
+
+_KEY_NAME_TO_VK = build_key_name_to_vk_map()
+
+
+def key_names_to_vk_codes(key_names: list[str]) -> list[int]:
+    """把用户输入的键名列表转换为 VK 列表。
+
+    支持：
+    - 常见键名：W/A/S/D、Shift/Ctrl/Alt、F1、Escape、Space...
+    - 数字键："1".."9"（映射到 VK 0x31..）
+    """
+    vk_list: list[int] = []
+    for raw in key_names:
+        k = _normalize_key_name(raw)
+        if not k:
+            continue
+
+        if k in _KEY_NAME_TO_VK:
+            vk_list.append(_KEY_NAME_TO_VK[k])
+            continue
+
+        raise ValueError(f"无法识别的按键名称: {raw}")
+
+    # de-dup keep order
+    seen = set()
+    deduped: list[int] = []
+    for vk in vk_list:
+        if vk not in seen:
+            seen.add(vk)
+            deduped.append(vk)
+    return deduped
+
+
 # GTAV 常用游戏按键（可根据需求调整）
 GTAV_GAME_KEYS = [
     0x57,  # W - 前进
@@ -213,21 +274,21 @@ class KeyboardActionDetector:
 
     def __init__(
         self,
-        monitored_keys: Optional[list[int]] = None,
+        monitored_keys: Optional[list[str]] = None,
         game_keys_only: bool = False,
     ):
         """
         初始化键盘动作检测器。
 
-        :param monitored_keys: 要监控的按键列表（虚拟键码），默认监控所有按键
+        :param monitored_keys: 要监控的按键列表（键名），默认监控所有按键
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键
         """
         if game_keys_only:
-            self.monitored_keys = GTAV_GAME_KEYS
+            self.monitored_vks = GTAV_GAME_KEYS
         elif monitored_keys is not None:
-            self.monitored_keys = monitored_keys
+            self.monitored_vks = key_names_to_vk_codes(monitored_keys)
         else:
-            self.monitored_keys = list(MONITORED_KEY_RANGE)
+            self.monitored_vks = list(MONITORED_KEY_RANGE)
 
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
@@ -265,7 +326,7 @@ class KeyboardActionDetector:
         :return: 被按下的按键列表（虚拟键码）
         """
         pressed = []
-        for key_code in self.monitored_keys:
+        for key_code in self.monitored_vks:
             if self._is_key_pressed(key_code):
                 pressed.append(key_code)
         return pressed
@@ -276,7 +337,7 @@ class KeyboardActionDetector:
 
         :return: 是否有按键被按下
         """
-        for key_code in self.monitored_keys:
+        for key_code in self.monitored_vks:
             if self._is_key_pressed(key_code):
                 return True
         return False
@@ -299,7 +360,7 @@ class KeyboardActionDetector:
         pressed_keys: list[str] = []
         key_states: dict[str, KeyState] = {}
 
-        for key_code in self.monitored_keys:
+        for key_code in self.monitored_vks:
             is_pressed = self._is_key_pressed(key_code)
             key_name = self._get_key_name(key_code)
 
@@ -354,8 +415,7 @@ class KeyboardActionDetector:
 
     def __repr__(self) -> str:
         return (
-            f"KeyboardActionDetector("
-            f"monitored_keys={len(self.monitored_keys)} keys)"
+            f"KeyboardActionDetector(" f"monitored_keys={len(self.monitored_vks)} keys)"
         )
 
 
