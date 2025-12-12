@@ -48,8 +48,6 @@ IMAGE_FORMAT_PNG = "PNG"
 # 交互式控制键
 START_CAPTURE_KEY = "1"
 STOP_CAPTURE_KEY = "2"
-START_CAPTURE_VK = 0x31  # Virtual key code for '1'
-STOP_CAPTURE_VK = 0x32  # Virtual key code for '2'
 
 
 # 进度日志样式映射
@@ -227,7 +225,7 @@ class CaptureCacher:
 
             keys_list.append(
                 {
-                    "key_name": key_state.key_name,
+                    "key": key_state.key,
                     "is_pressed": key_state.is_pressed,
                     "press_at": key_state.press_time,
                     "press_duration": press_duration,
@@ -411,7 +409,10 @@ class ScreenCapturer:
         :return: 文件名字符串
         """
         now = get_now()
-        ext = "jpg" if self.image_format == IMAGE_FORMAT_JPEG else "png"
+        if self.image_format == IMAGE_FORMAT_JPEG:
+            ext = "jpg"
+        else:
+            ext = "png"
         return (
             now.strftime("%Y-%m-%d_%H-%M-%S-")
             + f"{now.microsecond // 1000:03d}_{frame_index:04d}.{ext}"
@@ -926,7 +927,7 @@ class InteractiveController:
         self.capturer = capturer
         # 初始化键盘检测器（只监控启动和停止键）
         self.control_detector = KeyboardActionDetector(
-            monitored_keys=[START_CAPTURE_VK, STOP_CAPTURE_VK]
+            monitored_keys=[START_CAPTURE_KEY, STOP_CAPTURE_KEY]
         )
         self.capture_active = False
         # 记录上一次按键状态，用于边沿检测
@@ -941,17 +942,13 @@ class InteractiveController:
         """
         return self.capture_active
 
-    def start_capture(self, mode_desc: str = "截图"):
-        """
-        启动截图。
-
-        :param mode_desc: 模式描述（用于日志显示）
-        """
+    def start_capture(self):
+        """启动截图。"""
         if not self.capture_active:
             self.capture_active = True
             self.capturer.start()
             logger.okay(
-                f"{mode_desc}已开始（按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）"
+                f"截图已开始（按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）"
             )
 
     def stop_capture(self):
@@ -961,13 +958,12 @@ class InteractiveController:
             self.capturer.stop(flush=True)
             logger.okay("截图已停止")
 
-    def process_control_keys(self, mode_desc: str = "截图") -> bool:
+    def process_control_keys(self) -> bool:
         """
         处理控制键（START_CAPTURE_KEY 启动，STOP_CAPTURE_KEY 停止）。
 
         使用边沿检测避免重复触发。
 
-        :param mode_desc: 模式描述（用于日志显示）
         :return: 是否应该继续循环
         """
         action_info = self.control_detector.detect()
@@ -976,7 +972,7 @@ class InteractiveController:
         start_key_pressed = START_CAPTURE_KEY in action_info.pressed_keys
         if start_key_pressed and not self._last_start_key_pressed:
             # 按键从未按下变为按下（上升沿）
-            self.start_capture(mode_desc)
+            self.start_capture()
         self._last_start_key_pressed = start_key_pressed
 
         # 检查停止键
@@ -988,11 +984,9 @@ class InteractiveController:
 
         return True
 
-    def run(self, mode_desc: str = "截图"):
+    def run(self):
         """
         运行交互式控制循环。
-
-        :param mode_desc: 模式描述（用于日志显示）
         """
         logger.note("交互式截图模式已启动")
         logger.note(
@@ -1003,7 +997,7 @@ class InteractiveController:
 
         try:
             while True:
-                self.process_control_keys(mode_desc)
+                self.process_control_keys()
                 time.sleep(0.05)  # 50ms 检测间隔
 
         except KeyboardInterrupt:
@@ -1034,7 +1028,6 @@ class CapturerRunner:
         """
         self.capturer = capturer
         self.keyboard_trigger = keyboard_trigger
-        self.mode_desc = "键盘触发截图" if keyboard_trigger else "连续截图"
 
     def _print_config(self, interactive: bool = False):
         """
@@ -1042,9 +1035,21 @@ class CapturerRunner:
 
         :param interactive: 是否为交互式模式
         """
-        minimap_str = "（仅小地图）" if self.capturer.minimap_only else ""
-        mode_str = "键盘触发模式，" if self.keyboard_trigger else ""
-        interactive_str = "交互式" if interactive else ""
+        if self.capturer.minimap_only:
+            minimap_str = "（仅小地图）"
+        else:
+            minimap_str = ""
+
+        if self.keyboard_trigger:
+            mode_str = "键盘触发模式，"
+        else:
+            mode_str = ""
+
+        if interactive:
+            interactive_str = "交互式"
+        else:
+            interactive_str = ""
+
         logger.note(
             f"{interactive_str}{mode_str}fps={1/self.capturer.interval:.1f}，"
             f"interval={round(self.capturer.interval, 2)}s，"
@@ -1065,87 +1070,83 @@ class CapturerRunner:
     def run_single_frame(
         self,
         exit_after_capture: bool = True,
-        monitored_keys: Optional[str] = None,
+        monitored_keys: Optional[list[str]] = None,
     ):
         """运行单帧截图模式。
 
         - 当 exit_after_capture=False：截图后不退出，继续监听。
-        - 当 monitored_keys 非空：仅当这些键出现“按下边沿”时触发一次截图（长按不重复）。
+        - 当 monitored_keys 非空：仅当这些键出现按下边沿时触发一次截图（长按不重复）。
         """
-
-        # 1) build detector for single-mode trigger
-        monitored_key_names: list[str] = []
+        # 创建触发检测器
         if monitored_keys:
-            monitored_key_names = [
-                t.strip() for t in re.split(r"[;,\s]+", monitored_keys) if t.strip()
-            ]
-
-        if monitored_key_names:
-            trigger_detector = KeyboardActionDetector(
-                monitored_keys=monitored_key_names
-            )
+            trigger_detector = KeyboardActionDetector(monitored_keys=monitored_keys)
         else:
             trigger_detector = None
 
-        # Edge detect state (for trigger_detector)
+        # 非触发模式且无监控按键：执行单次截图后返回
+        if not self.keyboard_trigger and trigger_detector is None:
+            logger.note("执行单次截图...")
+            filename = self.capturer.capture_frame(verbose=True)
+            if filename:
+                self.capturer.flush_cache(verbose=True)
+                logger.okay(f"单次截图成功: {filename}")
+            return
+
+        # 显示提示信息
+        if self.keyboard_trigger:
+            if monitored_keys:
+                key_hint_str = logstr.hint(f"'{", ".join(monitored_keys)}'")
+            else:
+                key_hint_str = logstr.hint("'任意键'")
+        else:
+            key_hint_str = logstr.hint(f"'{", ".join(monitored_keys)}'")
+        logger.note(f"单帧模式，按下 {key_hint_str} 触发截图")
+
+        # 边沿检测状态
         last_pressed: set[int] = set()
 
-        if self.keyboard_trigger:
-            key_names_str = logstr.hint("'任意键'")
-            logger.note(f"单帧模式，按下 {key_names_str} 触发截图")
-            while True:
-                action_info = self.capturer.keyboard_detector.detect()
-
-                # optional filter by monitored keys
-                if trigger_detector is not None:
-                    pressed_now = set(trigger_detector.get_pressed_keys())
-                    newly_pressed = pressed_now - last_pressed
-                    last_pressed = pressed_now
-                    if not newly_pressed:
-                        time.sleep(self.capturer.interval)
-                        continue
-
-                if action_info.has_action:
-                    filename = self.capturer.capture_frame_with_action(
-                        action_info, verbose=True
-                    )
-                    if filename:
-                        self.capturer.flush_cache(verbose=True)
-                        logger.okay(f"单次截图成功: {filename}")
-                        if exit_after_capture:
-                            break
-
-                time.sleep(self.capturer.interval)
-        else:
-            if trigger_detector is None:
-                logger.note("执行单次截图...")
-                filename = self.capturer.capture_frame(verbose=True)
-                if filename:
-                    self.capturer.flush_cache(verbose=True)
-                    logger.okay(f"单次截图成功: {filename}")
-                return
-
-            key_names_str = logstr.hint(f"'{', '.join(monitored_key_names)}'")
-            logger.note(f"单帧模式，按下 {key_names_str} 触发截图")
-            while True:
+        # 循环检测并截图
+        while True:
+            # 检测按键
+            if trigger_detector:
                 pressed_now = set(trigger_detector.get_pressed_keys())
                 newly_pressed = pressed_now - last_pressed
                 last_pressed = pressed_now
+                if not newly_pressed:
+                    if self.keyboard_trigger:
+                        time.sleep(self.capturer.interval)
+                    else:
+                        time.sleep(0.01)
+                    continue
 
-                if newly_pressed:
-                    filename = self.capturer.capture_frame(verbose=True)
-                    if filename:
-                        self.capturer.flush_cache(verbose=True)
-                        logger.okay(f"单次截图成功: {filename}")
-                        if exit_after_capture:
-                            break
+            # 执行截图
+            if self.keyboard_trigger:
+                action_info = self.capturer.keyboard_detector.detect()
+                if not action_info.has_action:
+                    time.sleep(self.capturer.interval)
+                    continue
+                filename = self.capturer.capture_frame_with_action(
+                    action_info, verbose=True
+                )
+            else:
+                filename = self.capturer.capture_frame(verbose=True)
 
+            # 保存并记录
+            if filename:
+                self.capturer.flush_cache(verbose=True)
+                logger.okay(f"单次截图成功: {filename}")
+                if exit_after_capture:
+                    break
+
+            if self.keyboard_trigger:
+                time.sleep(self.capturer.interval)
+            else:
                 time.sleep(0.01)
 
     def run_interactive(self):
         """运行交互式控制模式。"""
         controller = InteractiveController(self.capturer)
-        controller.run(self.mode_desc)
+        controller.run()
 
     def _setup_continuous_mode(
         self, duration: float
@@ -1157,19 +1158,23 @@ class CapturerRunner:
         :return: (实际持续时间, 是否使用停止键, 停止键检测器, 上次停止键状态)
         """
         max_duration = 600  # 10分钟
+        if self.keyboard_trigger:
+            mode_desc = "键盘触发截图"
+        else:
+            mode_desc = "连续截图"
 
         if duration == 0:
             # 持续模式
             duration = max_duration
             logger.note(
-                f"{self.mode_desc}（持续模式，最大 {max_duration} 秒，"
+                f"{mode_desc}（持续模式，最大 {max_duration} 秒，"
                 f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}），缓存模式..."
             )
-            stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_VK])
+            stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_KEY])
             return duration, True, stop_detector, False
         else:
             # 定时模式
-            logger.note(f"{self.mode_desc}（{duration} 秒），缓存模式...")
+            logger.note(f"{mode_desc}（{duration} 秒），缓存模式...")
             return duration, False, None, False
 
     def _check_stop_key(
@@ -1291,7 +1296,7 @@ class CapturerRunner:
         duration: float = 60,
         interactive: bool = False,
         exit_after_capture: bool = True,
-        monitored_keys: str = "",
+        monitored_keys: Optional[list[str]] = None,
     ):
         """
         运行截图器。
@@ -1300,7 +1305,7 @@ class CapturerRunner:
         :param duration: 连续截图持续时间（秒）
         :param interactive: 是否为交互式控制模式
         :param exit_after_capture: 单帧模式截图后是否退出
-        :param monitored_keys: 单帧模式监控按键（逗号分隔）
+        :param monitored_keys: 单帧模式监控按键名列表
         """
         # 打印配置信息
         self._print_config(interactive=interactive)
@@ -1392,6 +1397,13 @@ def main():
     else:
         capturer = ScreenCapturer(fps=args.fps, minimap_only=args.minimap)
 
+    # 解析监控按键
+    monitored_keys = None
+    if args.monitored_keys:
+        monitored_keys = [
+            k.strip() for k in args.monitored_keys.split(",") if k.strip()
+        ]
+
     # 创建并运行截图器运行器
     runner = CapturerRunner(capturer, keyboard_trigger=args.keyboard_trigger)
     runner.run(
@@ -1399,7 +1411,7 @@ def main():
         duration=args.duration,
         interactive=args.interactive,
         exit_after_capture=args.exit_after_capture,
-        monitored_keys=args.monitored_keys,
+        monitored_keys=monitored_keys,
     )
 
 
