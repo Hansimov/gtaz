@@ -5,6 +5,7 @@ import ctypes
 import json
 import time
 import threading
+import re
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -1061,12 +1062,49 @@ class CapturerRunner:
             return False
         return True
 
-    def run_single_frame(self):
-        """运行单帧截图模式。"""
+    def run_single_frame(
+        self,
+        exit_after_capture: bool = True,
+        monitored_keys: Optional[str] = None,
+    ):
+        """运行单帧截图模式。
+
+        - 当 exit_after_capture=False：截图后不退出，继续监听。
+        - 当 monitored_keys 非空：仅当这些键出现“按下边沿”时触发一次截图（长按不重复）。
+        """
+
+        # 1) build detector for single-mode trigger
+        monitored_key_names: list[str] = []
+        if monitored_keys:
+            monitored_key_names = [
+                t.strip() for t in re.split(r"[;,\s]+", monitored_keys) if t.strip()
+            ]
+
+        if monitored_key_names:
+            trigger_detector = KeyboardActionDetector(
+                monitored_keys=monitored_key_names
+            )
+        else:
+            trigger_detector = None
+
+        # Edge detect state (for trigger_detector)
+        last_pressed: set[int] = set()
+
         if self.keyboard_trigger:
-            logger.note("执行单次截图，等待键盘输入...")
+            key_names_str = logstr.hint("'任意键'")
+            logger.note(f"单帧模式，按下 {key_names_str} 触发截图")
             while True:
                 action_info = self.capturer.keyboard_detector.detect()
+
+                # optional filter by monitored keys
+                if trigger_detector is not None:
+                    pressed_now = set(trigger_detector.get_pressed_keys())
+                    newly_pressed = pressed_now - last_pressed
+                    last_pressed = pressed_now
+                    if not newly_pressed:
+                        time.sleep(self.capturer.interval)
+                        continue
+
                 if action_info.has_action:
                     filename = self.capturer.capture_frame_with_action(
                         action_info, verbose=True
@@ -1074,14 +1112,35 @@ class CapturerRunner:
                     if filename:
                         self.capturer.flush_cache(verbose=True)
                         logger.okay(f"单次截图成功: {filename}")
-                    break
+                        if exit_after_capture:
+                            break
+
                 time.sleep(self.capturer.interval)
         else:
-            logger.note("执行单次截图...")
-            filename = self.capturer.capture_frame(verbose=True)
-            if filename:
-                self.capturer.flush_cache(verbose=True)
-                logger.okay(f"单次截图成功: {filename}")
+            if trigger_detector is None:
+                logger.note("执行单次截图...")
+                filename = self.capturer.capture_frame(verbose=True)
+                if filename:
+                    self.capturer.flush_cache(verbose=True)
+                    logger.okay(f"单次截图成功: {filename}")
+                return
+
+            key_names_str = logstr.hint(f"'{', '.join(monitored_key_names)}'")
+            logger.note(f"单帧模式，按下 {key_names_str} 触发截图")
+            while True:
+                pressed_now = set(trigger_detector.get_pressed_keys())
+                newly_pressed = pressed_now - last_pressed
+                last_pressed = pressed_now
+
+                if newly_pressed:
+                    filename = self.capturer.capture_frame(verbose=True)
+                    if filename:
+                        self.capturer.flush_cache(verbose=True)
+                        logger.okay(f"单次截图成功: {filename}")
+                        if exit_after_capture:
+                            break
+
+                time.sleep(0.01)
 
     def run_interactive(self):
         """运行交互式控制模式。"""
@@ -1231,6 +1290,8 @@ class CapturerRunner:
         single: bool = False,
         duration: float = 60,
         interactive: bool = False,
+        exit_after_capture: bool = True,
+        monitored_keys: str = "",
     ):
         """
         运行截图器。
@@ -1238,6 +1299,8 @@ class CapturerRunner:
         :param single: 是否只截取单帧
         :param duration: 连续截图持续时间（秒）
         :param interactive: 是否为交互式控制模式
+        :param exit_after_capture: 单帧模式截图后是否退出
+        :param monitored_keys: 单帧模式监控按键（逗号分隔）
         """
         # 打印配置信息
         self._print_config(interactive=interactive)
@@ -1252,7 +1315,10 @@ class CapturerRunner:
         if interactive:
             self.run_interactive()
         elif single:
-            self.run_single_frame()
+            self.run_single_frame(
+                exit_after_capture=exit_after_capture,
+                monitored_keys=monitored_keys,
+            )
         else:
             self.run_continuous(duration)
 
@@ -1268,6 +1334,19 @@ class ScreenCapturerArgParser:
         """添加命令行参数。"""
         self.parser.add_argument(
             "-s", "--single", action="store_true", help="只截取当前单帧"
+        )
+
+        self.parser.add_argument(
+            "--exit-after-capture",
+            action="store_true",
+            default=False,
+            help="单帧模式下，截图后退出（默认不退出，继续监听）",
+        )
+        self.parser.add_argument(
+            "--monitored-keys",
+            type=str,
+            default="",
+            help="单帧模式下，仅当这些按键出现按下边沿时才触发截图。支持如 '1,2' / 'W,A,S,D' / '0x31,0x32'",
         )
         self.parser.add_argument(
             "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
@@ -1319,6 +1398,8 @@ def main():
         single=args.single,
         duration=args.duration,
         interactive=args.interactive,
+        exit_after_capture=args.exit_after_capture,
+        monitored_keys=args.monitored_keys,
     )
 
 
