@@ -11,8 +11,8 @@ from tclogger import TCLogger, get_now
 logger = TCLogger(name="KeyboardActionDetector", use_prefix=True, use_prefix_ms=True)
 
 
-# 虚拟键码映射（常用按键）
-VK_CODES = {
+# 虚拟键码到按键名的映射（主映射）
+KEY_CODE_TO_NAME = {
     # 字母键
     0x41: "A",
     0x42: "B",
@@ -123,92 +123,93 @@ VK_CODES = {
     0x91: "ScrollLock",
 }
 
-# 需要监控的按键范围（0-255）
-MONITORED_KEY_RANGE = range(256)
+# 按键名到虚拟键码的反向映射（从 KEY_CODE_TO_NAME 构建）
+KEY_NAME_TO_CODE = {name: code for code, name in KEY_CODE_TO_NAME.items()}
+
+# 所有支持的按键列表
+ALL_KEYS = list(KEY_NAME_TO_CODE.keys())
 
 
-def _normalize_key_name(key: str) -> str:
-    """标准化键名（大小写/别名等）。"""
-    k = key.strip()
-    if not k:
-        return ""
-
-    k = k.replace(" ", "").upper()
-
-    aliases = {
-        "CONTROL": "CTRL",
-        "LCTRL": "LCtrl".upper(),
-        "RCTRL": "RCtrl".upper(),
-        "LSHIFT": "LShift".upper(),
-        "RSHIFT": "RShift".upper(),
-        "LALT": "LAlt".upper(),
-        "RALT": "RAlt".upper(),
-    }
-    return aliases.get(k, k)
+def key_name_to_code(key: str) -> int:
+    """将按键名转换为虚拟键码（大小写不敏感）。
+    
+    :param key: 按键名
+    :return: 虚拟键码，如果不存在返回 0
+    """
+    # 大小写不敏感查找
+    for name, code in KEY_NAME_TO_CODE.items():
+        if name.upper() == key.upper():
+            return code
+    return 0
 
 
-def build_key_name_to_vk_map() -> dict[str, int]:
-    """构建 key_name -> VK 的映射（大小写无关）。"""
-    mapping: dict[str, int] = {}
-    for vk, name in VK_CODES.items():
-        mapping[_normalize_key_name(name)] = vk
-    return mapping
+def key_code_to_name(code: int) -> str:
+    """将虚拟键码转换为按键名。
+    
+    :param code: 虚拟键码
+    :return: 按键名，如果不存在返回 'Unknown'
+    """
+    return KEY_CODE_TO_NAME.get(code, f"Unknown_{code:02X}")
 
 
-_KEY_NAME_TO_VK = build_key_name_to_vk_map()
-
-
-def key_names_to_vk_codes(key_names: list[str]) -> list[int]:
-    """把用户输入的键名列表转换为 VK 列表。
+def normalize_keys(keys: list[str]) -> list[str]:
+    """标准化用户输入的按键列表。
 
     支持：
     - 常见键名：W/A/S/D、Shift/Ctrl/Alt、F1、Escape、Space...
-    - 数字键："1".."9"（映射到 VK 0x31..）
+    - 数字键："1".."9"
     """
-    vk_list: list[int] = []
-    for raw in key_names:
-        k = _normalize_key_name(raw)
-        if not k:
+    normalized: list[str] = []
+    for raw in keys:
+        key = raw.strip().replace(" ", "")
+        if not key:
             continue
 
-        if k in _KEY_NAME_TO_VK:
-            vk_list.append(_KEY_NAME_TO_VK[k])
-            continue
+        # 查找匹配的键（大小写不敏感）
+        key_upper = key.upper()
+        matched_key = None
+        for k in KEY_NAME_TO_CODE.keys():
+            if k.upper() == key_upper:
+                matched_key = k
+                break
 
-        raise ValueError(f"无法识别的按键名称: {raw}")
+        if matched_key:
+            normalized.append(matched_key)
+        else:
+            raise ValueError(f"无法识别的按键名称: {raw}")
 
-    # de-dup keep order
+    # 去重，保持顺序
     seen = set()
-    deduped: list[int] = []
-    for vk in vk_list:
-        if vk not in seen:
-            seen.add(vk)
-            deduped.append(vk)
+    deduped: list[str] = []
+    for key in normalized:
+        if key not in seen:
+            seen.add(key)
+            deduped.append(key)
     return deduped
 
 
 # GTAV 常用游戏按键（可根据需求调整）
 GTAV_GAME_KEYS = [
-    0x57,  # W - 前进
-    0x41,  # A - 左移
-    0x53,  # S - 后退
-    0x44,  # D - 右移
-    0x20,  # Space - 跳跃/手刹
-    0x10,  # Shift - 奔跑/加速
-    0x11,  # Ctrl - 蹲下
-    0x45,  # E - 进入载具/互动
-    0x46,  # F - 进入载具（备用）
-    0x51,  # Q - 掩护
-    0x52,  # R - 换弹
-    0x47,  # G - 投掷武器
-    0x54,  # T - 手机
-    0x4D,  # M - 地图
-    0x09,  # Tab - 选择武器
-    0x1B,  # Escape - 菜单
-    0x25,  # Left - 方向键左
-    0x26,  # Up - 方向键上
-    0x27,  # Right - 方向键右
-    0x28,  # Down - 方向键下
+    "W",  # 前进
+    "A",  # 左移
+    "S",  # 后退
+    "D",  # 右移
+    "Space",  # 跳跃/手刹
+    "Shift",  # 奔跑/加速
+    "Ctrl",  # 蹲下
+    "E",  # 进入载具/互动
+    "F",  # 进入载具（备用）
+    "Q",  # 掩护
+    "R",  # 换弹
+    "G",  # 投掷武器
+    "T",  # 手机
+    "M",  # 地图
+    "Tab",  # 选择武器
+    "Escape",  # 菜单
+    "Left",  # 方向键左
+    "Up",  # 方向键上
+    "Right",  # 方向键右
+    "Down",  # 方向键下
 ]
 
 
@@ -216,8 +217,7 @@ GTAV_GAME_KEYS = [
 class KeyState:
     """单个按键的状态信息。"""
 
-    key_code: int
-    key_name: str
+    key: str
     is_pressed: bool = False
     press_time: Optional[float] = None
     release_time: Optional[float] = None
@@ -225,8 +225,7 @@ class KeyState:
     def copy(self) -> "KeyState":
         """创建当前状态的副本。"""
         return KeyState(
-            key_code=self.key_code,
-            key_name=self.key_name,
+            key=self.key,
             is_pressed=self.is_pressed,
             press_time=self.press_time,
             release_time=self.release_time,
@@ -235,8 +234,7 @@ class KeyState:
     def to_dict(self) -> dict:
         """转换为字典格式。"""
         return {
-            "key_code": self.key_code,
-            "key_name": self.key_name,
+            "key": self.key,
             "is_pressed": self.is_pressed,
             "press_time": self.press_time,
             "release_time": self.release_time,
@@ -284,51 +282,45 @@ class KeyboardActionDetector:
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键
         """
         if game_keys_only:
-            self.monitored_vks = GTAV_GAME_KEYS
+            self.monitored_keys = GTAV_GAME_KEYS
         elif monitored_keys is not None:
-            self.monitored_vks = key_names_to_vk_codes(monitored_keys)
+            self.monitored_keys = normalize_keys(monitored_keys)
         else:
-            self.monitored_vks = list(MONITORED_KEY_RANGE)
+            self.monitored_keys = ALL_KEYS
 
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
 
         # 按键状态缓存
-        self._key_states: dict[int, KeyState] = {}
-        self._previous_pressed: set[int] = set()
+        self._key_states: dict[str, KeyState] = {}
+        self._previous_pressed: set[str] = set()
 
-    def _get_key_name(self, key_code: int) -> str:
-        """
-        获取按键名称。
-
-        :param key_code: 虚拟键码
-        :return: 按键名称
-        """
-        return VK_CODES.get(key_code, f"VK_{key_code:02X}")
-
-    def _is_key_pressed(self, key_code: int) -> bool:
+    def _is_key_pressed(self, key: str) -> bool:
         """
         检查指定按键是否被按下。
 
         使用 GetAsyncKeyState 检测按键状态。
         返回值的最高位（0x8000）表示按键当前是否被按下。
 
-        :param key_code: 虚拟键码
+        :param key: 按键名
         :return: 按键是否被按下
         """
+        key_code = key_name_to_code(key)
+        if key_code == 0:
+            return False
         state = self.user32.GetAsyncKeyState(key_code)
         return bool(state & 0x8000)
 
-    def get_pressed_keys(self) -> list[int]:
+    def get_pressed_keys(self) -> list[str]:
         """
         获取当前所有被按下的按键。
 
-        :return: 被按下的按键列表（虚拟键码）
+        :return: 被按下的按键列表
         """
         pressed = []
-        for key_code in self.monitored_vks:
-            if self._is_key_pressed(key_code):
-                pressed.append(key_code)
+        for key in self.monitored_keys:
+            if self._is_key_pressed(key):
+                pressed.append(key)
         return pressed
 
     def has_any_key_pressed(self) -> bool:
@@ -337,8 +329,8 @@ class KeyboardActionDetector:
 
         :return: 是否有按键被按下
         """
-        for key_code in self.monitored_vks:
-            if self._is_key_pressed(key_code):
+        for key in self.monitored_keys:
+            if self._is_key_pressed(key):
                 return True
         return False
 
@@ -356,27 +348,26 @@ class KeyboardActionDetector:
             now_dt.strftime("%Y-%m-%d %H-%M-%S") + f".{now_dt.microsecond // 1000:03d}"
         )
 
-        current_pressed: set[int] = set()
+        current_pressed: set[str] = set()
         pressed_keys: list[str] = []
         key_states: dict[str, KeyState] = {}
 
-        for key_code in self.monitored_vks:
-            is_pressed = self._is_key_pressed(key_code)
-            key_name = self._get_key_name(key_code)
+        for key in self.monitored_keys:
+            is_pressed = self._is_key_pressed(key)
 
             if is_pressed:
-                current_pressed.add(key_code)
-                pressed_keys.append(key_name)
+                current_pressed.add(key)
+                pressed_keys.append(key)
 
             # 获取或创建按键状态
-            if key_code in self._key_states:
-                state = self._key_states[key_code]
+            if key in self._key_states:
+                state = self._key_states[key]
             else:
-                state = KeyState(key_code=key_code, key_name=key_name)
-                self._key_states[key_code] = state
+                state = KeyState(key=key)
+                self._key_states[key] = state
 
             # 更新按键状态
-            was_pressed = key_code in self._previous_pressed
+            was_pressed = key in self._previous_pressed
 
             if is_pressed and not was_pressed:
                 # 按键刚被按下
@@ -392,7 +383,7 @@ class KeyboardActionDetector:
                 state.is_pressed = True
 
             if is_pressed:
-                key_states[key_name] = state.copy()
+                key_states[key] = state.copy()
 
         # 更新上一次按下状态
         self._previous_pressed = current_pressed
@@ -415,7 +406,7 @@ class KeyboardActionDetector:
 
     def __repr__(self) -> str:
         return (
-            f"KeyboardActionDetector(" f"monitored_keys={len(self.monitored_vks)} keys)"
+            f"KeyboardActionDetector(" f"monitored_keys={len(self.monitored_keys)} keys)"
         )
 
 
