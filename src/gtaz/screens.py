@@ -102,7 +102,7 @@ class CapturedFrame:
     filename: str
     """预生成的文件名"""
     action_info: Optional[KeyboardActionInfo] = None
-    """键盘动作信息（仅 KeyboardActionCapturer 使用）"""
+    """键盘动作信息（仅 keyboard_trigger 模式下使用）"""
     frame_index: int = 0
     """帧序号"""
 
@@ -327,31 +327,45 @@ class ScreenCapturer:
         image_format: str = IMAGE_FORMAT_JPEG,
         quality: int = DEFAULT_QUALITY,
         minimap_only: bool = False,
+        keyboard_trigger: bool = False,
+        game_keys_only: bool = True,
     ):
         """
         初始化屏幕截取器。
 
         :param interval: 截图间隔时间（秒），优先级高于 fps
         :param fps: 每秒截图帧数，当 interval 未指定时使用
-        :param output_dir: 输出目录，默认为 cache/frames
+        :param output_dir: 输出目录，默认为 cache/frames（keyboard_trigger 时为 cache/actions）
         :param window_locator: 窗口定位器，默认为 None（将自动创建）
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
         :param quality: JPEG 质量（1-100），默认 85
         :param minimap_only: 是否仅截取小地图区域，默认 False
+        :param keyboard_trigger: 是否启用键盘触发模式（仅在有按键时截图），默认 False
+        :param game_keys_only: 键盘触发模式下，是否只监控游戏常用按键，默认 True
         """
         self.interval = self._calculate_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
         self.image_format = image_format.upper()
         self.quality = max(1, min(100, quality))
         self.minimap_only = minimap_only
+        self.keyboard_trigger = keyboard_trigger
 
         # 小地图裁剪区域（首次截图时计算）
         self._minimap_crop_region: Optional[tuple[int, int, int, int]] = None
 
+        # 键盘检测器（仅在 keyboard_trigger 模式下启用）
+        self.keyboard_detector: Optional[KeyboardActionDetector] = None
+        if keyboard_trigger:
+            self.keyboard_detector = KeyboardActionDetector(
+                game_keys_only=game_keys_only
+            )
+
         # 生成基于启动时间的会话目录
         session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
         if output_dir is None:
-            save_dir = FRAMES_DIR / session_name
+            # 键盘触发模式使用 actions 目录，否则使用 frames 目录
+            default_dir = ACTIONS_DIR if keyboard_trigger else FRAMES_DIR
+            save_dir = default_dir / session_name
         else:
             save_dir = output_dir / session_name
 
@@ -364,13 +378,6 @@ class ScreenCapturer:
 
         # 帧计数器
         self._frame_count = 0
-
-        # 定时器（用于动态时间补偿）
-        self._next_tick_time: float = 0.0
-
-        # 控制截图循环的标志
-        self._running = False
-        self._capture_thread: Optional[threading.Thread] = None
 
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
@@ -653,11 +660,16 @@ class ScreenCapturer:
                 f"(窗口: {width}x{height})"
             )
 
-    def capture_frame(self, verbose: bool = True) -> Optional[str]:
+    def capture_frame(
+        self,
+        verbose: bool = True,
+        action_info: Optional[KeyboardActionInfo] = None,
+    ) -> Optional[str]:
         """
         截取当前 GTAV 窗口画面。
 
         :param verbose: 是否打印保存日志
+        :param action_info: 键盘动作信息（可选，keyboard_trigger 模式下由 try_capture_frame 传入）
         :return: 预生成的文件名，失败则返回 None
         """
         # 获取窗口信息
@@ -683,11 +695,40 @@ class ScreenCapturer:
                 raw_data, width, height, self._minimap_crop_region
             )
 
-        filename = self._cache_frame(raw_data, frame_width, frame_height)
+        # 缓存帧数据（带或不带 action_info）
+        filename = self._cache_frame(raw_data, frame_width, frame_height, action_info)
+
         if verbose:
             cached_count = self.get_cached_frame_count()
-            logger.okay(f"已截取并缓存 {cached_count} 帧")
+            if action_info:
+                keys_str = ", ".join(action_info.pressed_keys)
+                logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
+            else:
+                logger.okay(f"已截取并缓存 {cached_count} 帧")
         return filename
+
+    def try_capture_frame(self, verbose: bool = False) -> tuple[Optional[str], str]:
+        """
+        尝试截取一帧（用于外部循环调用）。
+
+        普通模式：直接截图
+        键盘触发模式：仅在有按键动作时截图，并记录按键信息到 action_info
+
+        :param verbose: 是否打印日志
+        :return: (文件名, 额外信息) - 如果未截图则返回 (None, "")
+        """
+        # 键盘触发模式：检测按键状态
+        if self.keyboard_trigger and self.keyboard_detector:
+            action_info = self.keyboard_detector.detect()
+            if action_info.has_action:
+                filename = self.capture_frame(verbose=verbose, action_info=action_info)
+                extra_info = f" (按键: {', '.join(action_info.pressed_keys)})"
+                return filename, extra_info
+            return None, ""
+
+        # 普通模式：直接截图
+        filename = self.capture_frame(verbose=verbose)
+        return filename, ""
 
     def flush_cache(self, verbose: bool = True) -> int:
         """
@@ -709,6 +750,54 @@ class ScreenCapturer:
         """
         return self.cacher.get_frame_count()
 
+    def __del__(self):
+        """析构函数，确保释放 GDI 资源。"""
+        self._release_gdi_resources()
+
+    def __repr__(self) -> str:
+        parts = [
+            f"ScreenCapturer(",
+            f"interval={self.interval}, ",
+            f"format={self.image_format}, ",
+            f"quality={self.quality}, ",
+            f"output_dir={self.cacher.save_dir}, ",
+            f"minimap_only={self.minimap_only}, ",
+        ]
+        if self.keyboard_trigger:
+            parts.append(f"keyboard_trigger=True, ")
+        parts.extend(
+            [
+                f"cached_frames={len(self.cacher)}, ",
+                f"frame_count={self._frame_count})",
+            ]
+        )
+        return "".join(parts)
+
+
+class CaptureLooper:
+    """
+    截图循环控制器。
+
+    负责时间控制、循环逻辑、按键检测等，与具体的截图实现解耦。
+    """
+
+    def __init__(
+        self,
+        capturer: ScreenCapturer,
+        interval: float,
+    ):
+        """
+        初始化循环控制器。
+
+        :param capturer: 截图器实例
+        :param interval: 截图间隔（秒）
+        """
+        self.capturer = capturer
+        self.interval = interval
+
+        # 定时器（用于动态时间补偿）
+        self._next_tick_time: float = 0.0
+
     def reset_tick(self):
         """重置定时器，将下一次 tick 时间设为当前时间。"""
         self._next_tick_time = time.time()
@@ -724,305 +813,120 @@ class ScreenCapturer:
         if sleep_time > 0:
             time.sleep(sleep_time)
 
-    def _capture_loop(self):
-        """截图循环（在后台线程中运行）。"""
-        logger.note(f"开始截图循环，间隔: {self.interval} 秒")
-        self.reset_tick()
-        while self._running:
-            self.capture_frame()
-            self.wait_next_tick()
-        logger.note("截图循环已停止")
-
-    def start(self):
-        """
-        开始连续截图。
-
-        在后台线程中按照设定的间隔时间持续截图。
-        """
-        if self._running:
-            logger.warn("截图已在运行中")
-            return
-
-        if not self.window_locator.is_window_valid():
-            logger.err("GTAV 窗口未找到，无法开始截图")
-            return
-
-        self._running = True
-        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self._capture_thread.start()
-        logger.okay("连续截图已启动")
-
-    def stop(self, flush: bool = True):
-        """
-        停止连续截图。
-
-        :param flush: 是否在停止时保存缓存中的帧，默认 True
-        """
-        if not self._running:
-            logger.warn("截图未在运行")
-            return
-
-        self._running = False
-        if self._capture_thread:
-            self._capture_thread.join(timeout=self.interval + 1)
-            self._capture_thread = None
-
-        # 保存缓存中的帧
-        if flush:
-            self.flush_cache()
-
-        # 释放 GDI 资源
-        self._release_gdi_resources()
-        logger.okay("连续截图已停止")
-
-    def __del__(self):
-        """析构函数，确保释放 GDI 资源。"""
-        self._release_gdi_resources()
-
-    def is_running(self) -> bool:
-        """
-        检查是否正在运行连续截图。
-
-        :return: 是否正在运行
-        """
-        return self._running
-
-    def __repr__(self) -> str:
-        return (
-            f"ScreenCapturer("
-            f"interval={self.interval}, "
-            f"format={self.image_format}, "
-            f"quality={self.quality}, "
-            f"output_dir={self.cacher.save_dir}, "
-            f"minimap_only={self.minimap_only}, "
-            f"cached_frames={len(self.cacher)}, "
-            f"running={self._running})"
-        )
-
-
-class KeyboardActionCapturer(ScreenCapturer):
-    """
-    基于键盘动作触发的截图器。
-
-    仅在检测到键盘输入时才进行截图，并保存键盘动作信息到 JSON 文件。
-    """
-
-    def __init__(
+    def run_loop(
         self,
-        interval: Optional[float] = None,
-        fps: Optional[float] = None,
-        output_dir: Optional[Path] = None,
-        window_locator: Optional[GTAVWindowLocator] = None,
-        image_format: str = IMAGE_FORMAT_JPEG,
-        quality: int = DEFAULT_QUALITY,
-        game_keys_only: bool = True,
-        minimap_only: bool = False,
+        duration: float,
+        single: bool = False,
+        exit_after_capture: bool = False,
+        monitored_keys: Optional[list[str]] = None,
+        stop_key_enabled: bool = False,
     ):
         """
-        初始化键盘动作截图器。
+        运行截图循环。
 
-        :param interval: 截图间隔时间（秒），优先级高于 fps
-        :param fps: 每秒截图帧数，当 interval 未指定时使用
-        :param output_dir: 输出目录，默认为 cache/actions
-        :param window_locator: 窗口定位器，默认为 None（将自动创建）
-        :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
-        :param quality: JPEG 质量（1-100），默认 85
-        :param game_keys_only: 是否只监控 GTAV 游戏常用按键，默认 True
-        :param minimap_only: 是否仅截取小地图区域，默认 False
+        :param duration: 持续时间（秒）
+        :param single: 是否为单帧模式
+        :param exit_after_capture: 截图后是否退出
+        :param monitored_keys: 监控按键列表
+        :param stop_key_enabled: 是否启用停止键检测
         """
-        if output_dir is None:
-            output_dir = ACTIONS_DIR
+        # 创建监控按键检测器
+        trigger_detector = None
+        last_pressed: set[str] = set()
+        if monitored_keys:
+            trigger_detector = KeyboardActionDetector(monitored_keys=monitored_keys)
+            key_hint_str = logstr.hint(f"'{', '.join(monitored_keys)}'")
+            logger.note(f"监控按键: {key_hint_str}，仅当这些键按下时才截图")
 
-        super().__init__(
-            interval=interval,
-            fps=fps,
-            output_dir=output_dir,
-            window_locator=window_locator,
-            image_format=image_format,
-            quality=quality,
-            minimap_only=minimap_only,
-        )
+        # 创建停止键检测器
+        stop_detector = None
+        last_stop_key_pressed = False
+        if stop_key_enabled:
+            stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_KEY])
 
-        # 初始化键盘动作检测器
-        self.keyboard_detector = KeyboardActionDetector(game_keys_only=game_keys_only)
-
-    def capture_frame_with_action(
-        self, action_info: KeyboardActionInfo, verbose: bool = True
-    ) -> Optional[str]:
-        """
-        截取当前 GTAV 窗口画面，并记录键盘动作信息。
-
-        :param action_info: 键盘动作信息
-        :param verbose: 是否打印保存日志
-        :return: 预生成的文件名，失败则返回 None
-        """
-        # 获取窗口信息
-        window_info = self._get_window_info()
-        if not window_info:
-            return None
-
-        hwnd, width, height = window_info
-
-        # 确保小地图裁剪区域已计算（仅首次）
-        self._ensure_minimap_crop_region(width, height)
-
-        # 截取窗口画面（支持后台窗口）
-        raw_data = self._capture_window(hwnd, width, height)
-        if not raw_data:
-            logger.warn("截取窗口画面失败")
-            return None
-
-        # 如果仅截取小地图，在字节级别裁剪原始数据
-        frame_width, frame_height = width, height
-        if self._minimap_crop_region:
-            raw_data, frame_width, frame_height = self._crop_raw_data(
-                raw_data, width, height, self._minimap_crop_region
-            )
-
-        keys_str = ", ".join(action_info.pressed_keys)
-        filename = self._cache_frame(raw_data, frame_width, frame_height, action_info)
-        if verbose:
-            cached_count = self.get_cached_frame_count()
-            logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
-        return filename
-
-    def _capture_loop(self):
-        """截图循环（在后台线程中运行）。"""
-        logger.note(f"开始键盘触发截图循环，检测间隔: {self.interval} 秒")
+        # 开始截图循环
+        start_time = time.time()
         self.reset_tick()
-        while self._running:
-            action_info = self.keyboard_detector.detect()
-            if action_info.has_action:
-                self.capture_frame_with_action(action_info)
+        captured_count = 0
+
+        while True:
+            elapsed = time.time() - start_time
+            if not single and elapsed >= duration:
+                break
+
+            # 检查停止键
+            if stop_detector:
+                action_info = stop_detector.detect()
+                stop_key_pressed = STOP_CAPTURE_KEY in action_info.pressed_keys
+                if stop_key_pressed and not last_stop_key_pressed:
+                    logger.note(f"检测到 '{STOP_CAPTURE_KEY}' 键，停止截图...")
+                    break
+                last_stop_key_pressed = stop_key_pressed
+
+            # 检查监控按键（边沿检测）
+            should_capture = True
+            if trigger_detector:
+                pressed_now = set(trigger_detector.get_pressed_keys())
+                newly_pressed = pressed_now - last_pressed
+                last_pressed = pressed_now
+                should_capture = bool(newly_pressed)
+
+            # 执行截图
+            if should_capture:
+                filename, extra_info = self.capturer.try_capture_frame(verbose=False)
+
+                # 记录进度
+                if filename:
+                    captured_count += 1
+                    cached_count = self.capturer.get_cached_frame_count()
+
+                    if single:
+                        self.capturer.flush_cache(verbose=True)
+                        logger.okay(f"单次截图成功: {filename}")
+                    else:
+                        # 进度日志
+                        percent = (elapsed / duration) * 100
+                        progress_logstr = get_progress_logstr(percent)
+                        progress_str = progress_logstr(
+                            f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
+                        )
+                        logger.okay(
+                            f"{progress_str} 已缓存 {cached_count} 帧{extra_info}"
+                        )
+
+                    # 检查是否需要退出
+                    if exit_after_capture:
+                        if not single:
+                            logger.note(f"已截图 {captured_count} 次，退出循环")
+                        break
+
             self.wait_next_tick()
-        logger.note("键盘触发截图循环已停止")
 
-    def __repr__(self) -> str:
-        return (
-            f"KeyboardActionCapturer("
-            f"interval={self.interval}, "
-            f"format={self.image_format}, "
-            f"quality={self.quality}, "
-            f"output_dir={self.cacher.save_dir}, "
-            f"cached_frames={len(self.cacher)}, "
-            f"running={self._running}, "
-            f"frame_count={self._frame_count})"
-        )
-
-
-class HotkeyToggler:
-    """
-    热键启停器。
-
-    使用 START_CAPTURE_KEY 键启动截图，STOP_CAPTURE_KEY 键停止截图。
-    通过边沿检测避免重复触发。
-    """
-
-    def __init__(self, capturer: Union[ScreenCapturer, KeyboardActionCapturer]):
-        """
-        初始化热键启停器。
-
-        :param capturer: 截图器实例
-        """
-        self.capturer = capturer
-        # 初始化键盘检测器（只监控启动和停止键）
-        self.hotkey_detector = KeyboardActionDetector(
-            monitored_keys=[START_CAPTURE_KEY, STOP_CAPTURE_KEY]
-        )
-        self.capture_active = False
-        # 记录上一次按键状态，用于边沿检测
-        self._last_start_key_pressed = False
-        self._last_stop_key_pressed = False
-
-    def is_active(self) -> bool:
-        """
-        检查截图是否正在运行。
-
-        :return: 是否正在运行
-        """
-        return self.capture_active
-
-    def start_capture(self):
-        """启动截图。"""
-        if not self.capture_active:
-            self.capture_active = True
-            self.capturer.start()
-            logger.okay(
-                f"截图已开始（按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）"
-            )
-
-    def stop_capture(self):
-        """停止截图并保存。"""
-        if self.capture_active:
-            self.capture_active = False
-            self.capturer.stop(flush=True)
-            logger.okay("截图已停止")
-
-    def check_hotkeys(self) -> bool:
-        """
-        检查热键状态（START_CAPTURE_KEY 启动，STOP_CAPTURE_KEY 停止）。
-
-        使用边沿检测避免重复触发。
-
-        :return: 是否应该继续循环
-        """
-        action_info = self.hotkey_detector.detect()
-
-        # 检查启动键
-        start_key_pressed = START_CAPTURE_KEY in action_info.pressed_keys
-        if start_key_pressed and not self._last_start_key_pressed:
-            # 按键从未按下变为按下（上升沿）
-            self.start_capture()
-        self._last_start_key_pressed = start_key_pressed
-
-        # 检查停止键
-        stop_key_pressed = STOP_CAPTURE_KEY in action_info.pressed_keys
-        if stop_key_pressed and not self._last_stop_key_pressed:
-            # 按键从未按下变为按下（上升沿）
-            self.stop_capture()
-        self._last_stop_key_pressed = stop_key_pressed
-
-        return True
-
-    def run(self):
-        """运行热键启停控制循环"""
-        logger.note("热键启停截图模式已启动")
-        logger.note(
-            f"按 {key_hint(START_CAPTURE_KEY)} {val_mesg('开始截图')}，"
-            f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}，"
-            f"按 {key_hint('Ctrl+C')} {val_mesg('退出')}"
-        )
-
-        try:
-            while True:
-                self.check_hotkeys()
-                time.sleep(0.05)  # 50ms 检测间隔
-
-        except KeyboardInterrupt:
-            logger.note("\n检测到 Ctrl+C，正在退出...")
-            if self.capture_active:
-                self.stop_capture()
-
-        logger.note("热键启停截图模式已退出")
+        # 完成并保存（单帧模式已经保存过了）
+        if not single and captured_count > 0:
+            frame_count = self.capturer.get_cached_frame_count()
+            logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
+            saved_count = self.capturer.flush_cache(verbose=True)
+            logger.okay(f"截图完成，共保存 {saved_count} 帧")
 
 
 class CapturerRunner:
     """
     截图器运行器。
 
-    封装各种运行模式的逻辑，包括单帧、连续截图、交互式控制等。
+    封装各种运行模式的逻辑，包括单帧、连续截图、热键启停等。
     """
 
     def __init__(
         self,
-        capturer: Union[ScreenCapturer, KeyboardActionCapturer],
+        capturer: ScreenCapturer,
         keyboard_trigger: bool = False,
     ):
         """
         初始化截图器运行器。
 
         :param capturer: 截图器实例
-        :param keyboard_trigger: 是否为键盘触发模式
+        :param keyboard_trigger: 是否为键盘触发模式（应与 capturer.keyboard_trigger 一致）
         """
         self.capturer = capturer
         self.keyboard_trigger = keyboard_trigger
@@ -1066,228 +970,123 @@ class CapturerRunner:
             return False
         return True
 
-    def run_single_frame(
-        self,
-        exit_after_capture: bool = True,
-        monitored_keys: Optional[list[str]] = None,
-    ):
-        """运行单帧截图模式。
-
-        - 当 exit_after_capture=False：截图后不退出，继续监听。
-        - 当 monitored_keys 非空：仅当这些键出现按下边沿时触发一次截图（长按不重复）。
+    def _wait_for_start_signal(self) -> bool:
         """
-        # 创建触发检测器
-        if monitored_keys:
-            trigger_detector = KeyboardActionDetector(monitored_keys=monitored_keys)
-        else:
-            trigger_detector = None
+        等待热键启动信号。
 
-        # 非触发模式且无监控按键：执行单次截图后返回
-        if not self.keyboard_trigger and trigger_detector is None:
-            logger.note("执行单次截图...")
-            filename = self.capturer.capture_frame(verbose=True)
-            if filename:
-                self.capturer.flush_cache(verbose=True)
-                logger.okay(f"单次截图成功: {filename}")
-            return
-
-        # 显示提示信息
-        if self.keyboard_trigger:
-            if monitored_keys:
-                key_hint_str = logstr.hint(f"'{", ".join(monitored_keys)}'")
-            else:
-                key_hint_str = logstr.hint("'任意键'")
-        else:
-            key_hint_str = logstr.hint(f"'{", ".join(monitored_keys)}'")
-        logger.note(f"单帧模式，按下 {key_hint_str} 触发截图")
-
-        # 边沿检测状态
-        last_pressed: set[int] = set()
-
-        # 循环检测并截图
-        while True:
-            # 检测按键
-            if trigger_detector:
-                pressed_now = set(trigger_detector.get_pressed_keys())
-                newly_pressed = pressed_now - last_pressed
-                last_pressed = pressed_now
-                if not newly_pressed:
-                    if self.keyboard_trigger:
-                        time.sleep(self.capturer.interval)
-                    else:
-                        time.sleep(0.01)
-                    continue
-
-            # 执行截图
-            if self.keyboard_trigger:
-                action_info = self.capturer.keyboard_detector.detect()
-                if not action_info.has_action:
-                    time.sleep(self.capturer.interval)
-                    continue
-                filename = self.capturer.capture_frame_with_action(
-                    action_info, verbose=True
-                )
-            else:
-                filename = self.capturer.capture_frame(verbose=True)
-
-            # 保存并记录
-            if filename:
-                self.capturer.flush_cache(verbose=True)
-                logger.okay(f"单次截图成功: {filename}")
-                if exit_after_capture:
-                    break
-
-            if self.keyboard_trigger:
-                time.sleep(self.capturer.interval)
-            else:
-                time.sleep(0.01)
-
-    def run_hotkey_toggle(self):
-        """运行热键启停模式。"""
-        toggler = HotkeyToggler(self.capturer)
-        toggler.run()
-
-    def _setup_continuous_mode(
-        self, duration: float
-    ) -> tuple[float, bool, Optional[KeyboardActionDetector], bool]:
+        :return: 是否收到启动信号（False 表示用户中断）
         """
-        设置连续截图模式的参数。
+        logger.note("热键启停模式已启动")
+        logger.note(
+            f"按 {key_hint(START_CAPTURE_KEY)} {val_mesg('开始截图')}，"
+            f"按 {key_hint('Ctrl+C')} {val_mesg('退出')}"
+        )
+
+        hotkey_detector = KeyboardActionDetector(monitored_keys=[START_CAPTURE_KEY])
+        last_start_key_pressed = False
+
+        try:
+            while True:
+                action_info = hotkey_detector.detect()
+                start_key_pressed = START_CAPTURE_KEY in action_info.pressed_keys
+
+                # 边沿检测：按键从未按下变为按下（上升沿）
+                if start_key_pressed and not last_start_key_pressed:
+                    logger.okay(f"检测到 '{START_CAPTURE_KEY}' 键，开始截图...")
+                    return True
+
+                last_start_key_pressed = start_key_pressed
+                time.sleep(0.05)  # 50ms 检测间隔
+
+        except KeyboardInterrupt:
+            logger.note("\n检测到 Ctrl+C，退出...")
+            return False
+
+    def _setup_capture_loop(
+        self, duration: float, single: bool, hotkey_toggle: bool
+    ) -> tuple[float, bool, Optional[KeyboardActionDetector]]:
+        """
+        设置截图循环的参数。
 
         :param duration: 持续时间（秒）
-        :return: (实际持续时间, 是否使用停止键, 停止键检测器, 上次停止键状态)
+        :param single: 是否为单帧模式
+        :param hotkey_toggle: 是否为热键启停模式
+        :return: (实际持续时间, 是否使用停止键, 停止键检测器)
         """
         max_duration = 600  # 10分钟
+
+        if single:
+            # 单帧模式：无时间限制，只等待触发
+            mode_desc = "单帧模式"
+            logger.note(f"{mode_desc}，等待触发...")
+            # 单帧模式下，如果是热键启停，需要监听停止键
+            if hotkey_toggle:
+                stop_detector = KeyboardActionDetector(
+                    monitored_keys=[STOP_CAPTURE_KEY]
+                )
+                return max_duration, True, stop_detector
+            return max_duration, False, None
+
+        # 连续模式
         if self.keyboard_trigger:
             mode_desc = "键盘触发截图"
         else:
             mode_desc = "连续截图"
 
-        if duration == 0:
-            # 持续模式
+        if duration == 0 or hotkey_toggle:
+            # 持续模式 或 热键启停模式：需要监听停止键
             duration = max_duration
             logger.note(
                 f"{mode_desc}（持续模式，最大 {max_duration} 秒，"
                 f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}），缓存模式..."
             )
             stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_KEY])
-            return duration, True, stop_detector, False
+            return duration, True, stop_detector
         else:
             # 定时模式
             logger.note(f"{mode_desc}（{duration} 秒），缓存模式...")
-            return duration, False, None, False
+            return duration, False, None
 
-    def _check_stop_key(
+    def run_capture_loop(
         self,
-        use_stop_key: bool,
-        stop_detector: Optional[KeyboardActionDetector],
-        last_stop_key_pressed: bool,
-    ) -> tuple[bool, bool]:
-        """
-        检查是否按下停止键。
-
-        :param use_stop_key: 是否启用停止键检测
-        :param stop_detector: 停止键检测器
-        :param last_stop_key_pressed: 上次停止键状态
-        :return: (是否应该停止, 新的停止键状态)
-        """
-        if not use_stop_key or stop_detector is None:
-            return False, last_stop_key_pressed
-
-        action_info = stop_detector.detect()
-        stop_key_pressed = STOP_CAPTURE_KEY in action_info.pressed_keys
-
-        if stop_key_pressed and not last_stop_key_pressed:
-            logger.note(f"检测到 '{STOP_CAPTURE_KEY}' 键，停止截图...")
-            return True, stop_key_pressed
-
-        return False, stop_key_pressed
-
-    def _capture_frame(self) -> tuple[Optional[str], str]:
-        """
-        根据模式执行一次截图。
-
-        :return: (文件名, 额外信息)
-        """
-        if self.keyboard_trigger:
-            action_info = self.capturer.keyboard_detector.detect()
-            if action_info.has_action:
-                filename = self.capturer.capture_frame_with_action(
-                    action_info, verbose=False
-                )
-                extra_info = f" (按键: {', '.join(action_info.pressed_keys)})"
-                return filename, extra_info
-            return None, ""
-        else:
-            filename = self.capturer.capture_frame(verbose=False)
-            return filename, ""
-
-    def _log_progress(
-        self, elapsed: float, duration: float, cached_count: int, extra_info: str
+        duration: float = 60,
+        single: bool = False,
+        exit_after_capture: bool = False,
+        monitored_keys: Optional[list[str]] = None,
+        hotkey_toggle: bool = False,
     ):
         """
-        记录进度日志。
+        运行截图循环（统一处理单帧和连续模式）。
 
-        :param elapsed: 已用时间
-        :param duration: 总持续时间
-        :param cached_count: 已缓存帧数
-        :param extra_info: 额外信息
+        :param duration: 持续时间（秒），0表示持续模式（最大10分钟），单帧模式下忽略
+        :param single: 是否为单帧模式（True=单帧，False=连续）
+        :param exit_after_capture: 截图后是否退出（True=截图一次即退出，False=持续截图）
+        :param monitored_keys: 监控按键名列表，仅当这些键按下时才截图（可选）
+        :param hotkey_toggle: 是否为热键启停模式
         """
-        percent = (elapsed / duration) * 100
-        progress_logstr = get_progress_logstr(percent)
-        progress_str = progress_logstr(
-            f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
-        )
-        logger.okay(f"{progress_str} 已缓存 {cached_count} 帧{extra_info}")
+        # 单帧模式下，exit_after_capture 强制为 True（除非用户明确设置为 False）
+        if single and exit_after_capture is None:
+            exit_after_capture = True
 
-    def _finalize_capture(self):
-        """完成截图并保存。"""
-        frame_count = self.capturer.get_cached_frame_count()
-        logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
-        saved_count = self.capturer.flush_cache(verbose=True)
-        logger.okay(f"连续截图完成，共保存 {saved_count} 帧")
-
-    def run_continuous(self, duration: float):
-        """
-        运行连续截图模式。
-
-        :param duration: 持续时间（秒），0表示持续模式（最大10分钟）
-        """
         # 设置参数
-        (
-            duration,
-            use_stop_key,
-            stop_detector,
-            last_stop_key_pressed,
-        ) = self._setup_continuous_mode(duration)
+        duration, use_stop_key, stop_detector = self._setup_capture_loop(
+            duration, single, hotkey_toggle
+        )
 
-        # 开始截图循环
-        start_time = time.time()
-        self.capturer.reset_tick()
+        # 创建循环控制器
+        looper = CaptureLooper(
+            capturer=self.capturer,
+            interval=self.interval,
+        )
 
-        while True:
-            elapsed = time.time() - start_time
-            if elapsed >= duration:
-                break
-
-            # 检查停止键
-            should_stop, last_stop_key_pressed = self._check_stop_key(
-                use_stop_key, stop_detector, last_stop_key_pressed
-            )
-            if should_stop:
-                break
-
-            # 执行截图
-            filename, extra_info = self._capture_frame()
-
-            # 记录进度
-            if filename:
-                cached_count = self.capturer.get_cached_frame_count()
-                self._log_progress(elapsed, duration, cached_count, extra_info)
-
-            self.capturer.wait_next_tick()
-
-        # 完成并保存
-        self._finalize_capture()
+        # 执行截图循环
+        looper.run_loop(
+            duration=duration,
+            single=single,
+            exit_after_capture=exit_after_capture,
+            monitored_keys=monitored_keys,
+            stop_key_enabled=use_stop_key,
+        )
 
     def run(
         self,
@@ -1303,8 +1102,8 @@ class CapturerRunner:
         :param single: 是否只截取单帧
         :param duration: 连续截图持续时间（秒）
         :param hotkey_toggle: 是否为热键启停模式
-        :param exit_after_capture: 单帧模式截图后是否退出
-        :param monitored_keys: 单帧模式监控按键名列表
+        :param exit_after_capture: 截图后是否退出（单帧模式默认 True，连续模式默认 False）
+        :param monitored_keys: 监控按键名列表，仅当这些键按下时才截图
         """
         # 打印配置信息
         self._print_config(hotkey_toggle=hotkey_toggle)
@@ -1315,16 +1114,29 @@ class CapturerRunner:
 
         logger.note(f"截取器信息: {self.capturer}")
 
-        # 根据模式运行
+        # 热键启停模式：等待启动信号
         if hotkey_toggle:
-            self.run_hotkey_toggle()
-        elif single:
-            self.run_single_frame(
+            if not self._wait_for_start_signal():
+                return  # 用户中断，退出
+
+        # 统一使用 run_capture_loop，通过参数区分单帧/连续模式
+        # 连续模式下，exit_after_capture 默认为 False
+        if not single:
+            exit_after_capture = False
+
+        try:
+            self.run_capture_loop(
+                duration=duration,
+                single=single,
                 exit_after_capture=exit_after_capture,
                 monitored_keys=monitored_keys,
+                hotkey_toggle=hotkey_toggle,
             )
-        else:
-            self.run_continuous(duration)
+        except KeyboardInterrupt:
+            logger.note("\n检测到 Ctrl+C，正在退出...")
+            # 如果有缓存的帧，保存它们
+            if self.capturer.get_cached_frame_count() > 0:
+                self.capturer.flush_cache(verbose=True)
 
 
 class ScreenCapturerArgParser:
@@ -1392,11 +1204,12 @@ def main():
     """命令行入口。"""
     args = ScreenCapturerArgParser().parse()
 
-    # 根据模式创建对应的截图器
-    if args.keyboard_trigger:
-        capturer = KeyboardActionCapturer(fps=args.fps, minimap_only=args.minimap_only)
-    else:
-        capturer = ScreenCapturer(fps=args.fps, minimap_only=args.minimap_only)
+    # 创建统一的截图器，通过 keyboard_trigger 参数控制模式
+    capturer = ScreenCapturer(
+        fps=args.fps,
+        minimap_only=args.minimap_only,
+        keyboard_trigger=args.keyboard_trigger,
+    )
 
     # 解析监控按键
     monitored_keys = None
