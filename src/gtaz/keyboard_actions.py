@@ -3,22 +3,18 @@
 import ctypes
 import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+from typing import Optional, Literal
 
 from tclogger import TCLogger, get_now
 
 
 logger = TCLogger(name="KeyboardActionDetector", use_prefix=True, use_prefix_ms=True)
 
+KEY_UP = "up"  # 边沿触发：仅在按键刚释放时触发（检测一次）
+KEY_DOWN = "down"  # 边沿触发：仅在按键刚按下时触发（检测一次）
+KEY_HOLD = "hold"  # 电平触发：按键按下期间持续触发
 
-class TriggerType(Enum):
-    """按键触发类型。"""
-
-    DOWN = "down"  # 边沿触发：仅在按键刚按下时触发（检测一次）
-    UP = "up"  # 边沿触发：仅在按键刚释放时触发（检测一次）
-    HOLD = "hold"  # 电平触发：按键按下期间持续触发
-
+TriggerType = Literal["up", "down", "hold"]
 
 # 虚拟键码到按键名的映射（主映射）
 KEY_CODE_TO_NAME = {
@@ -283,23 +279,24 @@ class KeyboardActionDetector:
         self,
         monitored_keys: Optional[list[str]] = None,
         game_keys_only: bool = False,
-        trigger_type: TriggerType = TriggerType.HOLD,
+        trigger_type: TriggerType = None,
     ):
         """
         初始化键盘动作检测器。
 
         :param monitored_keys: 要监控的按键列表（键名），默认监控所有按键
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键
-        :param trigger_type: 按键触发类型（DOWN=刚按下/UP=刚释放/HOLD=按住）
+        :param trigger_type: 按键触发类型（KEY_DOWN=刚按下/KEY_UP=刚释放/KEY_HOLD=按住）
         """
-        if game_keys_only:
-            self.monitored_keys = GTAV_GAME_KEYS
-        elif monitored_keys is not None:
+        if monitored_keys:
             self.monitored_keys = normalize_keys(monitored_keys)
+        elif game_keys_only:
+            self.monitored_keys = GTAV_GAME_KEYS
         else:
             self.monitored_keys = ALL_KEYS
 
-        self.trigger_type = trigger_type
+        # 设置触发类型，如果未指定则默认为 KEY_DOWN
+        self.trigger_type = trigger_type or KEY_DOWN
 
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
@@ -412,9 +409,7 @@ class KeyboardActionDetector:
             has_action=has_action,
         )
 
-    def _determine_has_action(
-        self, current_pressed: set[str], key_states: dict[str, KeyState]
-    ) -> bool:
+    def _determine_has_action(self, current_pressed: set[str]) -> bool:
         """
         根据 trigger_type 判断是否有动作。
 
@@ -422,18 +417,18 @@ class KeyboardActionDetector:
         :param key_states: 按键状态字典
         :return: 是否有动作
         """
-        if self.trigger_type == TriggerType.HOLD:
+        trigger_type = self.trigger_type.lower()
+
+        if trigger_type == KEY_HOLD:
             # 电平触发：只要有按键按下就触发
             return len(current_pressed) > 0
-
-        elif self.trigger_type == TriggerType.DOWN:
+        elif trigger_type == KEY_DOWN:
             # 边沿触发（按下）：只有在按键刚按下时触发
             for key in current_pressed:
                 if key not in self._previous_pressed:
                     return True
             return False
-
-        elif self.trigger_type == TriggerType.UP:
+        elif trigger_type == KEY_UP:
             # 边沿触发（释放）：只有在按键刚释放时触发
             for key in self._previous_pressed:
                 if key not in current_pressed:
