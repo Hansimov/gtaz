@@ -14,11 +14,8 @@ from tclogger import PathType, TCLogger, TCLogbar, logstr
 
 
 from .windows import GTAVWindowLocator
-from .keyboard_actions import (
-    KeyboardActionDetector,
-    KeyboardActionInfo,
-    TriggerType,
-)
+from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
+from .keyboard_actions import TriggerType, KEY_UP, KEY_DOWN, KEY_HOLD
 from .segments import calc_minimap_crop_region
 
 
@@ -117,54 +114,46 @@ class CapturedFrame:
 
 
 class DetectorManager:
-    """
-    键盘检测器管理类。
-
-    负责创建和管理各种用途的键盘检测器，避免在各个类中重复创建。
-    """
+    """创建和管理不同用途的键盘输入检测器。"""
 
     @staticmethod
     def create_capture_detector(
-        monitored_keys: list[str] = None,
-        game_keys_only: bool = True,
-        trigger_type: TriggerType = TriggerType.HOLD,
+        monitored_keys: list[str] = None, trigger_type: TriggerType = None
     ) -> KeyboardActionDetector:
-        """
-        创建用于截图触发的检测器。
+        """创建截图触发检测器
 
-        :param monitored_keys: 监控按键列表，None 则使用游戏常用按键
-        :param game_keys_only: 是否只监控游戏常用按键（monitored_keys 为 None 时有效）
-        :param trigger_type: 按键触发类型（DOWN/UP/HOLD）
+        :param monitored_keys: 监控按键列表，默认为 None（使用游戏常用按键）
+        :param trigger_type: 按键触发类型
+
         :return: 键盘检测器实例
         """
         if monitored_keys:
             return KeyboardActionDetector(
                 monitored_keys=monitored_keys, trigger_type=trigger_type
             )
-        return KeyboardActionDetector(
-            game_keys_only=game_keys_only, trigger_type=trigger_type
-        )
+        else:
+            return KeyboardActionDetector(
+                game_keys_only=True, trigger_type=trigger_type
+            )
 
     @staticmethod
     def create_start_detector() -> KeyboardActionDetector:
-        """
-        创建用于热键启动的检测器。
+        """创建启动热键检测器
 
         :return: 键盘检测器实例
         """
         return KeyboardActionDetector(
-            monitored_keys=[START_CAPTURE_KEY], trigger_type=TriggerType.DOWN
+            monitored_keys=[START_CAPTURE_KEY], trigger_type=KEY_DOWN
         )
 
     @staticmethod
     def create_stop_detector() -> KeyboardActionDetector:
-        """
-        创建用于停止截图的检测器。
+        """创建停止热键检测器
 
         :return: 键盘检测器实例
         """
         return KeyboardActionDetector(
-            monitored_keys=[STOP_CAPTURE_KEY], trigger_type=TriggerType.DOWN
+            monitored_keys=[STOP_CAPTURE_KEY], trigger_type=KEY_DOWN
         )
 
 
@@ -172,8 +161,7 @@ class CaptureCacher:
     """
     截图缓存管理器。
 
-    将截图数据缓存在内存中，在时间窗口结束时批量保存到文件。
-    支持普通截图和带键盘动作信息的截图。
+    将截图数据缓存在内存中，在时间窗口结束时批量保存到文件。可以保存图片和键盘动作信息。
     """
 
     def __init__(
@@ -193,11 +181,8 @@ class CaptureCacher:
         self.image_format = image_format
         self.quality = max(1, min(100, quality))
 
-        # 缓存的帧列表
         self._frames: list[CapturedFrame] = []
-        # 帧计数器（避免每次计算 len）
         self._frame_count: int = 0
-        # 线程锁，确保线程安全
         self._lock = threading.Lock()
 
     def add_frame(self, frame: CapturedFrame):
@@ -393,8 +378,7 @@ class ScreenCapturer:
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
         :param quality: JPEG 质量（1-100），默认 85
         :param minimap_only: 是否仅截取小地图区域，默认 False
-        :param capture_detector: 截图触发检测器，None 表示普通模式（按间隔截图），
-                                 非 None 表示键盘触发模式（仅在有按键时截图）
+        :param capture_detector: 截图触发检测器，None 表示按间隔截图，非 None 表示键盘触发模式（仅在有按键时截图）
         """
         self.interval = self._calc_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
@@ -670,6 +654,7 @@ class ScreenCapturer:
         :param width: 图像宽度
         :param height: 图像高度
         :param action_info: 键盘动作信息（可选）
+
         :return: 预生成的文件名
         """
         self._frame_count += 1
@@ -705,15 +690,14 @@ class ScreenCapturer:
             )
 
     def capture_frame(
-        self,
-        verbose: bool = True,
-        action_info: KeyboardActionInfo = None,
+        self, action_info: KeyboardActionInfo = None, verbose: bool = True
     ) -> str:
         """
         截取当前 GTAV 窗口画面。
 
         :param verbose: 是否打印保存日志
-        :param action_info: 键盘动作信息（可选，keyboard_trigger 模式下由 try_capture_frame 传入）
+        :param action_info: 键盘动作信息
+
         :return: 预生成的文件名，失败则返回 None
         """
         # 获取窗口信息
@@ -766,7 +750,7 @@ class ScreenCapturer:
             action_info = self.capture_detector.detect()
             if action_info.has_action:
                 # 有 capture_detector 则保存按键详细信息
-                filename = self.capture_frame(verbose=verbose, action_info=action_info)
+                filename = self.capture_frame(action_info=action_info, verbose=verbose)
                 extra_info = f" (按键: {', '.join(action_info.pressed_keys)})"
                 return filename, extra_info
             return None, ""
@@ -850,24 +834,16 @@ class CaptureRunner:
         self.single = single
         self.hotkey_toggle = hotkey_toggle
 
-        # 创建 detectors
-        self.start_detector = None
-        self.stop_detector = None
         self._create_detectors()
 
     def _create_detectors(self):
-        """
-        根据参数创建相应的 detector。
-        """
-        # hotkey_toggle 模式：创建 start_detector
+        """根据启停模式创建检测器"""
         if self.hotkey_toggle:
             self.start_detector = DetectorManager.create_start_detector()
-
-        # 需要 stop_detector 的情况
-        if self.single and self.hotkey_toggle:
             self.stop_detector = DetectorManager.create_stop_detector()
-        elif self.duration == 0 or self.hotkey_toggle:
-            self.stop_detector = DetectorManager.create_stop_detector()
+        else:
+            self.start_detector = None
+            self.stop_detector = None
 
     def run(self):
         """
@@ -879,11 +855,13 @@ class CaptureRunner:
             return
 
         # 打印配置信息
-        mode_str = (
-            "单帧"
-            if self.single
-            else f"连续({self.duration}s)" if self.duration > 0 else "持续"
-        )
+        if self.single:
+            mode_str = "单帧"
+        elif self.duration > 0:
+            mode_str = "持续"
+        else:
+            mode_str = f"连续({self.duration}s)"
+
         if self.start_detector:
             mode_str = f"热键启停-{mode_str}"
         minimap_str = "（仅小地图）" if self.capturer.minimap_only else ""
@@ -1008,7 +986,7 @@ class ScreenCapturerArgParser:
     def _add_arguments(self):
         """添加命令行参数。"""
         self.parser.add_argument(
-            "-s", "--single", action="store_true", help="只截取当前单帧"
+            "-s", "--single", action="store_true", help="单帧截取模式"
         )
         self.parser.add_argument(
             "-x",
@@ -1031,27 +1009,27 @@ class ScreenCapturerArgParser:
             help=f"连续截图持续时间，单位秒（默认: 60，设为 0 则持续截屏直到按 '{STOP_CAPTURE_KEY}' 键停止，最大 10 分钟）",
         )
         self.parser.add_argument(
-            "-t",
+            "-g",
             "--hotkey-toggle",
             action="store_true",
             dest="hotkey_toggle",
             help=f"热键启停，按 '{START_CAPTURE_KEY}' 开始截图，按 '{STOP_CAPTURE_KEY}' 停止截图（可与 -k 组合使用）",
         )
         self.parser.add_argument(
-            "-k",
-            "--keyboard-trigger",
+            "-i",
+            "--input-trigger",
             action="store_true",
             help="仅在有键盘输入时截图，并记录按键信息",
         )
         self.parser.add_argument(
-            "-r",
+            "-k",
             "--monitored-keys",
             type=str,
             default="",
             help="按下指定键才触发截图，按住不重复触发",
         )
         self.parser.add_argument(
-            "-a",
+            "-t",
             "--trigger-type",
             type=str,
             default="hold",
@@ -1075,36 +1053,21 @@ def main():
     args = ScreenCapturerArgParser().parse()
 
     # 解析监控按键
-    monitored_keys = (
-        [k.strip() for k in args.monitored_keys.split(",") if k.strip()]
-        if args.monitored_keys
-        else None
-    )
+    if args.monitored_keys:
+        monitored_keys = [
+            k.strip() for k in args.monitored_keys.split(",") if k.strip()
+        ]
+    else:
+        monitored_keys = None
 
-    # 解析 trigger_type
-    trigger_type_map = {
-        "down": TriggerType.DOWN,
-        "hold": TriggerType.HOLD,
-    }
-    trigger_type = trigger_type_map.get(args.trigger_type, TriggerType.HOLD)
-
-    # 创建 capture_detector（keyboard_trigger 或 monitored_keys 模式）
-    capture_detector = None
-
-    if args.keyboard_trigger:
-        # keyboard_trigger 模式：记录按键详细信息到 JSON
+    # 创建截图触发检测器
+    if args.input_trigger or monitored_keys:
         capture_detector = DetectorManager.create_capture_detector(
             monitored_keys=monitored_keys,
-            game_keys_only=True,
-            trigger_type=trigger_type,
+            trigger_type=args.trigger_type,
         )
-    elif monitored_keys:
-        # monitored_keys 模式：仅在特定按键按下时截图
-        capture_detector = DetectorManager.create_capture_detector(
-            monitored_keys=monitored_keys,
-            game_keys_only=False,
-            trigger_type=trigger_type,
-        )
+    else:
+        capture_detector = None
 
     # 创建截图器
     capturer = ScreenCapturer(
@@ -1114,7 +1077,7 @@ def main():
         capture_detector=capture_detector,
     )
 
-    # 创建并运行 runner
+    # 创建截图运行器，然后运行
     runner = CaptureRunner(
         capturer=capturer,
         duration=args.duration,
@@ -1137,22 +1100,22 @@ if __name__ == "__main__":
     # python -m gtaz.screens -f 10 -d 60
 
     # Case: 键盘触发模式
-    # python -m gtaz.screens -k -d 60
+    # python -m gtaz.screens -i -d 60
 
-    # Case: 键盘触发模式 - DOWN（边沿触发，只在按下瞬间截图一次）
-    # python -m gtaz.screens -k -a down
+    # Case: 键盘触发模式 - KEY_DOWN（边沿触发，只在按下瞬间截图一次）
+    # python -m gtaz.screens -i -t down
 
-    # Case: 监控特定按键 - HOLD 模式（按住就持续截图）
-    # python -m gtaz.screens -r "W,A,S,D" -a hold
+    # Case: 监控特定按键 - KEY_HOLD 模式（按住就持续截图）
+    # python -m gtaz.screens -k "W,A,S,D" -t hold
 
     # Case: 仅截取小地图
     # python -m gtaz.screens -m
 
     # Case: 键盘触发 + 仅小地图
-    # python -m gtaz.screens -k -m -f 10 -d 30
+    # python -m gtaz.screens -i -m -f 10 -d 30
 
     # Case: 热键启停模式
-    # python -m gtaz.screens -t
+    # python -m gtaz.screens -g
 
     # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
-    # python -m gtaz.screens -t -k -m -f 10 -d 0
+    # python -m gtaz.screens -g -i -m -f 10 -d 0
