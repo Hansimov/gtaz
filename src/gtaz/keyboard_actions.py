@@ -3,12 +3,21 @@
 import ctypes
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 from tclogger import TCLogger, get_now
 
 
 logger = TCLogger(name="KeyboardActionDetector", use_prefix=True, use_prefix_ms=True)
+
+
+class TriggerType(Enum):
+    """按键触发类型。"""
+
+    DOWN = "down"  # 边沿触发：仅在按键刚按下时触发（检测一次）
+    UP = "up"  # 边沿触发：仅在按键刚释放时触发（检测一次）
+    HOLD = "hold"  # 电平触发：按键按下期间持续触发
 
 
 # 虚拟键码到按键名的映射（主映射）
@@ -132,7 +141,7 @@ ALL_KEYS = list(KEY_NAME_TO_CODE.keys())
 
 def key_name_to_code(key: str) -> int:
     """将按键名转换为虚拟键码（大小写不敏感）。
-    
+
     :param key: 按键名
     :return: 虚拟键码，如果不存在返回 0
     """
@@ -145,7 +154,7 @@ def key_name_to_code(key: str) -> int:
 
 def key_code_to_name(code: int) -> str:
     """将虚拟键码转换为按键名。
-    
+
     :param code: 虚拟键码
     :return: 按键名，如果不存在返回 'Unknown'
     """
@@ -274,12 +283,14 @@ class KeyboardActionDetector:
         self,
         monitored_keys: Optional[list[str]] = None,
         game_keys_only: bool = False,
+        trigger_type: TriggerType = TriggerType.HOLD,
     ):
         """
         初始化键盘动作检测器。
 
         :param monitored_keys: 要监控的按键列表（键名），默认监控所有按键
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键
+        :param trigger_type: 按键触发类型（DOWN=刚按下/UP=刚释放/HOLD=按住）
         """
         if game_keys_only:
             self.monitored_keys = GTAV_GAME_KEYS
@@ -287,6 +298,8 @@ class KeyboardActionDetector:
             self.monitored_keys = normalize_keys(monitored_keys)
         else:
             self.monitored_keys = ALL_KEYS
+
+        self.trigger_type = trigger_type
 
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
@@ -388,8 +401,8 @@ class KeyboardActionDetector:
         # 更新上一次按下状态
         self._previous_pressed = current_pressed
 
-        # 判断是否有动作
-        has_action = len(current_pressed) > 0
+        # 根据 trigger_type 判断是否有动作
+        has_action = self._determine_has_action(current_pressed, key_states)
 
         return KeyboardActionInfo(
             timestamp=now,
@@ -399,6 +412,36 @@ class KeyboardActionDetector:
             has_action=has_action,
         )
 
+    def _determine_has_action(
+        self, current_pressed: set[str], key_states: dict[str, KeyState]
+    ) -> bool:
+        """
+        根据 trigger_type 判断是否有动作。
+
+        :param current_pressed: 当前按下的按键集合
+        :param key_states: 按键状态字典
+        :return: 是否有动作
+        """
+        if self.trigger_type == TriggerType.HOLD:
+            # 电平触发：只要有按键按下就触发
+            return len(current_pressed) > 0
+
+        elif self.trigger_type == TriggerType.DOWN:
+            # 边沿触发（按下）：只有在按键刚按下时触发
+            for key in current_pressed:
+                if key not in self._previous_pressed:
+                    return True
+            return False
+
+        elif self.trigger_type == TriggerType.UP:
+            # 边沿触发（释放）：只有在按键刚释放时触发
+            for key in self._previous_pressed:
+                if key not in current_pressed:
+                    return True
+            return False
+
+        return False
+
     def reset(self):
         """重置所有按键状态。"""
         self._key_states.clear()
@@ -406,7 +449,9 @@ class KeyboardActionDetector:
 
     def __repr__(self) -> str:
         return (
-            f"KeyboardActionDetector(" f"monitored_keys={len(self.monitored_keys)} keys)"
+            f"KeyboardActionDetector("
+            f"monitored_keys={len(self.monitored_keys)} keys, "
+            f"trigger_type={self.trigger_type.value})"
         )
 
 
