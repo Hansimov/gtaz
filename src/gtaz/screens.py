@@ -7,9 +7,11 @@ import time
 import threading
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from PIL import Image
-from tclogger import PathType, TCLogger, TCLogbar, logstr, get_now
+from tclogger import PathType, TCLogger, TCLogbar, logstr
+
 
 from .windows import GTAVWindowLocator
 from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
@@ -36,12 +38,11 @@ PW_RENDERFULLCONTENT = 0x00000002
 # 默认截图间隔（秒）
 DEFAULT_INTERVAL = 0.5
 
+# 默认图像格式
+IMAGE_FORMAT = "jpeg"
+
 # 默认图像质量（JPEG）
 DEFAULT_QUALITY = 85
-
-# 支持的图像格式
-IMAGE_FORMAT_JPEG = "JPEG"
-IMAGE_FORMAT_PNG = "PNG"
 
 # 交互式控制键
 START_CAPTURE_KEY = "1"
@@ -81,6 +82,12 @@ def val_mesg(s) -> str:
     return logstr.mesg(s)
 
 
+def is_jpeg(image_format: str) -> bool:
+    """检查图像格式是否为 JPEG。"""
+    fmt = image_format.lstrip(".").lower()
+    return fmt == "jpeg" or fmt == "jpg"
+
+
 @dataclass
 class CapturedFrame:
     """
@@ -116,7 +123,7 @@ class CaptureCacher:
     def __init__(
         self,
         save_dir: Path,
-        image_format: str = IMAGE_FORMAT_JPEG,
+        image_format: str = IMAGE_FORMAT,
         quality: int = DEFAULT_QUALITY,
     ):
         """
@@ -127,7 +134,7 @@ class CaptureCacher:
         :param quality: JPEG 质量（1-100），默认 85
         """
         self.save_dir = save_dir
-        self.image_format = image_format.upper()
+        self.image_format = image_format
         self.quality = max(1, min(100, quality))
 
         # 缓存的帧列表
@@ -179,7 +186,7 @@ class CaptureCacher:
         image_path = self.save_dir / frame.filename
 
         # 根据格式保存
-        if self.image_format == IMAGE_FORMAT_JPEG:
+        if is_jpeg(self.image_format):
             image = image.convert("RGB")
             image.save(image_path, "JPEG", quality=self.quality, optimize=False)
         else:
@@ -315,7 +322,7 @@ class ScreenCapturer:
         fps: float = None,
         output_dir: PathType = None,
         window_locator: GTAVWindowLocator = None,
-        image_format: str = IMAGE_FORMAT_JPEG,
+        image_format: str = IMAGE_FORMAT,
         quality: int = DEFAULT_QUALITY,
         minimap_only: bool = False,
         keyboard_trigger: bool = False,
@@ -334,9 +341,9 @@ class ScreenCapturer:
         :param keyboard_trigger: 是否启用键盘触发模式（仅在有按键时截图），默认 False
         :param game_keys_only: 键盘触发模式下，是否只监控游戏常用按键，默认 True
         """
-        self.interval = self._calculate_interval(interval, fps)
+        self.interval = self._calc_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
-        self.image_format = image_format.upper()
+        self.image_format = image_format
         self.quality = max(1, min(100, quality))
         self.minimap_only = minimap_only
         self.keyboard_trigger = keyboard_trigger
@@ -353,7 +360,7 @@ class ScreenCapturer:
             self.keyboard_detector = None
 
         # 生成基于启动时间的会话目录
-        session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
+        session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if output_dir is None:
             # 键盘触发模式使用 actions 目录，否则使用 frames 目录
             if keyboard_trigger:
@@ -384,14 +391,13 @@ class ScreenCapturer:
         self._cached_bitmap = None
         self._cached_bmp_info = None
 
-    def _calculate_interval(self, interval: float, fps: float) -> float:
+    def _calc_interval(self, interval: float = None, fps: float = None) -> float:
         """
-        计算截图间隔时间。
-
-        优先级: interval > fps > 默认值
+        计算截图间隔时间。优先级: interval > fps > 默认值
 
         :param interval: 截图间隔时间（秒）
         :param fps: 每秒截图帧数
+
         :return: 计算后的间隔时间（秒）
         """
         if interval is not None:
@@ -407,8 +413,8 @@ class ScreenCapturer:
         :param frame_index: 帧索引（0000-9999）
         :return: 文件名字符串
         """
-        now = get_now()
-        if self.image_format == IMAGE_FORMAT_JPEG:
+        now = datetime.now()
+        if is_jpeg(self.image_format):
             ext = "jpg"
         else:
             ext = "png"
@@ -687,7 +693,7 @@ class ScreenCapturer:
                 raw_data, width, height, self._minimap_crop_region
             )
 
-        # 缓存帧数据（带或不带 action_info）
+        # 缓存帧数据
         filename = self._cache_frame(raw_data, frame_width, frame_height, action_info)
 
         if verbose:
@@ -773,11 +779,7 @@ class CaptureLooper:
     负责时间控制、循环逻辑、按键检测等，与具体的截图实现解耦。
     """
 
-    def __init__(
-        self,
-        capturer: ScreenCapturer,
-        interval: float,
-    ):
+    def __init__(self, capturer: ScreenCapturer, interval: float):
         """
         初始化循环控制器。
 
@@ -851,7 +853,7 @@ class CaptureLooper:
                 action_info = stop_detector.detect()
                 stop_key_pressed = STOP_CAPTURE_KEY in action_info.pressed_keys
                 if stop_key_pressed and not last_stop_key_pressed:
-                    logger.note(f"检测到 '{STOP_CAPTURE_KEY}' 键，停止截图...")
+                    logger.note(f"检测到 {key_hint(STOP_CAPTURE_KEY)} 键，停止截图...")
                     break
                 last_stop_key_pressed = stop_key_pressed
 
@@ -909,11 +911,7 @@ class CapturerRunner:
     封装各种运行模式的逻辑，包括单帧、连续截图、热键启停等。
     """
 
-    def __init__(
-        self,
-        capturer: ScreenCapturer,
-        keyboard_trigger: bool = False,
-    ):
+    def __init__(self, capturer: ScreenCapturer, keyboard_trigger: bool = False):
         """
         初始化截图器运行器。
 
@@ -984,14 +982,14 @@ class CapturerRunner:
 
                 # 边沿检测：按键从未按下变为按下（上升沿）
                 if start_key_pressed and not last_start_key_pressed:
-                    logger.okay(f"检测到 '{START_CAPTURE_KEY}' 键，开始截图...")
+                    logger.okay(f"检测到 {key_hint(START_CAPTURE_KEY)} 键，开始截图...")
                     return True
 
                 last_start_key_pressed = start_key_pressed
                 time.sleep(0.05)  # 50ms 检测间隔
 
         except KeyboardInterrupt:
-            logger.note("\n检测到 Ctrl+C，退出...")
+            logger.note(f"\n检测到 {key_hint('Ctrl+C')}，退出...")
             return False
 
     def _setup_capture_loop(
@@ -1030,13 +1028,13 @@ class CapturerRunner:
             duration = max_duration
             logger.note(
                 f"{mode_desc}（持续模式，最大 {max_duration} 秒，"
-                f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}），缓存模式..."
+                f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）..."
             )
             stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_KEY])
             return duration, True, stop_detector
         else:
             # 定时模式
-            logger.note(f"{mode_desc}（{duration} 秒），缓存模式...")
+            logger.note(f"{mode_desc}（{duration} 秒）...")
             return duration, False, None
 
     def run_capture_loop(
@@ -1125,7 +1123,7 @@ class CapturerRunner:
                 hotkey_toggle=hotkey_toggle,
             )
         except KeyboardInterrupt:
-            logger.note("\n检测到 Ctrl+C，正在退出...")
+            logger.note(f"\n检测到 {key_hint('Ctrl+C')}，正在退出...")
             # 如果有缓存的帧，保存它们
             if self.capturer.get_cached_frame_count() > 0:
                 self.capturer.flush_cache(verbose=True)
