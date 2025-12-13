@@ -910,9 +910,9 @@ class KeyboardActionCapturer(ScreenCapturer):
         )
 
 
-class InteractiveController:
+class HotkeyToggler:
     """
-    交互式控制器。
+    热键启停器。
 
     使用 START_CAPTURE_KEY 键启动截图，STOP_CAPTURE_KEY 键停止截图。
     通过边沿检测避免重复触发。
@@ -920,13 +920,13 @@ class InteractiveController:
 
     def __init__(self, capturer: Union[ScreenCapturer, KeyboardActionCapturer]):
         """
-        初始化交互式控制器。
+        初始化热键启停器。
 
         :param capturer: 截图器实例
         """
         self.capturer = capturer
         # 初始化键盘检测器（只监控启动和停止键）
-        self.control_detector = KeyboardActionDetector(
+        self.hotkey_detector = KeyboardActionDetector(
             monitored_keys=[START_CAPTURE_KEY, STOP_CAPTURE_KEY]
         )
         self.capture_active = False
@@ -958,15 +958,15 @@ class InteractiveController:
             self.capturer.stop(flush=True)
             logger.okay("截图已停止")
 
-    def process_control_keys(self) -> bool:
+    def check_hotkeys(self) -> bool:
         """
-        处理控制键（START_CAPTURE_KEY 启动，STOP_CAPTURE_KEY 停止）。
+        检查热键状态（START_CAPTURE_KEY 启动，STOP_CAPTURE_KEY 停止）。
 
         使用边沿检测避免重复触发。
 
         :return: 是否应该继续循环
         """
-        action_info = self.control_detector.detect()
+        action_info = self.hotkey_detector.detect()
 
         # 检查启动键
         start_key_pressed = START_CAPTURE_KEY in action_info.pressed_keys
@@ -985,10 +985,8 @@ class InteractiveController:
         return True
 
     def run(self):
-        """
-        运行交互式控制循环。
-        """
-        logger.note("交互式截图模式已启动")
+        """运行热键启停控制循环"""
+        logger.note("热键启停截图模式已启动")
         logger.note(
             f"按 {key_hint(START_CAPTURE_KEY)} {val_mesg('开始截图')}，"
             f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}，"
@@ -997,7 +995,7 @@ class InteractiveController:
 
         try:
             while True:
-                self.process_control_keys()
+                self.check_hotkeys()
                 time.sleep(0.05)  # 50ms 检测间隔
 
         except KeyboardInterrupt:
@@ -1005,7 +1003,7 @@ class InteractiveController:
             if self.capture_active:
                 self.stop_capture()
 
-        logger.note("交互式截图模式已退出")
+        logger.note("热键启停截图模式已退出")
 
 
 class CapturerRunner:
@@ -1029,12 +1027,18 @@ class CapturerRunner:
         self.capturer = capturer
         self.keyboard_trigger = keyboard_trigger
 
-    def _print_config(self, interactive: bool = False):
+    def _print_config(self, hotkey_toggle: bool = False):
         """
         打印配置信息。
 
-        :param interactive: 是否为交互式模式
+        :param hotkey_toggle: 是否为热键启停模式
         """
+
+        if hotkey_toggle:
+            hotkey_toggle_str = "热键启停"
+        else:
+            hotkey_toggle_str = ""
+
         if self.capturer.minimap_only:
             minimap_str = "（仅小地图）"
         else:
@@ -1045,13 +1049,8 @@ class CapturerRunner:
         else:
             mode_str = ""
 
-        if interactive:
-            interactive_str = "交互式"
-        else:
-            interactive_str = ""
-
         logger.note(
-            f"{interactive_str}{mode_str}fps={1/self.capturer.interval:.1f}，"
+            f"{hotkey_toggle_str}{mode_str}fps={1/self.capturer.interval:.1f}，"
             f"interval={round(self.capturer.interval, 2)}s，"
             f"cache_dir={self.capturer.cacher.save_dir}{minimap_str}"
         )
@@ -1143,10 +1142,10 @@ class CapturerRunner:
             else:
                 time.sleep(0.01)
 
-    def run_interactive(self):
-        """运行交互式控制模式。"""
-        controller = InteractiveController(self.capturer)
-        controller.run()
+    def run_hotkey_toggle(self):
+        """运行热键启停模式。"""
+        toggler = HotkeyToggler(self.capturer)
+        toggler.run()
 
     def _setup_continuous_mode(
         self, duration: float
@@ -1294,7 +1293,7 @@ class CapturerRunner:
         self,
         single: bool = False,
         duration: float = 60,
-        interactive: bool = False,
+        hotkey_toggle: bool = False,
         exit_after_capture: bool = True,
         monitored_keys: Optional[list[str]] = None,
     ):
@@ -1303,12 +1302,12 @@ class CapturerRunner:
 
         :param single: 是否只截取单帧
         :param duration: 连续截图持续时间（秒）
-        :param interactive: 是否为交互式控制模式
+        :param hotkey_toggle: 是否为热键启停模式
         :param exit_after_capture: 单帧模式截图后是否退出
         :param monitored_keys: 单帧模式监控按键名列表
         """
         # 打印配置信息
-        self._print_config(interactive=interactive)
+        self._print_config(hotkey_toggle=hotkey_toggle)
 
         # 验证窗口
         if not self._validate_window():
@@ -1317,8 +1316,8 @@ class CapturerRunner:
         logger.note(f"截取器信息: {self.capturer}")
 
         # 根据模式运行
-        if interactive:
-            self.run_interactive()
+        if hotkey_toggle:
+            self.run_hotkey_toggle()
         elif single:
             self.run_single_frame(
                 exit_after_capture=exit_after_capture,
@@ -1358,10 +1357,11 @@ class ScreenCapturerArgParser:
             help=f"连续截图持续时间，单位秒（默认: 60，设为 0 则持续截屏直到按 '{STOP_CAPTURE_KEY}' 键停止，最大 10 分钟）",
         )
         self.parser.add_argument(
-            "-i",
-            "--interactive",
+            "-t",
+            "--hotkey-toggle",
             action="store_true",
-            help=f"启停控制，按 '{START_CAPTURE_KEY}' 开始截图，按 '{STOP_CAPTURE_KEY}' 停止截图（可与 -k 组合使用）",
+            dest="hotkey_toggle",
+            help=f"热键启停，按 '{START_CAPTURE_KEY}' 开始截图，按 '{STOP_CAPTURE_KEY}' 停止截图（可与 -k 组合使用）",
         )
         self.parser.add_argument(
             "-k",
@@ -1410,7 +1410,7 @@ def main():
     runner.run(
         single=args.single,
         duration=args.duration,
-        interactive=args.interactive,
+        hotkey_toggle=args.hotkey_toggle,
         exit_after_capture=args.exit_after_capture,
         monitored_keys=monitored_keys,
     )
@@ -1437,8 +1437,8 @@ if __name__ == "__main__":
     # Case: 键盘触发 + 仅小地图
     # python -m gtaz.screens -k -m -f 10 -d 30
 
-    # Case: 交互式控制模式
-    # python -m gtaz.screens -i
+    # Case: 热键启停模式
+    # python -m gtaz.screens -t
 
-    # Case: 交互式 + 键盘触发 + 仅小地图 + FPS + 持续截图
-    # python -m gtaz.screens -i -k -m -f 10 -d 0
+    # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
+    # python -m gtaz.screens -t -k -m -f 10 -d 0
