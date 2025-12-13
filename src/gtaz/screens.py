@@ -1340,18 +1340,12 @@ class ScreenCapturerArgParser:
         self.parser.add_argument(
             "-s", "--single", action="store_true", help="只截取当前单帧"
         )
-
         self.parser.add_argument(
+            "-x",
             "--exit-after-capture",
             action="store_true",
             default=False,
-            help="单帧模式下，截图后退出（默认不退出，继续监听）",
-        )
-        self.parser.add_argument(
-            "--monitored-keys",
-            type=str,
-            default="",
-            help="单帧模式下，仅当这些按键出现按下边沿时才触发截图。支持如 '1,2' / 'W,A,S,D' / '0x31,0x32'",
+            help="单帧模式下，截图后退出（默认不退出，继续监听触发事件）",
         )
         self.parser.add_argument(
             "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
@@ -1364,20 +1358,27 @@ class ScreenCapturerArgParser:
             help=f"连续截图持续时间，单位秒（默认: 60，设为 0 则持续截屏直到按 '{STOP_CAPTURE_KEY}' 键停止，最大 10 分钟）",
         )
         self.parser.add_argument(
-            "-k",
-            "--keyboard-trigger",
-            action="store_true",
-            help="仅在检测到键盘输入时截图，帧保存到 actions 目录",
-        )
-        self.parser.add_argument(
             "-i",
             "--interactive",
             action="store_true",
-            help=f"交互式控制：按 '{START_CAPTURE_KEY}' 开始截图，按 '{STOP_CAPTURE_KEY}' 停止截图（可与 -k 组合使用）",
+            help=f"启停控制，按 '{START_CAPTURE_KEY}' 开始截图，按 '{STOP_CAPTURE_KEY}' 停止截图（可与 -k 组合使用）",
+        )
+        self.parser.add_argument(
+            "-k",
+            "--keyboard-trigger",
+            action="store_true",
+            help="仅在有键盘输入时截图，并记录按键信息",
+        )
+        self.parser.add_argument(
+            "-r",
+            "--monitored-keys",
+            type=str,
+            default="",
+            help="单帧模式下，按下指定键才触发截图，按住不重复触发",
         )
         self.parser.add_argument(
             "-m",
-            "--minimap",
+            "--minimap-only",
             action="store_true",
             help="仅截取小地图区域",
         )
@@ -1393,9 +1394,9 @@ def main():
 
     # 根据模式创建对应的截图器
     if args.keyboard_trigger:
-        capturer = KeyboardActionCapturer(fps=args.fps, minimap_only=args.minimap)
+        capturer = KeyboardActionCapturer(fps=args.fps, minimap_only=args.minimap_only)
     else:
-        capturer = ScreenCapturer(fps=args.fps, minimap_only=args.minimap)
+        capturer = ScreenCapturer(fps=args.fps, minimap_only=args.minimap_only)
 
     # 解析监控按键
     monitored_keys = None
