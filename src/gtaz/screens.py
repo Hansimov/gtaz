@@ -37,7 +37,7 @@ PW_CLIENTONLY = 0x00000001
 PW_RENDERFULLCONTENT = 0x00000002
 
 # 默认截图间隔（秒）
-DEFAULT_INTERVAL = 0.5
+INTERVAL = 0.5
 
 # 默认图像格式
 IMAGE_FORMAT = "jpeg"
@@ -434,7 +434,7 @@ class ScreenCapturer:
             return interval
         if fps is not None and fps > 0:
             return 1.0 / fps
-        return DEFAULT_INTERVAL
+        return INTERVAL
 
     def _generate_filename(self, frame_index: int) -> str:
         """
@@ -903,7 +903,7 @@ class CaptureRunner:
                 if action_info.has_action:
                     logger.okay(f"检测到 {key_hint(START_CAPTURE_KEY)} 键，开始截图...")
                     return True
-                time.sleep(0.02)
+                time.sleep(0.015)  # 15ms/tick
         except KeyboardInterrupt:
             logger.note(f"\n检测到 {key_hint('Ctrl+C')}，退出...")
             return False
@@ -920,7 +920,7 @@ class CaptureRunner:
         elif duration == 0:
             duration = 600  # 持续模式最大10分钟
             logger.note(
-                f"持续模式：按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）..."
+                f"持续模式：按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')} ..."
             )
         else:
             logger.note(f"定时模式：{duration} 秒 ...")
@@ -962,11 +962,15 @@ class CaptureRunner:
                     )
                     logger.okay(f"{progress_str} 已缓存 {cached_count} 帧{extra_info}")
 
-            # 等待下一个 tick
-            next_tick_time += self.capturer.interval
-            sleep_time = next_tick_time - time.time()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            if self.capturer.capture_detector:
+                # 键盘触发模式下，检测间隔 5ms
+                time.sleep(0.005)
+            else:
+                # 持续模式下，根据间隔时间等待下一次截图
+                next_tick_time += self.capturer.interval
+                sleep_time = next_tick_time - time.time()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
         # 完成并保存（单帧模式已经保存过了）
         if not self.single and captured_count > 0:
@@ -996,7 +1000,7 @@ class ScreenCapturerArgParser:
             help="截图后退出（默认不退出，继续监听触发事件）",
         )
         self.parser.add_argument(
-            "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
+            "-f", "--fps", type=float, default=None, help="每秒截图帧数"
         )
         self.parser.add_argument(
             "-o", "--output-dir", type=str, default=None, help="截图文件保存父目录"
@@ -1032,9 +1036,9 @@ class ScreenCapturerArgParser:
             "-t",
             "--trigger-type",
             type=str,
-            default="hold",
+            default="down",
             choices=["down", "hold"],
-            help="按键触发类型（down=边沿触发/刚按下，hold=电平触发/按住），默认 hold",
+            help="按键触发类型（down=边沿触发/刚按下，hold=电平触发/按住），默认 down",
         )
         self.parser.add_argument(
             "-m",

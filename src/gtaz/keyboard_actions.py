@@ -298,6 +298,12 @@ class KeyboardActionDetector:
         # 设置触发类型，如果未指定则默认为 KEY_DOWN
         self.trigger_type = trigger_type or KEY_DOWN
 
+        # 对于边沿触发模式，使用增强检测以捕捉快速按键
+        if self.trigger_type == KEY_DOWN:
+            self.detect_method = self._is_key_pressed_or_toggled
+        else:
+            self.detect_method = self._is_key_pressed
+
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
 
@@ -320,6 +326,25 @@ class KeyboardActionDetector:
             return False
         state = self.user32.GetAsyncKeyState(key_code)
         return bool(state & 0x8000)
+
+    def _is_key_pressed_or_toggled(self, key: str) -> bool:
+        """
+        检查指定按键是否被按下或刚被按下过（用于捕捉快速按键）。
+
+        使用 GetAsyncKeyState 检测按键状态。
+        返回值的最高位（0x8000）表示按键当前是否被按下。
+        返回值的最低位（0x0001）表示自上次调用后该键是否被按下过。
+
+        :param key: 按键名
+        :return: 按键是否被按下或刚被按下过
+        """
+        key_code = key_name_to_code(key)
+        if key_code == 0:
+            return False
+        state = self.user32.GetAsyncKeyState(key_code)
+        # 检查最高位（当前是否按下）或最低位（自上次调用后是否按下过）
+        # 这样可以捕捉到快速按键（按下又马上释放的情况）
+        return bool(state & 0x8000) or bool(state & 0x0001)
 
     def get_pressed_keys(self) -> list[str]:
         """
@@ -363,7 +388,7 @@ class KeyboardActionDetector:
         key_states: dict[str, KeyState] = {}
 
         for key in self.monitored_keys:
-            is_pressed = self._is_key_pressed(key)
+            is_pressed = self.detect_method(key)
 
             if is_pressed:
                 current_pressed.add(key)
@@ -395,11 +420,11 @@ class KeyboardActionDetector:
             if is_pressed:
                 key_states[key] = state.copy()
 
+        # 根据 trigger_type 判断是否有动作（必须在更新 _previous_pressed 之前判断）
+        has_action = self._determine_has_action(current_pressed)
+
         # 更新上一次按下状态
         self._previous_pressed = current_pressed
-
-        # 根据 trigger_type 判断是否有动作
-        has_action = self._determine_has_action(current_pressed, key_states)
 
         return KeyboardActionInfo(
             timestamp=now,
@@ -414,7 +439,6 @@ class KeyboardActionDetector:
         根据 trigger_type 判断是否有动作。
 
         :param current_pressed: 当前按下的按键集合
-        :param key_states: 按键状态字典
         :return: 是否有动作
         """
         trigger_type = self.trigger_type.lower()
