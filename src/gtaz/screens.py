@@ -381,7 +381,6 @@ class ScreenCapturer:
         :param capture_detector: 截图触发检测器，None 表示按间隔截图，非 None 表示键盘触发模式（仅在有按键时截图）
         """
         self._init_fps_interval(interval, fps)
-        self.interval = self._calc_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
         self.image_format = image_format
         self.quality = max(1, min(100, quality))
@@ -1040,9 +1039,9 @@ class ScreenCapturerArgParser:
             "-t",
             "--trigger-type",
             type=str,
-            default="down",
+            default=None,
             choices=["down", "hold"],
-            help="按键触发类型（down=边沿触发/刚按下，hold=电平触发/按住），默认 down",
+            help="按键触发类型（down=边沿触发/刚按下，hold=电平触发/按住）",
         )
         self.parser.add_argument(
             "-m",
@@ -1068,11 +1067,19 @@ def main():
     else:
         monitored_keys = None
 
+    # 设置触发类型
+    if args.trigger_type:
+        trigger_type = args.trigger_type
+    else:
+        if args.single:
+            trigger_type = KEY_DOWN
+        else:
+            trigger_type = KEY_HOLD
+
     # 创建截图触发检测器
     if args.input_trigger or monitored_keys:
         capture_detector = DetectorManager.create_capture_detector(
-            monitored_keys=monitored_keys,
-            trigger_type=args.trigger_type,
+            monitored_keys=monitored_keys, trigger_type=trigger_type
         )
     else:
         capture_detector = None
@@ -1107,23 +1114,17 @@ if __name__ == "__main__":
     # Case: 截取单张
     # python -m gtaz.screens -s
 
-    # Case: 单帧，按下特定键截取 - KEY_DOWN 模式（边沿触发，只在按下瞬间截图一次）
-    # python -m gtaz.screens -s -k k -t down
+    # Case: 单帧截取，按下特定键截取（单帧模式下，触发类型默认 KEY_DOWN：按下截图一次，不重复截取）
+    # python -m gtaz.screens -s -k k
 
     # Case: 连续截取，设置FPS和时长
     # python -m gtaz.screens -f 10 -d 60
 
-    # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
-    # python -m gtaz.screens -g -i -m -f 10 -d 0
-
-    # Case: 键盘触发模式
-    # python -m gtaz.screens -i -d 60
-
-    # Case: 键盘触发模式 - KEY_HOLD 模式（按住就持续截图）
-    # python -m gtaz.screens -i -f 10 -d 60 -t hold
-
-    # Case: 监控特定按键 - KEY_HOLD 模式（按住就持续截图）
-    # python -m gtaz.screens -k "W,A,S,D" -t hold
+    # Case: 键盘触发模式（连续模式下，触发类型默认 KEY_HOLD：按住则持续截图）
+    # python -m gtaz.screens -i -f 10 -d 60
 
     # Case: 键盘触发 + 仅小地图
     # python -m gtaz.screens -i -m -f 10 -d 30
+
+    # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
+    # python -m gtaz.screens -g -i -m -f 10 -d 0
