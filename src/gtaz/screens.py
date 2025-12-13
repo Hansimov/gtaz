@@ -37,7 +37,7 @@ PW_CLIENTONLY = 0x00000001
 PW_RENDERFULLCONTENT = 0x00000002
 
 # 默认截图间隔（秒）
-INTERVAL = 0.5
+FPS = 3
 
 # 默认图像格式
 IMAGE_FORMAT = "jpeg"
@@ -380,6 +380,7 @@ class ScreenCapturer:
         :param minimap_only: 是否仅截取小地图区域，默认 False
         :param capture_detector: 截图触发检测器，None 表示按间隔截图，非 None 表示键盘触发模式（仅在有按键时截图）
         """
+        self._init_fps_interval(interval, fps)
         self.interval = self._calc_interval(interval, fps)
         self.window_locator = window_locator or GTAVWindowLocator()
         self.image_format = image_format
@@ -421,20 +422,22 @@ class ScreenCapturer:
         self._cached_bitmap = None
         self._cached_bmp_info = None
 
-    def _calc_interval(self, interval: float = None, fps: float = None) -> float:
+    def _init_fps_interval(self, interval: float = None, fps: float = None):
         """
         计算截图间隔时间。优先级: interval > fps > 默认值
 
         :param interval: 截图间隔时间（秒）
         :param fps: 每秒截图帧数
-
-        :return: 计算后的间隔时间（秒）
         """
-        if interval is not None:
-            return interval
-        if fps is not None and fps > 0:
-            return 1.0 / fps
-        return INTERVAL
+        if interval is not None and interval > 0:
+            self.interval = interval
+            self.fps = 1.0 / interval
+        elif fps is not None and fps > 0:
+            self.fps = fps
+            self.interval = 1.0 / fps
+        else:
+            self.fps = None
+            self.interval = None
 
     def _generate_filename(self, frame_index: int) -> str:
         """
@@ -784,22 +787,34 @@ class ScreenCapturer:
         self._release_gdi_resources()
 
     def __repr__(self) -> str:
+        if self.fps:
+            fps_str = f"{self.fps:.1f}"
+        else:
+            fps_str = "None"
+
+        if self.interval:
+            interval_str = f"{round(self.interval, 2)}s"
+        else:
+            interval_str = "None"
+
+        if self.capture_detector:
+            detector_str = "True"
+        else:
+            detector_str = "None"
+
         parts = [
             f"ScreenCapturer(",
-            f"interval={self.interval}, ",
-            f"format={self.image_format}, ",
+            f"fps={fps_str}, ",
+            f"interval={interval_str}, ",
+            f"image_format={self.image_format}, ",
             f"quality={self.quality}, ",
-            f"output_dir={self.cacher.save_dir}, ",
+            f"save_dir={self.cacher.save_dir}, ",
             f"minimap_only={self.minimap_only}, ",
+            f"capture_detector={detector_str}",
+            f"cached_frames={len(self.cacher)}, ",
+            f"frame_count={self._frame_count})",
         ]
-        if self.capture_detector:
-            parts.append(f"capture_detector=True, ")
-        parts.extend(
-            [
-                f"cached_frames={len(self.cacher)}, ",
-                f"frame_count={self._frame_count})",
-            ]
-        )
+
         return "".join(parts)
 
 
@@ -845,31 +860,19 @@ class CaptureRunner:
             self.start_detector = None
             self.stop_detector = None
 
-    def run(self):
-        """
-        运行截图器。
-        """
-        # 验证窗口
+    def _check_window(self) -> bool:
+        """检测窗口"""
         if not self.capturer.window_locator.is_window_valid():
-            logger.err("GTAV 窗口未找到")
-            return
+            erro_str = "GTAV 窗口未找到"
+            logger.erro(erro_str)
+            raise RuntimeError(erro_str)
+        return True
 
-        # 打印配置信息
-        if self.single:
-            mode_str = "单帧"
-        elif self.duration > 0:
-            mode_str = "持续"
-        else:
-            mode_str = f"连续({self.duration}s)"
+    def run(self):
+        """运行截图器"""
 
-        if self.start_detector:
-            mode_str = f"热键启停-{mode_str}"
-        minimap_str = "（仅小地图）" if self.capturer.minimap_only else ""
-        logger.note(
-            f"{mode_str}模式，fps={1/self.capturer.interval:.1f}，"
-            f"interval={round(self.capturer.interval, 2)}s，"
-            f"cache_dir={self.capturer.cacher.save_dir}{minimap_str}"
-        )
+        self._check_window()
+
         logger.note(f"截取器信息: {self.capturer}")
 
         # 热键启停模式：等待启动信号
@@ -915,10 +918,11 @@ class CaptureRunner:
         # 确定实际运行时长
         duration = self.duration
         if self.single:
+            # 单帧模式，duration 不影响
             logger.note("单帧模式：等待触发 ...")
-            duration = 600  # 最大等待10分钟
         elif duration == 0:
-            duration = 600  # 持续模式最大10分钟
+            # 持续模式，duration 最大10分钟
+            duration = 600
             logger.note(
                 f"持续模式：按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')} ..."
             )
@@ -943,7 +947,7 @@ class CaptureRunner:
                     logger.note(f"检测到 {key_hint(STOP_CAPTURE_KEY)} 键，停止截图...")
                     break
 
-            # 执行截图（capture_detector 在 capturer.try_capture_frame 中处理）
+            # 执行截图
             filename, extra_info = self.capturer.try_capture_frame(verbose=False)
             if filename:
                 captured_count += 1
@@ -951,7 +955,7 @@ class CaptureRunner:
 
                 if self.single:
                     self.capturer.flush_cache(verbose=True)
-                    logger.okay(f"单次截图成功: {filename}")
+                    logger.okay(f"单帧截图成功: {filename}")
                     break
                 else:
                     # 进度日志
@@ -1073,9 +1077,15 @@ def main():
     else:
         capture_detector = None
 
+    # 设置 fps
+    if not args.single and not args.fps:
+        fps = FPS
+    else:
+        fps = args.fps
+
     # 创建截图器
     capturer = ScreenCapturer(
-        fps=args.fps,
+        fps=fps,
         output_dir=args.output_dir,
         minimap_only=args.minimap_only,
         capture_detector=capture_detector,
@@ -1094,32 +1104,26 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # Case: 普通模式
-    # python -m gtaz.screens
-
     # Case: 截取单张
     # python -m gtaz.screens -s
+
+    # Case: 单帧，按下特定键截取 - KEY_DOWN 模式（边沿触发，只在按下瞬间截图一次）
+    # python -m gtaz.screens -s -k k -t down
 
     # Case: 连续截取，设置FPS和时长
     # python -m gtaz.screens -f 10 -d 60
 
+    # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
+    # python -m gtaz.screens -g -i -m -f 10 -d 0
+
     # Case: 键盘触发模式
     # python -m gtaz.screens -i -d 60
 
-    # Case: 键盘触发模式 - KEY_DOWN（边沿触发，只在按下瞬间截图一次）
-    # python -m gtaz.screens -i -t down
+    # Case: 键盘触发模式 - KEY_HOLD 模式（按住就持续截图）
+    # python -m gtaz.screens -i -f 10 -d 60 -t hold
 
     # Case: 监控特定按键 - KEY_HOLD 模式（按住就持续截图）
     # python -m gtaz.screens -k "W,A,S,D" -t hold
 
-    # Case: 仅截取小地图
-    # python -m gtaz.screens -m
-
     # Case: 键盘触发 + 仅小地图
     # python -m gtaz.screens -i -m -f 10 -d 30
-
-    # Case: 热键启停模式
-    # python -m gtaz.screens -g
-
-    # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
-    # python -m gtaz.screens -g -i -m -f 10 -d 0
