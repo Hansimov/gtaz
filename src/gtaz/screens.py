@@ -5,13 +5,11 @@ import ctypes
 import json
 import time
 import threading
-import re
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
 from PIL import Image
-from tclogger import TCLogger, TCLogbar, logstr, get_now
+from tclogger import PathType, TCLogger, TCLogbar, logstr, get_now
 
 from .windows import GTAVWindowLocator
 from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
@@ -101,7 +99,7 @@ class CapturedFrame:
     """截图时间戳"""
     filename: str
     """预生成的文件名"""
-    action_info: Optional[KeyboardActionInfo] = None
+    action_info: KeyboardActionInfo = None
     """键盘动作信息（仅 keyboard_trigger 模式下使用）"""
     frame_index: int = 0
     """帧序号"""
@@ -178,35 +176,30 @@ class CaptureCacher:
             "RGBA", (frame.width, frame.height), frame.raw_data, "raw", "BGRA", 0, 1
         )
 
-        # 生成文件路径
-        filepath = self.save_dir / frame.filename
+        image_path = self.save_dir / frame.filename
 
         # 根据格式保存
         if self.image_format == IMAGE_FORMAT_JPEG:
             image = image.convert("RGB")
-            image.save(filepath, "JPEG", quality=self.quality, optimize=False)
+            image.save(image_path, "JPEG", quality=self.quality, optimize=False)
         else:
             image = image.convert("RGB")
-            image.save(filepath, "PNG", compress_level=1)
+            image.save(image_path, "PNG", compress_level=1)
 
-        return filepath
+        return image_path
 
-    def _save_action_info(
-        self,
-        json_filepath: Path,
-        frame: CapturedFrame,
-        image_filepath: Path,
-    ) -> bool:
+    def _save_action_info(self, frame: CapturedFrame, image_path: Path) -> bool:
         """
         保存键盘动作信息到 JSON 文件。
 
-        :param json_filepath: JSON 文件路径
         :param frame: 截图帧数据
-        :param image_filepath: 对应的图像文件路径
+        :param image_path: 图像文件路径
+
         :return: 是否保存成功
         """
         if not frame.action_info:
             return False
+        json_path = image_path.with_suffix(".json")
 
         # 构建按键信息列表
         keys_list = []
@@ -246,12 +239,12 @@ class CaptureCacher:
                 "height": frame.height,
             },
             "file": {
-                "image": image_filepath.name,
-                "json": json_filepath.name,
+                "image": image_path.name,
+                "json": json_path.name,
             },
         }
 
-        with open(json_filepath, "w", encoding="utf-8") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         return True
@@ -264,37 +257,35 @@ class CaptureCacher:
         :return: 成功保存的帧数
         """
         with self._lock:
-            frames_to_save = self._frames.copy()
+            frames = self._frames.copy()
             self._frames.clear()
             self._frame_count = 0
 
-        if not frames_to_save:
+        if not frames:
             return 0
 
+        if verbose:
+            logger.note(f"开始保存 {len(frames)} 帧到文件...")
+            bar = TCLogbar(total=len(frames), desc="* 保存截图")
+
         self.save_dir.mkdir(parents=True, exist_ok=True)
-
-        if verbose:
-            logger.note(f"开始保存 {len(frames_to_save)} 帧到文件...")
-
-        bar = TCLogbar(total=len(frames_to_save), desc="* 保存截图")
         saved_count = 0
-        for i, frame in enumerate(frames_to_save):
-            filepath = self._save_single_image(frame)
-            if filepath:
-                saved_count += 1
-
-                # 如果有键盘动作信息，保存 JSON 文件
-                if frame.action_info:
-                    json_filepath = filepath.with_suffix(".json")
-                    self._save_action_info(json_filepath, frame, filepath)
-
-                if verbose:
-                    bar.update(1)
-        bar.update(flush=True)
-        print()
+        for i, frame in enumerate(frames):
+            # 保存图像
+            image_path = self._save_single_image(frame)
+            if not image_path:
+                continue
+            saved_count += 1
+            # 保存键盘动作
+            if frame.action_info:
+                self._save_action_info(frame=frame, image_path=image_path)
+            if verbose:
+                bar.update(1)
 
         if verbose:
-            logger.okay(f"保存完成，共 {saved_count}/{len(frames_to_save)} 帧")
+            bar.update(flush=True)
+            print()
+            logger.okay(f"保存完成，共 {saved_count}/{len(frames)} 帧")
 
         return saved_count
 
@@ -320,10 +311,10 @@ class ScreenCapturer:
 
     def __init__(
         self,
-        interval: Optional[float] = None,
-        fps: Optional[float] = None,
-        output_dir: Optional[Path] = None,
-        window_locator: Optional[GTAVWindowLocator] = None,
+        interval: float = None,
+        fps: float = None,
+        output_dir: PathType = None,
+        window_locator: GTAVWindowLocator = None,
         image_format: str = IMAGE_FORMAT_JPEG,
         quality: int = DEFAULT_QUALITY,
         minimap_only: bool = False,
@@ -351,23 +342,26 @@ class ScreenCapturer:
         self.keyboard_trigger = keyboard_trigger
 
         # 小地图裁剪区域（首次截图时计算）
-        self._minimap_crop_region: Optional[tuple[int, int, int, int]] = None
+        self._minimap_crop_region: tuple[int, int, int, int] = None
 
-        # 键盘检测器（仅在 keyboard_trigger 模式下启用）
-        self.keyboard_detector: Optional[KeyboardActionDetector] = None
+        # 键盘动作检测器
         if keyboard_trigger:
             self.keyboard_detector = KeyboardActionDetector(
                 game_keys_only=game_keys_only
             )
+        else:
+            self.keyboard_detector = None
 
         # 生成基于启动时间的会话目录
         session_name = get_now().strftime("%Y-%m-%d_%H-%M-%S")
         if output_dir is None:
             # 键盘触发模式使用 actions 目录，否则使用 frames 目录
-            default_dir = ACTIONS_DIR if keyboard_trigger else FRAMES_DIR
-            save_dir = default_dir / session_name
-        else:
-            save_dir = output_dir / session_name
+            if keyboard_trigger:
+                output_dir = ACTIONS_DIR
+            else:
+                output_dir = FRAMES_DIR
+
+        save_dir = Path(output_dir) / session_name
 
         # 初始化缓存管理器（minimap_crop_region 在首次截图时设置）
         self.cacher = CaptureCacher(
@@ -390,9 +384,7 @@ class ScreenCapturer:
         self._cached_bitmap = None
         self._cached_bmp_info = None
 
-    def _calculate_interval(
-        self, interval: Optional[float], fps: Optional[float]
-    ) -> float:
+    def _calculate_interval(self, interval: float, fps: float) -> float:
         """
         计算截图间隔时间。
 
@@ -425,7 +417,7 @@ class ScreenCapturer:
             + f"{now.microsecond // 1000:03d}_{frame_index:04d}.{ext}"
         )
 
-    def _get_window_info(self) -> Optional[tuple[int, int, int]]:
+    def _get_window_info(self) -> tuple[int, int, int]:
         """
         获取窗口信息（句柄和客户区尺寸）。
 
@@ -554,7 +546,7 @@ class ScreenCapturer:
 
         return b"".join(cropped_rows), crop_width, crop_height
 
-    def _capture_window(self, hwnd: int, width: int, height: int) -> Optional[bytes]:
+    def _capture_window(self, hwnd: int, width: int, height: int) -> bytes:
         """
         直接从窗口截取画面（支持后台窗口）。
 
@@ -617,7 +609,7 @@ class ScreenCapturer:
         raw_data: bytes,
         width: int,
         height: int,
-        action_info: Optional[KeyboardActionInfo] = None,
+        action_info: KeyboardActionInfo = None,
     ) -> str:
         """
         将帧数据添加到缓存。
@@ -663,8 +655,8 @@ class ScreenCapturer:
     def capture_frame(
         self,
         verbose: bool = True,
-        action_info: Optional[KeyboardActionInfo] = None,
-    ) -> Optional[str]:
+        action_info: KeyboardActionInfo = None,
+    ) -> str:
         """
         截取当前 GTAV 窗口画面。
 
@@ -707,7 +699,7 @@ class ScreenCapturer:
                 logger.okay(f"已截取并缓存 {cached_count} 帧")
         return filename
 
-    def try_capture_frame(self, verbose: bool = False) -> tuple[Optional[str], str]:
+    def try_capture_frame(self, verbose: bool = False) -> tuple[str, str]:
         """
         尝试截取一帧（用于外部循环调用）。
 
@@ -818,7 +810,7 @@ class CaptureLooper:
         duration: float,
         single: bool = False,
         exit_after_capture: bool = False,
-        monitored_keys: Optional[list[str]] = None,
+        monitored_keys: list[str] = None,
         stop_key_enabled: bool = False,
     ):
         """
@@ -1004,7 +996,7 @@ class CapturerRunner:
 
     def _setup_capture_loop(
         self, duration: float, single: bool, hotkey_toggle: bool
-    ) -> tuple[float, bool, Optional[KeyboardActionDetector]]:
+    ) -> tuple[float, bool, KeyboardActionDetector]:
         """
         设置截图循环的参数。
 
@@ -1052,7 +1044,7 @@ class CapturerRunner:
         duration: float = 60,
         single: bool = False,
         exit_after_capture: bool = False,
-        monitored_keys: Optional[list[str]] = None,
+        monitored_keys: list[str] = None,
         hotkey_toggle: bool = False,
     ):
         """
@@ -1094,7 +1086,7 @@ class CapturerRunner:
         duration: float = 60,
         hotkey_toggle: bool = False,
         exit_after_capture: bool = True,
-        monitored_keys: Optional[list[str]] = None,
+        monitored_keys: list[str] = None,
     ):
         """
         运行截图器。
@@ -1160,6 +1152,9 @@ class ScreenCapturerArgParser:
         )
         self.parser.add_argument(
             "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
+        )
+        self.parser.add_argument(
+            "-o", "--output-dir", type=str, default=None, help="截图文件保存父目录"
         )
         self.parser.add_argument(
             "-d",
