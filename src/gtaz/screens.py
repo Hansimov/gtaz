@@ -107,7 +107,7 @@ class CapturedFrame:
     filename: str
     """预生成的文件名"""
     action_info: KeyboardActionInfo = None
-    """键盘动作信息（仅 keyboard_trigger 模式下使用）"""
+    """键盘动作信息"""
     frame_index: int = 0
     """帧序号"""
 
@@ -333,7 +333,7 @@ class ScreenCapturer:
 
         :param interval: 截图间隔时间（秒），优先级高于 fps
         :param fps: 每秒截图帧数，当 interval 未指定时使用
-        :param output_dir: 输出目录，默认为 cache/frames（keyboard_trigger 时为 cache/actions）
+        :param output_dir: 输出目录，默认 cache/frames，有 keyboard_trigger 则 cache/actions
         :param window_locator: 窗口定位器，默认为 None（将自动创建）
         :param image_format: 图像格式，支持 "JPEG" 或 "PNG"，默认 JPEG（更快更小）
         :param quality: JPEG 质量（1-100），默认 85
@@ -367,7 +367,6 @@ class ScreenCapturer:
                 output_dir = ACTIONS_DIR
             else:
                 output_dir = FRAMES_DIR
-
         save_dir = Path(output_dir) / session_name
 
         # 初始化缓存管理器（minimap_crop_region 在首次截图时设置）
@@ -911,17 +910,15 @@ class CapturerRunner:
     封装各种运行模式的逻辑，包括单帧、连续截图、热键启停等。
     """
 
-    def __init__(self, capturer: ScreenCapturer, keyboard_trigger: bool = False):
+    def __init__(self, capturer: ScreenCapturer):
         """
         初始化截图器运行器。
 
         :param capturer: 截图器实例
-        :param keyboard_trigger: 是否为键盘触发模式（应与 capturer.keyboard_trigger 一致）
         """
         self.capturer = capturer
-        self.keyboard_trigger = keyboard_trigger
 
-    def _print_config(self, hotkey_toggle: bool = False):
+    def _log_config(self, hotkey_toggle: bool = False):
         """
         打印配置信息。
 
@@ -938,13 +935,8 @@ class CapturerRunner:
         else:
             minimap_str = ""
 
-        if self.keyboard_trigger:
-            mode_str = "键盘触发模式，"
-        else:
-            mode_str = ""
-
         logger.note(
-            f"{hotkey_toggle_str}{mode_str}fps={1/self.capturer.interval:.1f}，"
+            f"{hotkey_toggle_str}fps={1/self.capturer.interval:.1f}，"
             f"interval={round(self.capturer.interval, 2)}s，"
             f"cache_dir={self.capturer.cacher.save_dir}{minimap_str}"
         )
@@ -986,7 +978,7 @@ class CapturerRunner:
                     return True
 
                 last_start_key_pressed = start_key_pressed
-                time.sleep(0.05)  # 50ms 检测间隔
+                time.sleep(0.02)  # 20ms 检测间隔
 
         except KeyboardInterrupt:
             logger.note(f"\n检测到 {key_hint('Ctrl+C')}，退出...")
@@ -1005,11 +997,9 @@ class CapturerRunner:
         """
         max_duration = 600  # 10分钟
 
+        # 单帧模式：只需等待触发
         if single:
-            # 单帧模式：无时间限制，只等待触发
-            mode_desc = "单帧模式"
-            logger.note(f"{mode_desc}，等待触发...")
-            # 单帧模式下，如果是热键启停，需要监听停止键
+            logger.note(f"单帧模式：等待触发 ...")
             if hotkey_toggle:
                 stop_detector = KeyboardActionDetector(
                     monitored_keys=[STOP_CAPTURE_KEY]
@@ -1017,24 +1007,17 @@ class CapturerRunner:
                 return max_duration, True, stop_detector
             return max_duration, False, None
 
-        # 连续模式
-        if self.keyboard_trigger:
-            mode_desc = "键盘触发截图"
-        else:
-            mode_desc = "连续截图"
-
+        # 持续模式 或 热键启停模式
         if duration == 0 or hotkey_toggle:
-            # 持续模式 或 热键启停模式：需要监听停止键
             duration = max_duration
             logger.note(
-                f"{mode_desc}（持续模式，最大 {max_duration} 秒，"
-                f"按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）..."
+                f"持续模式：按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')}）..."
             )
             stop_detector = KeyboardActionDetector(monitored_keys=[STOP_CAPTURE_KEY])
             return duration, True, stop_detector
+        # 定时模式
         else:
-            # 定时模式
-            logger.note(f"{mode_desc}（{duration} 秒）...")
+            logger.note(f"定时模式：{duration} 秒 ...")
             return duration, False, None
 
     def run_capture_loop(
@@ -1096,7 +1079,7 @@ class CapturerRunner:
         :param monitored_keys: 监控按键名列表，仅当这些键按下时才截图
         """
         # 打印配置信息
-        self._print_config(hotkey_toggle=hotkey_toggle)
+        self._log_config(hotkey_toggle=hotkey_toggle)
 
         # 验证窗口
         if not self._validate_window():
@@ -1146,7 +1129,7 @@ class ScreenCapturerArgParser:
             "--exit-after-capture",
             action="store_true",
             default=False,
-            help="单帧模式下，截图后退出（默认不退出，继续监听触发事件）",
+            help="截图后退出（默认不退出，继续监听触发事件）",
         )
         self.parser.add_argument(
             "-f", "--fps", type=float, default=3, help="每秒截图帧数（默认: 3）"
@@ -1179,7 +1162,7 @@ class ScreenCapturerArgParser:
             "--monitored-keys",
             type=str,
             default="",
-            help="单帧模式下，按下指定键才触发截图，按住不重复触发",
+            help="按下指定键才触发截图，按住不重复触发",
         )
         self.parser.add_argument(
             "-m",
@@ -1200,6 +1183,7 @@ def main():
     # 创建统一的截图器，通过 keyboard_trigger 参数控制模式
     capturer = ScreenCapturer(
         fps=args.fps,
+        output_dir=args.output_dir,
         minimap_only=args.minimap_only,
         keyboard_trigger=args.keyboard_trigger,
     )
@@ -1212,7 +1196,7 @@ def main():
         ]
 
     # 创建并运行截图器运行器
-    runner = CapturerRunner(capturer, keyboard_trigger=args.keyboard_trigger)
+    runner = CapturerRunner(capturer)
     runner.run(
         single=args.single,
         duration=args.duration,
