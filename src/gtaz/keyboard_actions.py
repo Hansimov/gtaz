@@ -3,7 +3,7 @@
 import ctypes
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Literal
+from typing import Literal
 
 from tclogger import TCLogger, get_now
 
@@ -224,8 +224,8 @@ class KeyState:
 
     key: str
     is_pressed: bool = False
-    press_time: Optional[float] = None
-    release_time: Optional[float] = None
+    press_time: float = None
+    release_time: float = None
 
     def copy(self) -> "KeyState":
         """创建当前状态的副本。"""
@@ -277,9 +277,10 @@ class KeyboardActionDetector:
 
     def __init__(
         self,
-        monitored_keys: Optional[list[str]] = None,
+        monitored_keys: list[str] = None,
         game_keys_only: bool = False,
         trigger_type: TriggerType = None,
+        exclude_keys: list[str] = None,
     ):
         """
         初始化键盘动作检测器。
@@ -287,6 +288,7 @@ class KeyboardActionDetector:
         :param monitored_keys: 要监控的按键列表（键名），默认监控所有按键
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键
         :param trigger_type: 按键触发类型（KEY_DOWN=刚按下/KEY_UP=刚释放/KEY_HOLD=按住）
+        :param exclude_keys: 要排除的按键列表（键名），这些按键不会被检测和记录
         """
         if monitored_keys:
             self.monitored_keys = normalize_keys(monitored_keys)
@@ -295,14 +297,14 @@ class KeyboardActionDetector:
         else:
             self.monitored_keys = ALL_KEYS
 
+        if exclude_keys:
+            exclude_set = set(normalize_keys(exclude_keys))
+            self.monitored_keys = [
+                key for key in self.monitored_keys if key not in exclude_set
+            ]
+
         # 设置触发类型，如果未指定则默认为 KEY_DOWN
         self.trigger_type = trigger_type or KEY_DOWN
-
-        # 对于边沿触发模式，使用增强检测以捕捉快速按键
-        if self.trigger_type == KEY_DOWN:
-            self.detect_method = self._is_key_pressed_or_toggled
-        else:
-            self.detect_method = self._is_key_pressed
 
         # 加载 Windows API
         self.user32 = ctypes.windll.user32
@@ -311,9 +313,16 @@ class KeyboardActionDetector:
         self._key_states: dict[str, KeyState] = {}
         self._previous_pressed: set[str] = set()
 
+        # 初始化时清除所有按键的历史状态
+        # 通过调用一次 GetAsyncKeyState 来清除 toggle 位
+        for key in self.monitored_keys:
+            key_code = key_name_to_code(key)
+            if key_code != 0:
+                self.user32.GetAsyncKeyState(key_code)
+
     def _is_key_pressed(self, key: str) -> bool:
         """
-        检查指定按键是否被按下。
+        检查指定按键是否被按下（仅检查当前状态）。
 
         使用 GetAsyncKeyState 检测按键状态。
         返回值的最高位（0x8000）表示按键当前是否被按下。
@@ -326,25 +335,6 @@ class KeyboardActionDetector:
             return False
         state = self.user32.GetAsyncKeyState(key_code)
         return bool(state & 0x8000)
-
-    def _is_key_pressed_or_toggled(self, key: str) -> bool:
-        """
-        检查指定按键是否被按下或刚被按下过（用于捕捉快速按键）。
-
-        使用 GetAsyncKeyState 检测按键状态。
-        返回值的最高位（0x8000）表示按键当前是否被按下。
-        返回值的最低位（0x0001）表示自上次调用后该键是否被按下过。
-
-        :param key: 按键名
-        :return: 按键是否被按下或刚被按下过
-        """
-        key_code = key_name_to_code(key)
-        if key_code == 0:
-            return False
-        state = self.user32.GetAsyncKeyState(key_code)
-        # 检查最高位（当前是否按下）或最低位（自上次调用后是否按下过）
-        # 这样可以捕捉到快速按键（按下又马上释放的情况）
-        return bool(state & 0x8000) or bool(state & 0x0001)
 
     def get_pressed_keys(self) -> list[str]:
         """
@@ -388,7 +378,7 @@ class KeyboardActionDetector:
         key_states: dict[str, KeyState] = {}
 
         for key in self.monitored_keys:
-            is_pressed = self.detect_method(key)
+            is_pressed = self._is_key_pressed(key)
 
             if is_pressed:
                 current_pressed.add(key)
