@@ -27,11 +27,11 @@ https://github.com/user-attachments/assets/b8f11ecf-4cc4-4458-8905-debdf7b7a654
 
 根据小地图，识别角色在事务所的楼层。训练日志：
 
-![recognizes_v2](./img/recognize_v2_train.png)
+![recognizes_v2](./assets/recognize_v2_train.png)
 
 交叉验证：
 
-![recognizes_v2_validation](./img/recognize_v2_validation.png)
+![recognizes_v2_validation](./assets/recognize_v2_validation.png)
 
 ## Developer Notes
 
