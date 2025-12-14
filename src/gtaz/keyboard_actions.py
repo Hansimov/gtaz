@@ -277,7 +277,7 @@ class KeyboardActionDetector:
 
     def __init__(
         self,
-        monitored_keys: list[str] = None,
+        monitor_keys: list[str] = None,
         game_keys_only: bool = False,
         trigger_type: TriggerType = None,
         exclude_keys: list[str] = None,
@@ -285,22 +285,22 @@ class KeyboardActionDetector:
         """
         初始化键盘动作检测器。
 
-        :param monitored_keys: 要监控的按键列表（键名），默认监控所有按键
+        :param monitor_keys: 要监控的按键列表（键名），默认监控所有按键
         :param game_keys_only: 是否只监控 GTAV 游戏常用按键
         :param trigger_type: 按键触发类型（KEY_DOWN=刚按下/KEY_UP=刚释放/KEY_HOLD=按住）
         :param exclude_keys: 要排除的按键列表（键名），这些按键不会被检测和记录
         """
-        if monitored_keys:
-            self.monitored_keys = normalize_keys(monitored_keys)
+        if monitor_keys:
+            self.monitor_keys = normalize_keys(monitor_keys)
         elif game_keys_only:
-            self.monitored_keys = GTAV_GAME_KEYS
+            self.monitor_keys = GTAV_GAME_KEYS
         else:
-            self.monitored_keys = ALL_KEYS
+            self.monitor_keys = ALL_KEYS
 
         if exclude_keys:
             exclude_set = set(normalize_keys(exclude_keys))
-            self.monitored_keys = [
-                key for key in self.monitored_keys if key not in exclude_set
+            self.monitor_keys = [
+                key for key in self.monitor_keys if key not in exclude_set
             ]
 
         # 设置触发类型，如果未指定则默认为 KEY_DOWN
@@ -315,7 +315,7 @@ class KeyboardActionDetector:
 
         # 初始化时清除所有按键的历史状态
         # 通过调用一次 GetAsyncKeyState 来清除 toggle 位
-        for key in self.monitored_keys:
+        for key in self.monitor_keys:
             key_code = key_name_to_code(key)
             if key_code != 0:
                 self.user32.GetAsyncKeyState(key_code)
@@ -343,7 +343,7 @@ class KeyboardActionDetector:
         :return: 被按下的按键列表
         """
         pressed = []
-        for key in self.monitored_keys:
+        for key in self.monitor_keys:
             if self._is_key_pressed(key):
                 pressed.append(key)
         return pressed
@@ -354,7 +354,7 @@ class KeyboardActionDetector:
 
         :return: 是否有按键被按下
         """
-        for key in self.monitored_keys:
+        for key in self.monitor_keys:
             if self._is_key_pressed(key):
                 return True
         return False
@@ -377,7 +377,7 @@ class KeyboardActionDetector:
         pressed_keys: list[str] = []
         key_states: dict[str, KeyState] = {}
 
-        for key in self.monitored_keys:
+        for key in self.monitor_keys:
             is_pressed = self._is_key_pressed(key)
 
             if is_pressed:
@@ -459,7 +459,7 @@ class KeyboardActionDetector:
     def __repr__(self) -> str:
         return (
             f"KeyboardActionDetector("
-            f"monitored_keys={len(self.monitored_keys)} keys, "
+            f"monitor_keys={len(self.monitor_keys)} keys, "
             f"trigger_type={self.trigger_type.value})"
         )
 

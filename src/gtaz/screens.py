@@ -45,9 +45,9 @@ IMAGE_FORMAT = "jpeg"
 # 默认图像质量（JPEG）
 DEFAULT_QUALITY = 85
 
-# 交互式控制键
-START_CAPTURE_KEY = "1"
-STOP_CAPTURE_KEY = "2"
+# 录制启停热键
+START_RECORD_KEY = "1"
+STOP_RECORD_KEY = "2"
 
 
 # 进度日志样式映射
@@ -118,22 +118,22 @@ class DetectorManager:
 
     @staticmethod
     def create_capture_detector(
-        monitored_keys: list[str] = None,
+        monitor_keys: list[str] = None,
         trigger_type: TriggerType = None,
     ) -> KeyboardActionDetector:
         """创建截图触发检测器
 
-        :param monitored_keys: 监控按键列表，默认为 None（使用游戏常用按键）
+        :param monitor_keys: 监控按键列表，默认为 None（使用游戏常用按键）
         :param trigger_type: 按键触发类型
         :param exclude_keys: 要排除的按键列表，默认排除控制键
 
         :return: 键盘检测器实例
         """
         # 默认排除启停控制键
-        exclude_keys = [START_CAPTURE_KEY, STOP_CAPTURE_KEY]
-        if monitored_keys:
+        exclude_keys = [START_RECORD_KEY, STOP_RECORD_KEY]
+        if monitor_keys:
             return KeyboardActionDetector(
-                monitored_keys=monitored_keys,
+                monitor_keys=monitor_keys,
                 trigger_type=trigger_type,
                 exclude_keys=exclude_keys,
             )
@@ -151,7 +151,7 @@ class DetectorManager:
         :return: 键盘检测器实例
         """
         return KeyboardActionDetector(
-            monitored_keys=[START_CAPTURE_KEY], trigger_type=KEY_DOWN
+            monitor_keys=[START_RECORD_KEY], trigger_type=KEY_DOWN
         )
 
     @staticmethod
@@ -161,7 +161,7 @@ class DetectorManager:
         :return: 键盘检测器实例
         """
         return KeyboardActionDetector(
-            monitored_keys=[STOP_CAPTURE_KEY], trigger_type=KEY_DOWN
+            monitor_keys=[STOP_RECORD_KEY], trigger_type=KEY_DOWN
         )
 
 
@@ -359,10 +359,9 @@ class CaptureCacher:
 
 class ScreenCapturer:
     """
-    GTAV 游戏画面截取器。
+    窗口画面截取器。
 
-    按照指定的时间间隔截取 GTAV 游戏窗口画面，并保存到本地文件。
-    支持后台窗口截取，即使 GTAV 窗口不在前台也能正确截取。
+    按照指定的时间间隔截取窗口画面，并保存到本地文件。支持后台截取。
     """
 
     def __init__(
@@ -825,17 +824,7 @@ class ScreenCapturer:
         return "".join(parts)
 
 
-class CaptureRunner:
-    """
-    截图运行器。
-
-    负责管理截图器的运行逻辑，包括：
-    - 根据参数创建相应的 detector
-    - 处理热键启动等待
-    - 控制截图循环
-    - 调用截图器执行截图
-    """
-
+class RecordRunner:
     def __init__(
         self,
         capturer: ScreenCapturer,
@@ -844,7 +833,7 @@ class CaptureRunner:
         hotkey_toggle: bool = False,
     ):
         """
-        初始化运行器。
+        初始化录制运行器。
 
         :param capturer: 截图器实例
         :param duration: 持续时间（秒），0表示持续模式
@@ -855,7 +844,6 @@ class CaptureRunner:
         self.duration = duration
         self.single = single
         self.hotkey_toggle = hotkey_toggle
-
         self._create_detectors()
 
     def _create_detectors(self):
@@ -870,7 +858,7 @@ class CaptureRunner:
     def _check_window(self) -> bool:
         """检测窗口"""
         if not self.capturer.window_locator.is_window_valid():
-            erro_str = "GTAV 窗口未找到"
+            erro_str = f"窗口 [{self.capturer.window_locator.window_title}] 未找到"
             logger.erro(erro_str)
             raise RuntimeError(erro_str)
         return True
@@ -932,7 +920,8 @@ class CaptureRunner:
         """
         logger.note("热键启停模式已启动")
         logger.note(
-            f"按 {key_hint(START_CAPTURE_KEY)} {val_mesg('开始截图')}，"
+            f"按 {key_hint(START_RECORD_KEY)} {val_mesg('开始录制')}，"
+            f"按 {key_hint(STOP_RECORD_KEY)} {val_mesg('停止录制')}，"
             f"按 {key_hint('Ctrl+C')} {val_mesg('退出')}"
         )
 
@@ -940,7 +929,7 @@ class CaptureRunner:
             while True:
                 action_info = self.start_detector.detect()
                 if action_info.has_action:
-                    logger.okay(f"检测到 {key_hint(START_CAPTURE_KEY)} 键，开始截图...")
+                    logger.okay(f"检测到 {key_hint(START_RECORD_KEY)} 键，开始录制...")
                     return True
                 time.sleep(0.015)  # 15ms/tick
         except KeyboardInterrupt:
@@ -953,15 +942,15 @@ class CaptureRunner:
         duration = self.duration
         if self.single:
             # 单帧模式，duration 不影响
-            logger.note("单帧模式：等待触发 ...")
+            logger.note("单帧模式：等待触发...")
         elif duration == 0:
             # 持续模式，duration 最大10分钟
             duration = 600
             logger.note(
-                f"持续模式：按 {key_hint(STOP_CAPTURE_KEY)} {val_mesg('停止截图')} ..."
+                f"持续模式：按 {key_hint(STOP_RECORD_KEY)} {val_mesg('停止录制')}..."
             )
         else:
-            logger.note(f"定时模式：{duration} 秒 ...")
+            logger.note(f"定时模式：{duration} 秒...")
 
         # 键盘触发模式：start_time 在第一次截图时初始化
         if self.capturer.capture_detector:
@@ -988,7 +977,7 @@ class CaptureRunner:
             if self.stop_detector:
                 action_info = self.stop_detector.detect()
                 if action_info.has_action:
-                    logger.note(f"检测到 {key_hint(STOP_CAPTURE_KEY)} 键，停止截图...")
+                    logger.note(f"检测到 {key_hint(STOP_RECORD_KEY)} 键，停止录制...")
                     break
 
             # 执行截图
@@ -1057,14 +1046,13 @@ class ScreenCapturerArgParser:
             "--duration",
             type=float,
             default=60,
-            help=f"连续截图持续时间，单位秒（默认: 60，设为 0 则持续截屏直到按 '{STOP_CAPTURE_KEY}' 键停止，最大 10 分钟）",
+            help=f"连续截图持续时间，单位秒（默认: 60，设为 0 则持续截屏直到按 '{STOP_RECORD_KEY}' 键停止，最大 10 分钟）",
         )
         self.parser.add_argument(
             "-g",
             "--hotkey-toggle",
             action="store_true",
-            dest="hotkey_toggle",
-            help=f"热键启停，按 '{START_CAPTURE_KEY}' 开始截图，按 '{STOP_CAPTURE_KEY}' 停止截图（可与 -k 组合使用）",
+            help=f"使用热键启停录制，按 '{START_RECORD_KEY}' 开始录制，按 '{STOP_RECORD_KEY}' 停止录制（可与 -k 组合使用）",
         )
         self.parser.add_argument(
             "-i",
@@ -1074,10 +1062,10 @@ class ScreenCapturerArgParser:
         )
         self.parser.add_argument(
             "-k",
-            "--monitored-keys",
+            "--monitor-keys",
             type=str,
             default="",
-            help="按下指定键才触发截图，按住不重复触发",
+            help="只有指定的按键才能触发截图",
         )
         self.parser.add_argument(
             "-t",
@@ -1104,12 +1092,10 @@ def main():
     args = ScreenCapturerArgParser().parse()
 
     # 解析监控按键
-    if args.monitored_keys:
-        monitored_keys = [
-            k.strip() for k in args.monitored_keys.split(",") if k.strip()
-        ]
+    if args.monitor_keys:
+        monitor_keys = [k.strip() for k in args.monitor_keys.split(",") if k.strip()]
     else:
-        monitored_keys = None
+        monitor_keys = None
 
     # 设置触发类型
     if args.trigger_type:
@@ -1121,9 +1107,9 @@ def main():
             trigger_type = KEY_HOLD
 
     # 创建截图触发检测器
-    if args.input_trigger or monitored_keys:
+    if args.input_trigger or monitor_keys:
         capture_detector = DetectorManager.create_capture_detector(
-            monitored_keys=monitored_keys, trigger_type=trigger_type
+            monitor_keys=monitor_keys, trigger_type=trigger_type
         )
     else:
         capture_detector = None
@@ -1142,8 +1128,8 @@ def main():
         capture_detector=capture_detector,
     )
 
-    # 创建截图运行器，然后运行
-    runner = CaptureRunner(
+    # 创建录制运行器，然后运行
+    runner = RecordRunner(
         capturer=capturer,
         duration=args.duration,
         single=args.single,
