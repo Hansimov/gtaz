@@ -49,6 +49,9 @@ DEFAULT_QUALITY = 85
 START_RECORD_KEY = "1"
 STOP_RECORD_KEY = "2"
 
+# 最大录制时长（秒）
+MAX_DURATION = 600
+
 
 # 进度日志样式映射
 PROGRESS_LOGSTR = {
@@ -828,7 +831,7 @@ class RecordRunner:
     def __init__(
         self,
         capturer: ScreenCapturer,
-        duration: float = 60,
+        duration: float = None,
         single: bool = False,
         hotkey_toggle: bool = False,
     ):
@@ -892,25 +895,12 @@ class RecordRunner:
 
         return next_tick_time
 
-    def run(self):
-        """运行截图器"""
+    def _log_keyboard_interrupt(self):
+        logger.note(f"\n检测到 {key_hint('Ctrl+C')}，正在退出...")
 
-        self._check_window()
-
-        logger.note(f"截取器信息: {self.capturer}")
-
-        # 热键启停模式：等待启动信号
-        if self.start_detector:
-            if not self._wait_start_signal():
-                return
-
-        # 执行截图循环
-        try:
-            self._run_loop()
-        except KeyboardInterrupt:
-            logger.note(f"\n检测到 {key_hint('Ctrl+C')}，正在退出...")
-            if self.capturer.get_cached_frame_count() > 0:
-                self.capturer.flush_cache(verbose=True)
+    def _finalize(self):
+        if self.capturer.get_cached_frame_count() > 0:
+            self.capturer.flush_cache(verbose=True)
 
     def _wait_start_signal(self) -> bool:
         """
@@ -933,32 +923,49 @@ class RecordRunner:
                     return True
                 time.sleep(0.015)  # 15ms/tick
         except KeyboardInterrupt:
-            logger.note(f"\n检测到 {key_hint('Ctrl+C')}，退出...")
+            self._log_keyboard_interrupt()
             return False
 
-    def _run_loop(self):
-        """运行截图循环"""
-        # 确定实际运行时长
-        duration = self.duration
+    def _log_loop_progress(self, elapsed: float, extra_info: str = ""):
+        """循环进度日志"""
+        cached_count = self.capturer.get_cached_frame_count()
+        percent = (elapsed / self.duration) * 100
+        progress_logstr = get_progress_logstr(percent)
+        progress_str = progress_logstr(
+            f"({percent:5.1f}%) [{elapsed:.1f}/{self.duration:.1f}]"
+        )
+        logger.okay(f"{progress_str} 已缓存 {cached_count} 帧{extra_info}")
+
+    def _log_duration(self):
         if self.single:
             # 单帧模式，duration 不影响
             logger.note("单帧模式：等待触发...")
-        elif duration == 0:
+        elif self.duration == 0:
             # 持续模式，duration 最大10分钟
-            duration = 600
+            self.duration = MAX_DURATION
             logger.note(
                 f"持续模式：按 {key_hint(STOP_RECORD_KEY)} {val_mesg('停止录制')}..."
             )
         else:
-            logger.note(f"定时模式：{duration} 秒...")
+            logger.note(f"定时模式：{self.duration} 秒...")
 
-        # 键盘触发模式：start_time 在第一次截图时初始化
+    def _save_captured_frames(self):
+        """保存已截取的帧"""
+        frame_count = self.capturer.get_cached_frame_count()
+        logger.note(f"截取完成，共截取 {frame_count} 帧，开始保存...")
+        saved_count = self.capturer.flush_cache(verbose=True)
+        logger.okay(f"保存完成，共保存 {saved_count} 帧")
+
+    def _run_loop(self):
+        """运行截图循环"""
+        self._log_duration()
+
         if self.capturer.capture_detector:
+            # 键盘触发模式：start_time 在第一次截图时初始化
             start_time = None
-        # 普通模式：立即开始计时
         else:
+            # 普通模式：立即开始计时
             start_time = time.time()
-
         next_tick_time = time.time()
         captured_count = 0
 
@@ -970,7 +977,7 @@ class RecordRunner:
             else:
                 elapsed = time.time() - start_time
 
-            if not self.single and elapsed >= duration:
+            if not self.single and elapsed >= self.duration:
                 break
 
             # 检查停止键
@@ -980,40 +987,47 @@ class RecordRunner:
                     logger.note(f"检测到 {key_hint(STOP_RECORD_KEY)} 键，停止录制...")
                     break
 
-            # 执行截图
+            # 运行截图
             filename, extra_info = self.capturer.try_capture_frame(verbose=False)
             if filename:
+                captured_count += 1
+
                 # 键盘触发模式：首次截图时初始化 start_time
                 if start_time is None:
                     start_time = time.time()
                     next_tick_time = start_time
                     elapsed = 0  # 首次截图，elapsed 为 0
 
-                captured_count += 1
-                cached_count = self.capturer.get_cached_frame_count()
-
                 if self.single:
                     self.capturer.flush_cache(verbose=True)
                     logger.okay(f"单帧截图成功: {filename}")
                     break
-                else:
-                    # 进度日志
-                    percent = (elapsed / duration) * 100
-                    progress_logstr = get_progress_logstr(percent)
-                    progress_str = progress_logstr(
-                        f"({percent:5.1f}%) [{elapsed:.1f}/{duration:.1f}]"
-                    )
-                    logger.okay(f"{progress_str} 已缓存 {cached_count} 帧{extra_info}")
+
+                self._log_loop_progress(elapsed, extra_info)
 
             # 等待至下一次 tick
             next_tick_time = self._wait_until_next_tick(next_tick_time, bool(filename))
 
-        # 完成并保存（单帧模式已经保存过了）
+        # 完成并保存
         if not self.single and captured_count > 0:
-            frame_count = self.capturer.get_cached_frame_count()
-            logger.note(f"截图完成，共截取 {frame_count} 帧，开始保存...")
-            saved_count = self.capturer.flush_cache(verbose=True)
-            logger.okay(f"截图完成，共保存 {saved_count} 帧")
+            self._save_captured_frames()
+
+    def run(self):
+        """运行截图器"""
+        self._check_window()
+        logger.note(f"截取器信息: {self.capturer}")
+
+        # 热键启停模式：等待启动信号
+        if self.start_detector:
+            if not self._wait_start_signal():
+                return
+
+        # 执行截图循环
+        try:
+            self._run_loop()
+        except KeyboardInterrupt:
+            self._log_keyboard_interrupt()
+            self._finalize()
 
 
 class ScreenCapturerArgParser:
@@ -1045,8 +1059,8 @@ class ScreenCapturerArgParser:
             "-d",
             "--duration",
             type=float,
-            default=60,
-            help=f"连续截图持续时间，单位秒（默认: 60，设为 0 则持续截屏直到按 '{STOP_RECORD_KEY}' 键停止，最大 10 分钟）",
+            default=None,
+            help=f"连续截图持续时间，单位秒",
         )
         self.parser.add_argument(
             "-g",
