@@ -5,7 +5,7 @@ GTAV 菜单 OCR 模块
 
 ### 安装 rapidocr
 
-- https://rapidai.github.io/RapidOCRDocs/main/install_usage/rapidocr/install/
+- https://rapidai.github.io/RapidOCRDocs/main/install_usage/rapidocr/install
 
 ```sh
 pip install rapidocr
@@ -40,22 +40,49 @@ pip install --upgrade onnx onnxscript onnxruntime-gpu
 rapidocr -img "<image_full_path>" --vis_res
 ```
 
+## 用法和参数
+
+使用教程：
+- https://rapidai.github.io/RapidOCRDocs/main/install_usage/rapidocr/usage
+
+默认配置文件：
+- https://github.com/RapidAI/RapidOCR/blob/main/python/rapidocr/config.yaml
+
+参数：
+- https://rapidai.github.io/RapidOCRDocs/main/install_usage/rapidocr/parameters
+
 ## 为什么不用 onnxruntime-gpu？
 
 原因详见该贴：
-- https://rapidai.github.io/RapidOCRDocs/main/blog/2022/09/24/onnxruntime-gpu推理/
+- https://rapidai.github.io/RapidOCRDocs/main/blog/2022/09/24/onnxruntime-gpu推理
 
 结论：onnxruntime-gpu 版在动态输入情况下，推理速度要比CPU慢很多。
 
 """
 
+import numpy as np
+
 from pathlib import Path
-from tclogger import PathType, strf_path, TCLogger, logstr
+from tclogger import PathType, strf_path, TCLogger, logstr, int_bits
+from typing import Union
+
+from PIL import Image
+from PIL.Image import Image as PImage
 from rapidocr import RapidOCR, EngineType
 from rapidocr.utils.output import RapidOCROutput
 
-
 logger = TCLogger(name="OCR", use_prefix=True, use_prefix_ms=True)
+
+
+def key_note(s) -> str:
+    """为键添加消息样式。"""
+    return logstr.note(s)
+
+
+def val_mesg(s) -> str:
+    """为值添加消息样式"""
+    return logstr.mesg(s)
+
 
 TORCH_GPU_PARAMS = {
     "Det.engine_type": EngineType.TORCH,
@@ -64,6 +91,66 @@ TORCH_GPU_PARAMS = {
     "EngineConfig.torch.use_cuda": True,
     "EngineConfig.torch.gpu_id": 0,
 }
+
+
+class PillowImager:
+    def load(self, path: PathType) -> PImage:
+        """加载图像文件。
+
+        :param path: 图像文件路径
+
+        :return: PIL Image 对象
+        """
+        with Image.open(path) as img:
+            return img.copy()
+
+    def resize(
+        self, img: PImage, w: int = None, h: int = None, ratio: float = None
+    ) -> PImage:
+        """调整图像尺寸。
+        - 按指定的宽高缩放，若另一维度为 None，则等比缩放。
+        - 如果 ratio 不为 None，则按比例缩放。
+        - 仅能指定宽高或比例中的一种。
+
+        :param img: 输入图像（PImage）
+        :param w: 目标宽度
+        :param h: 目标高度
+        :param ratio: 缩放比例
+
+        :return: 调整尺寸后的图像（PImage）
+        """
+        orig_w, orig_h = img.size
+
+        if ratio is not None:
+            # 按比例缩放
+            new_w = int(orig_w * ratio)
+            new_h = int(orig_h * ratio)
+        elif w is not None and h is not None:
+            # 指定宽高
+            new_w = w
+            new_h = h
+        elif w is not None:
+            # 仅指定宽度，等比缩放
+            new_w = w
+            new_h = int(orig_h * w / orig_w)
+        elif h is not None:
+            # 仅指定高度，等比缩放
+            new_h = h
+            new_w = int(orig_w * h / orig_h)
+        else:
+            # 无参数，返回原图
+            return img
+
+        return img.resize((new_w, new_h))
+
+    def to_np(self, img: PImage) -> np.ndarray:
+        """将 PIL Image 转换为 numpy 数组。
+
+        :param img: PIL Image 对象
+
+        :return: numpy 数组
+        """
+        return np.array(img)
 
 
 class OCREngine:
@@ -78,10 +165,11 @@ class OCREngine:
         self.use_det = use_det
         self.use_cls = use_cls
         self.use_rec = use_rec
+        self.imager = PillowImager()
 
-    def __call__(self, path: PathType) -> RapidOCROutput:
+    def __call__(self, img: Union[PathType, np.ndarray]) -> RapidOCROutput:
         result = self.engine(
-            strf_path(path),
+            img,
             use_det=self.use_det,
             use_cls=self.use_cls,
             use_rec=self.use_rec,
@@ -89,9 +177,110 @@ class OCREngine:
         return result
 
 
+class TxtBoxSorter:
+    @staticmethod
+    def _sort_by_dist(
+        txts: tuple[str], boxes: np.ndarray
+    ) -> list[tuple[str, np.ndarray, float]]:
+        """根据文本框左上角到原点的距离对识别结果进行排序（从小到大）。
+
+        :param txts: 识别的文本内容
+        :param boxes: 文本框坐标
+
+        :return: 排序后的 (文本, 文本框, 距离) 列表
+        """
+        # 计算每个文本框左上角到原点的距离
+        distances = []
+        for box in boxes:
+            x, y = box[0]
+            distance = np.sqrt(x**2 + y**2)
+            distances.append(round(distance))
+        # 按距离从小到大排序
+        sorted_indices = np.argsort(distances)
+        sorted_items = [(txts[i], boxes[i], distances[i]) for i in sorted_indices]
+        return sorted_items
+
+    @staticmethod
+    def _sort_by_area(
+        txts: tuple[str], boxes: np.ndarray
+    ) -> list[tuple[str, np.ndarray, float]]:
+        """根据文本框面积对识别结果进行排序（从大到小）。
+
+        :param txts: 识别的文本内容
+        :param boxes: 文本框坐标
+
+        :return: 排序后的 (文本, 文本框, 面积) 列表
+        """
+        # 计算每个文本框的面积
+        areas = []
+        for box in boxes:
+            # box 是 4 个点的坐标 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            # 使用 Shoelace 公式计算多边形面积
+            x_coords = box[:, 0]
+            y_coords = box[:, 1]
+            area = 0.5 * np.abs(
+                np.dot(x_coords, np.roll(y_coords, 1))
+                - np.dot(y_coords, np.roll(x_coords, 1))
+            )
+            areas.append(round(area))
+        # 按面积从大到小排序
+        sorted_indices = np.argsort([-area for area in areas])
+        sorted_items = [(txts[i], boxes[i], areas[i]) for i in sorted_indices]
+        return sorted_items
+
+    @staticmethod
+    def _sort_by_width(
+        txts: tuple[str], boxes: np.ndarray
+    ) -> list[tuple[str, np.ndarray, float]]:
+        """根据文本框宽度对识别结果进行排序（从大到小）。
+
+        :param txts: 识别的文本内容
+        :param boxes: 文本框坐标
+
+        :return: 排序后的 (文本, 文本框, 宽度) 列表
+        """
+        # 计算每个文本框的宽度
+        widths = []
+        for box in boxes:
+            # box 是 4 个点的坐标 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            # 计算左上角到右上角的距离作为宽度
+            x_coords = box[:, 0]
+            width = max(x_coords) - min(x_coords)
+            widths.append(round(width))
+        # 按宽度从大到小排序
+        sorted_indices = np.argsort([-w for w in widths])
+        sorted_items = [(txts[i], boxes[i], widths[i]) for i in sorted_indices]
+        return sorted_items
+
+    @staticmethod
+    def _sort_by_height(
+        txts: tuple[str], boxes: np.ndarray
+    ) -> list[tuple[str, np.ndarray, float]]:
+        """根据文本框高度对识别结果进行排序（从大到小）。
+
+        :param txts: 识别的文本内容
+        :param boxes: 文本框坐标
+
+        :return: 排序后的 (文本, 文本框, 高度) 列表
+        """
+        # 计算每个文本框的高度
+        heights = []
+        for box in boxes:
+            # box 是 4 个点的坐标 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            # 计算左上角到左下角的距离作为高度
+            y_coords = box[:, 1]
+            height = max(y_coords) - min(y_coords)
+            heights.append(round(height))
+        # 按高度从大到小排序
+        sorted_indices = np.argsort([-h for h in heights])
+        sorted_items = [(txts[i], boxes[i], heights[i]) for i in sorted_indices]
+        return sorted_items
+
+
 class OCREngineTester:
     def __init__(self):
         self.ocr = OCREngine(params=TORCH_GPU_PARAMS, use_cls=False)
+        self.imager = PillowImager()
 
     @staticmethod
     def _find_latest_jpg() -> str:
@@ -100,7 +289,13 @@ class OCREngineTester:
         latest_jpg = max(jpgs, key=lambda p: p.stat().st_mtime)
         return strf_path(latest_jpg)
 
-    def _log_elapsed(self, result: RapidOCROutput):
+    def _load_image_as_np(self, path: PathType) -> np.ndarray:
+        img = self.imager.load(path)
+        img = self.imager.resize(img, h=384)
+        img_np = self.imager.to_np(img)
+        return img_np
+
+    def _log_elapses(self, result: RapidOCROutput):
         elapses = result.elapse_list
         logger.okay(f"总耗时: {result.elapse:.3f}s")
         parts = ["文本检测", "方向分类", "文本识别"]
@@ -109,22 +304,45 @@ class OCREngineTester:
         )
         logger.mesg(f"各部分耗时: {elapses_str}")
 
+    def _log_txts(self, result: RapidOCROutput):
+        logger.note("文本内容:")
+        txts = result.txts
+        boxes = result.boxes
+        scores = result.scores
+        sort_name = "宽度"
+        sorted_txts_boxes = TxtBoxSorter._sort_by_width(txts, boxes)
+        idx_len = int_bits(len(sorted_txts_boxes))
+        sort_value_len = int_bits(
+            max(sort_value for _, _, sort_value in sorted_txts_boxes)
+        )
+        for i, (txt, box, sort_value) in enumerate(sorted_txts_boxes, 1):
+            old_idx = list(result.txts).index(txt)
+            score = scores[old_idx]
+            sort_val_str = f"{sort_value:>{sort_value_len}}"
+            logger.mesg(
+                f"  - [{i:>{idx_len}}] "
+                f"{key_note('置信度')}: {score:.3f}, "
+                f"{key_note(sort_name)}: {sort_val_str}, "
+                f"{key_note('文本')}: {logstr.okay(txt)}"
+            )
+
     def _log_result(self, result: RapidOCROutput):
         logger.note(f"识别结果:")
-        self._log_elapsed(result)
+        self._log_elapses(result)
+        self._log_txts(result)
 
     def test(self):
-        jpg = self._find_latest_jpg()
+        img_path = self._find_latest_jpg()
 
         logger.note(f"测试 OCR 模块...")
-        logger.mesg(f"测试图像: {logstr.file(jpg)}")
+        logger.mesg(f"测试图像: {logstr.file(img_path)}")
 
-        for i in range(10):
-            result = self.ocr(jpg)
-            if result:
-                self._log_result(result)
-            else:
-                logger.warn(f"未能正常识别！")
+        img_np = self._load_image_as_np(img_path)
+        result = self.ocr(img_np)
+        if result:
+            self._log_result(result)
+        else:
+            logger.warn(f"未能正常识别！")
 
 
 if __name__ == "__main__":
