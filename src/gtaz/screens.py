@@ -1182,3 +1182,6 @@ if __name__ == "__main__":
 
     # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
     # python -m gtaz.screens -g -i -m -f 10 -d 0
+
+    # Case: 键盘触发 + 单帧 + 指定按键 + 保存目录
+    #  python -m gtaz.screens -i -s -k k -o "gtaz/cache/menus"
