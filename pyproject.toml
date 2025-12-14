@@ -1,6 +1,6 @@
 [project]
 name = "gtaz"
-version = "0.2"
+version = "0.4"
 authors = [
     { name="Hansimov" },
 ]
@@ -12,7 +12,12 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = [ "tclogger", "vgamepad", "numpy", "Pillow", "torch", "torchvision", "timm" ]
+dependencies = [ "tclogger", "vgamepad", "numpy", "Pillow" ]
+
+[project.optional-dependencies]
+dev = [ "tclogger", "vgamepad", "numpy", "Pillow", "torch", "torchvision", "timm" ]
+gpu = [ ]
+cpu = [ ]
 
 [project.urls]
 Homepage = "https://github.com/Hansimov/gtaz"
