@@ -277,28 +277,37 @@ class TxtBoxSorter:
         return sorted_items
 
 
+SORT_METHODS = {
+    "距离": TxtBoxSorter._sort_by_dist,
+    "面积": TxtBoxSorter._sort_by_area,
+    "宽度": TxtBoxSorter._sort_by_width,
+    "高度": TxtBoxSorter._sort_by_height,
+}
+
+
+def find_latest_jpg() -> str:
+    menus_path = Path(__file__).parents[1] / "cache" / "menus"
+    jpgs = list(menus_path.glob("**/*.jpg"))
+    sorted_jpgs = sorted(jpgs, key=lambda p: p.stat().st_mtime, reverse=True)
+    latest_jpg = sorted_jpgs[0]
+    return strf_path(latest_jpg)
+
+
 class OCREngineTester:
     def __init__(self):
         self.ocr = OCREngine(params=TORCH_GPU_PARAMS, use_cls=False)
         self.imager = PillowImager()
 
-    @staticmethod
-    def _find_latest_jpg() -> str:
-        menus_path = Path(__file__).parents[1] / "cache" / "menus"
-        jpgs = list(menus_path.glob("**/*.jpg"))
-        latest_jpg = max(jpgs, key=lambda p: p.stat().st_mtime)
-        return strf_path(latest_jpg)
-
     def _load_image_as_np(self, path: PathType) -> np.ndarray:
         img = self.imager.load(path)
-        img = self.imager.resize(img, h=384)
+        # img = self.imager.resize(img, h=384)
         img_np = self.imager.to_np(img)
         return img_np
 
     def _log_elapses(self, result: RapidOCROutput):
-        elapses = result.elapse_list
         logger.okay(f"总耗时: {result.elapse:.3f}s")
         parts = ["文本检测", "方向分类", "文本识别"]
+        elapses = result.elapse_list
         elapses_str = ", ".join(
             f"{part}: {elapses[i] or 0:.3f}s" for i, part in enumerate(parts)
         )
@@ -309,8 +318,8 @@ class OCREngineTester:
         txts = result.txts
         boxes = result.boxes
         scores = result.scores
-        sort_name = "宽度"
-        sorted_txts_boxes = TxtBoxSorter._sort_by_width(txts, boxes)
+        sort_name = "高度"
+        sorted_txts_boxes = SORT_METHODS[sort_name](txts, boxes)
         idx_len = int_bits(len(sorted_txts_boxes))
         sort_value_len = int_bits(
             max(sort_value for _, _, sort_value in sorted_txts_boxes)
@@ -320,7 +329,7 @@ class OCREngineTester:
             score = scores[old_idx]
             sort_val_str = f"{sort_value:>{sort_value_len}}"
             logger.mesg(
-                f"  - [{i:>{idx_len}}] "
+                f"- [{i:>{idx_len}}] "
                 f"{key_note('置信度')}: {score:.3f}, "
                 f"{key_note(sort_name)}: {sort_val_str}, "
                 f"{key_note('文本')}: {logstr.okay(txt)}"
@@ -328,17 +337,20 @@ class OCREngineTester:
 
     def _log_result(self, result: RapidOCROutput):
         logger.note(f"识别结果:")
-        self._log_elapses(result)
-        self._log_txts(result)
+        with logger.temp_indent(2):
+            self._log_elapses(result)
+            self._log_txts(result)
 
     def test(self):
-        img_path = self._find_latest_jpg()
+        img_path = find_latest_jpg()
 
         logger.note(f"测试 OCR 模块...")
         logger.mesg(f"测试图像: {logstr.file(img_path)}")
 
-        img_np = self._load_image_as_np(img_path)
-        result = self.ocr(img_np)
+        # img_np = self._load_image_as_np(img_path)
+        # result = self.ocr(img_np)
+
+        result = self.ocr(img_path)
         if result:
             self._log_result(result)
         else:
