@@ -36,8 +36,8 @@ SRCCOPY = 0x00CC0020
 PW_CLIENTONLY = 0x00000001
 PW_RENDERFULLCONTENT = 0x00000002
 
-# 默认截图间隔（秒）
-FPS = 3
+# 默认截图帧率
+FPS = 10
 
 # 默认图像格式
 IMAGE_FORMAT = "jpeg"
@@ -118,22 +118,30 @@ class DetectorManager:
 
     @staticmethod
     def create_capture_detector(
-        monitored_keys: list[str] = None, trigger_type: TriggerType = None
+        monitored_keys: list[str] = None,
+        trigger_type: TriggerType = None,
     ) -> KeyboardActionDetector:
         """创建截图触发检测器
 
         :param monitored_keys: 监控按键列表，默认为 None（使用游戏常用按键）
         :param trigger_type: 按键触发类型
+        :param exclude_keys: 要排除的按键列表，默认排除控制键
 
         :return: 键盘检测器实例
         """
+        # 默认排除启停控制键
+        exclude_keys = [START_CAPTURE_KEY, STOP_CAPTURE_KEY]
         if monitored_keys:
             return KeyboardActionDetector(
-                monitored_keys=monitored_keys, trigger_type=trigger_type
+                monitored_keys=monitored_keys,
+                trigger_type=trigger_type,
+                exclude_keys=exclude_keys,
             )
         else:
             return KeyboardActionDetector(
-                game_keys_only=True, trigger_type=trigger_type
+                game_keys_only=True,
+                trigger_type=trigger_type,
+                exclude_keys=exclude_keys,
             )
 
     @staticmethod
@@ -867,6 +875,35 @@ class CaptureRunner:
             raise RuntimeError(erro_str)
         return True
 
+    def _wait_until_next_tick(
+        self, next_tick_time: float, frame_captured: bool
+    ) -> float:
+        """
+        等待直到下一次 tick。
+
+        :param next_tick_time: 下一次tick的时间戳
+        :param frame_captured: 本次是否截取了帧
+
+        :return: 更新后的下一次tick时间戳
+        """
+        # 键盘触发模式下，且未截图：快速检测按键（5ms）
+        if self.capturer.capture_detector and not frame_captured:
+            time.sleep(0.005)
+            return next_tick_time
+
+        # 其他情况：按帧率间隔等待
+        next_tick_time += self.capturer.interval
+        sleep_time = next_tick_time - time.time()
+
+        # 睡眠至下一次 tick
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        # 如果已超时，重置为当前时间
+        else:
+            next_tick_time = time.time()
+
+        return next_tick_time
+
     def run(self):
         """运行截图器"""
 
@@ -911,9 +948,7 @@ class CaptureRunner:
             return False
 
     def _run_loop(self):
-        """
-        运行截图循环。
-        """
+        """运行截图循环"""
         # 确定实际运行时长
         duration = self.duration
         if self.single:
@@ -928,14 +963,24 @@ class CaptureRunner:
         else:
             logger.note(f"定时模式：{duration} 秒 ...")
 
-        # 初始化状态
-        start_time = time.time()
-        next_tick_time = start_time
+        # 键盘触发模式：start_time 在第一次截图时初始化
+        if self.capturer.capture_detector:
+            start_time = None
+        # 普通模式：立即开始计时
+        else:
+            start_time = time.time()
+
+        next_tick_time = time.time()
         captured_count = 0
 
         # 主循环
         while True:
-            elapsed = time.time() - start_time
+            # 键盘触发模式下，首次截图前始终重置 elapsed = 0
+            if start_time is None:
+                elapsed = 0
+            else:
+                elapsed = time.time() - start_time
+
             if not self.single and elapsed >= duration:
                 break
 
@@ -949,6 +994,12 @@ class CaptureRunner:
             # 执行截图
             filename, extra_info = self.capturer.try_capture_frame(verbose=False)
             if filename:
+                # 键盘触发模式：首次截图时初始化 start_time
+                if start_time is None:
+                    start_time = time.time()
+                    next_tick_time = start_time
+                    elapsed = 0  # 首次截图，elapsed 为 0
+
                 captured_count += 1
                 cached_count = self.capturer.get_cached_frame_count()
 
@@ -965,15 +1016,8 @@ class CaptureRunner:
                     )
                     logger.okay(f"{progress_str} 已缓存 {cached_count} 帧{extra_info}")
 
-            if self.capturer.capture_detector:
-                # 键盘触发模式下，检测间隔 5ms
-                time.sleep(0.005)
-            else:
-                # 持续模式下，根据间隔时间等待下一次截图
-                next_tick_time += self.capturer.interval
-                sleep_time = next_tick_time - time.time()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+            # 等待至下一次 tick
+            next_tick_time = self._wait_until_next_tick(next_tick_time, bool(filename))
 
         # 完成并保存（单帧模式已经保存过了）
         if not self.single and captured_count > 0:
@@ -1125,6 +1169,9 @@ if __name__ == "__main__":
 
     # Case: 键盘触发 + 仅小地图
     # python -m gtaz.screens -i -m -f 10 -d 30
+
+    # Case: 热键启停 + 键盘触发 + 单帧
+    # python -m gtaz.screens -g -i -s
 
     # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
     # python -m gtaz.screens -g -i -m -f 10 -d 0
