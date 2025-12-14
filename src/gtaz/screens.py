@@ -836,6 +836,7 @@ class RecordRunner:
         duration: float = None,
         single: bool = False,
         hotkey_toggle: bool = False,
+        exit_after_record: bool = False,
     ):
         """
         初始化录制运行器。
@@ -844,11 +845,13 @@ class RecordRunner:
         :param duration: 持续时间（秒），0表示持续模式
         :param single: 是否为单帧模式
         :param hotkey_toggle: 是否启用热键启停模式
+        :param exit_after_record: 录制后是否退出（默认 False，继续监听新的录制触发事件）
         """
         self.capturer = capturer
         self.duration = duration
         self.single = single
         self.hotkey_toggle = hotkey_toggle
+        self.exit_after_record = exit_after_record
         self._create_detectors()
 
     def _create_detectors(self):
@@ -905,6 +908,7 @@ class RecordRunner:
         等待热键启动信号。
 
         :return: 是否收到启动信号（False 表示用户中断）
+        :raises KeyboardInterrupt: 当用户按下 Ctrl+C 时
         """
         logger.note("热键启停模式已启动")
         logger.note(
@@ -913,16 +917,12 @@ class RecordRunner:
             f"按 {key_hint('Ctrl+C')} {val_mesg('退出')}"
         )
 
-        try:
-            while True:
-                action_info = self.start_detector.detect()
-                if action_info.has_action:
-                    logger.okay(f"检测到 {key_hint(START_RECORD_KEY)} 键，开始录制...")
-                    return True
-                time.sleep(0.015)  # 15ms/tick
-        except KeyboardInterrupt:
-            self._log_keyboard_interrupt()
-            return False
+        while True:
+            action_info = self.start_detector.detect()
+            if action_info.has_action:
+                logger.okay(f"检测到 {key_hint(START_RECORD_KEY)} 键，开始录制...")
+                return True
+            time.sleep(0.015)  # 15ms/tick
 
     def _log_loop_progress(self, elapsed: float, extra_info: str = ""):
         """循环进度日志"""
@@ -962,8 +962,7 @@ class RecordRunner:
         """运行截图循环"""
         # 热键启停模式：等待启动信号
         if self.start_detector:
-            if not self._wait_start_signal():
-                return
+            self._wait_start_signal()
 
         # 持续时间日志
         self._log_duration()
@@ -1027,7 +1026,11 @@ class RecordRunner:
 
         try:
             # 执行截图循环
-            self._run_loop()
+            if self.exit_after_record:
+                self._run_loop()
+            else:
+                while True:
+                    self._run_loop()
         except KeyboardInterrupt:
             self._log_keyboard_interrupt()
             self._finalize()
@@ -1047,10 +1050,10 @@ class ScreenCapturerArgParser:
         )
         self.parser.add_argument(
             "-x",
-            "--exit-after-capture",
+            "--exit-after-record",
             action="store_true",
             default=False,
-            help="截图后退出（默认不退出，继续监听触发事件）",
+            help="录制后退出（默认不退出，继续监听新的录制触发事件）",
         )
         self.parser.add_argument(
             "-f", "--fps", type=float, default=None, help="每秒截图帧数"
@@ -1151,6 +1154,7 @@ def main():
         duration=args.duration,
         single=args.single,
         hotkey_toggle=args.hotkey_toggle,
+        exit_after_record=args.exit_after_record,
     )
     runner.run()
 
