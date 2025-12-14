@@ -317,8 +317,6 @@ class CaptureCacher:
         """
         with self._lock:
             frames = self._frames.copy()
-            self._frames.clear()
-            self._frame_count = 0
 
         if not frames:
             return 0
@@ -345,6 +343,10 @@ class CaptureCacher:
             bar.update(flush=True)
             print()
             logger.okay(f"保存完成，共 {saved_count}/{len(frames)} 帧")
+
+        with self._lock:
+            self._frames.clear()
+            self._frame_count = 0
 
         return saved_count
 
@@ -898,10 +900,6 @@ class RecordRunner:
     def _log_keyboard_interrupt(self):
         logger.note(f"\n检测到 {key_hint('Ctrl+C')}，正在退出...")
 
-    def _finalize(self):
-        if self.capturer.get_cached_frame_count() > 0:
-            self.capturer.flush_cache(verbose=True)
-
     def _wait_start_signal(self) -> bool:
         """
         等待热键启动信号。
@@ -956,8 +954,18 @@ class RecordRunner:
         saved_count = self.capturer.flush_cache(verbose=True)
         logger.okay(f"保存完成，共保存 {saved_count} 帧")
 
+    def _finalize(self):
+        if self.capturer.get_cached_frame_count() > 0:
+            self._save_captured_frames()
+
     def _run_loop(self):
         """运行截图循环"""
+        # 热键启停模式：等待启动信号
+        if self.start_detector:
+            if not self._wait_start_signal():
+                return
+
+        # 持续时间日志
         self._log_duration()
 
         if self.capturer.capture_detector:
@@ -1017,13 +1025,8 @@ class RecordRunner:
         self._check_window()
         logger.note(f"截取器信息: {self.capturer}")
 
-        # 热键启停模式：等待启动信号
-        if self.start_detector:
-            if not self._wait_start_signal():
-                return
-
-        # 执行截图循环
         try:
+            # 执行截图循环
             self._run_loop()
         except KeyboardInterrupt:
             self._log_keyboard_interrupt()
