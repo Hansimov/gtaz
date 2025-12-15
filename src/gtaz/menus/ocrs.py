@@ -62,8 +62,7 @@ rapidocr -img "<image_full_path>" --vis_res
 
 import numpy as np
 
-from pathlib import Path
-from tclogger import PathType, strf_path, TCLogger, logstr, int_bits
+from tclogger import PathType, TCLogger, logstr, int_bits
 from typing import Union
 
 from PIL import Image
@@ -71,17 +70,9 @@ from PIL.Image import Image as PImage
 from rapidocr import RapidOCR, EngineType
 from rapidocr.utils.output import RapidOCROutput
 
+from .commons import find_latest_jpg, key_note, val_mesg
+
 logger = TCLogger(name="OCR", use_prefix=True, use_prefix_ms=True)
-
-
-def key_note(s) -> str:
-    """为键添加消息样式。"""
-    return logstr.note(s)
-
-
-def val_mesg(s) -> str:
-    """为值添加消息样式"""
-    return logstr.mesg(s)
 
 
 TORCH_GPU_PARAMS = {
@@ -283,14 +274,6 @@ SORT_METHODS = {
     "宽度": TxtBoxSorter._sort_by_width,
     "高度": TxtBoxSorter._sort_by_height,
 }
-
-
-def find_latest_jpg() -> str:
-    menus_path = Path(__file__).parents[1] / "cache" / "menus"
-    jpgs = list(menus_path.glob("**/*.jpg"))
-    sorted_jpgs = sorted(jpgs, key=lambda p: p.stat().st_mtime, reverse=True)
-    latest_jpg = sorted_jpgs[0]
-    return strf_path(latest_jpg)
 
 
 class OCREngineTester:
