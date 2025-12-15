@@ -371,8 +371,11 @@ class MenuLocator:
 
         :return: 包含模板信息的列表
         """
+        used_header_names = ["地图", "在线", "设置"]
         self.header_templates: list[dict] = []
         for info in MENU_HEADER_INFOS:
+            if info["name"] not in used_header_names:
+                continue
             template_path = MENU_IMGS_DIR / info["img"]
             template_img = cv2_read(template_path)
             self.header_templates.append(
@@ -529,7 +532,7 @@ class MenuLocatorTester:
         # 匹配
         img_path = Path(img_path)
         src_img = cv2_read(img_path)
-        result = self.locator.match_header_rect(str(img_path))
+        result = self.locator.match_header(str(img_path))
         self._log_result_line(result, idx=idx)
         # 可视化+保存
         src_img = self._plot_result_on_image(src_img, result)
