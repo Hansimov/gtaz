@@ -34,21 +34,31 @@ class Lv1MenuMatcher:
 
     def __init__(
         self,
-        ref_height: int = 768,
         auto_scale: bool = True,
+        ref_width: int = 1024,
+        ref_height: int = 768,
     ):
         """初始化Lv1菜单匹配器。
 
         :param ref_height: 参考分辨率高度
         :param auto_scale: 使用自适应缩放
         """
-        self.ref_height = ref_height
         self.auto_scale = auto_scale
+        self.ref_width = ref_width
+        self.ref_height = ref_height
 
-    def calc_scale(self, source_img: np.ndarray, template: np.ndarray) -> float:
+    def _is_same_size(self, img_np: np.ndarray) -> bool:
+        """检查图像是否与参考尺寸相同。
+
+        :param img_np: 输入图像
+        :return: 是否相同尺寸
+        """
+        return img_np.shape[1] == self.ref_width and img_np.shape[0] == self.ref_height
+
+    def _calc_scale(self, img_np: np.ndarray) -> float:
         """计算源图像相对于模板的缩放比例。
 
-        :param source_img: 源图像
+        :param img_np: 源图像
         :param template: 模板图像
 
         :return: 缩放比例
@@ -57,21 +67,19 @@ class Lv1MenuMatcher:
             return 1.0
 
         # 使用图像高度计算缩放比例
-        source_height = source_img.shape[0]
+        source_height = img_np.shape[0]
         scale = source_height / self.ref_height
         return scale
 
-    def match_template(self, source_img: np.ndarray, template_info: dict) -> dict:
-        """对单个模板执行自适应匹配。
-
-        :param source_img: 源图像
-        :param template_info: 模板信息字典
-        :return: 匹配结果字典
-        """
-        template = template_info["img"]
+    def _scale_template(
+        self, img_np: np.ndarray, template: np.ndarray
+    ) -> tuple[np.ndarray, int, int]:
+        """根据源图像尺寸缩放模板图像。"""
+        if not self.auto_scale or self._is_same_size(img_np):
+            return template, template.shape[1], template.shape[0]
 
         # 计算自适应缩放比例
-        scale = self.calc_scale(source_img, template)
+        scale = self._calc_scale(img_np)
 
         # 根据缩放比例调整模板大小
         h, w = template.shape[:2]
@@ -80,8 +88,8 @@ class Lv1MenuMatcher:
 
         # 检查缩放后的尺寸是否合理
         if (
-            scaled_w > source_img.shape[1]
-            or scaled_h > source_img.shape[0]
+            scaled_w > img_np.shape[1]
+            or scaled_h > img_np.shape[0]
             or scaled_w < 10
             or scaled_h < 10
         ):
@@ -93,9 +101,23 @@ class Lv1MenuMatcher:
             scaled_template = cv2.resize(
                 template, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA
             )
+        return scaled_template, scaled_w, scaled_h
+
+    def match_template(self, img_np: np.ndarray, template_info: dict) -> dict:
+        """对单个模板执行自适应匹配。
+
+        :param img_np: 源图像
+        :param template_info: 模板信息字典
+
+        :return: 匹配结果字典
+        """
+        template = template_info["img"]
+
+        # 自适应缩放模板
+        scaled_template, scaled_w, scaled_h = self._scale_template(img_np, template)
 
         # 执行模板匹配
-        result = cv2.matchTemplate(source_img, scaled_template, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(img_np, scaled_template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
         # 计算匹配区域和中心点
@@ -199,11 +221,11 @@ class Lv1MenuLocator:
         if threshold is None:
             threshold = self.threshold
 
-        source_img = self._load_image(img)
+        img_np = self._load_image(img)
         matches = []
 
         for template_info in self.templates:
-            match_result = self.matcher.match_template(source_img, template_info)
+            match_result = self.matcher.match_template(img_np, template_info)
 
             if match_result["confidence"] >= threshold:
                 match_result["found"] = True
@@ -267,7 +289,7 @@ class MenuLocatorTester:
         is_success, im_buf_arr = cv2.imencode(".jpg", img)
         if is_success:
             im_buf_arr.tofile(str(save_path))
-        logger.file(f"  * 绘制已保存: {save_path}")
+        # logger.file(f"  * 绘制已保存: {save_path}")
 
     def _save_result_json(self, result: dict, save_path: Path) -> None:
         """保存JSON结果。
@@ -279,7 +301,7 @@ class MenuLocatorTester:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
-        logger.file(f"  * 信息已保存: {save_path}")
+        # logger.file(f"  * 信息已保存: {save_path}")
 
     def _log_result(self, result: dict):
         """打印匹配结果
@@ -378,8 +400,8 @@ class MenuLocatorTester:
         logger.note("=" * 50)
 
         cache_menus = Path(__file__).parents[1] / "cache" / "menus"
-        img_dir = cache_menus / "2025-12-14_23-01-58"
-        # img_dir = cache_menus / "2025-12-15_08-22-57"
+        # img_dir = cache_menus / "2025-12-14_23-01-58"
+        img_dir = cache_menus / "2025-12-15_08-22-57"
 
         # imgs = list(img_dir.glob("*.jpg"))
         # img = imgs[0]
