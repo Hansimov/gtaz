@@ -11,25 +11,47 @@ from pathlib import Path
 from tclogger import PathType, TCLogger, dict_to_str, logstr, strf_path
 from typing import Literal, Union
 
-from .commons import MENU_IMGS_DIR, LV1_INFOS, key_note, val_mesg
+from .commons import MENU_IMGS_DIR, LV1_INFOS, FOCUS_INFOS
+from .commons import key_note, val_mesg
 
 
 logger = TCLogger(name="GTAMenuLocator", use_prefix=True, use_prefix_ms=True)
 
 
-FeatureExtractionMode = Literal[
-    "raw",
-    "adaptive_bin",
-    "text_map",
-    "edge",
-]
+def cv2_read(img_path: PathType) -> np.ndarray:
+    """读取图像，支持中文路径。
+
+    :param img_path: 图像路径
+
+    :return: OpenCV 格式的图像数组
+    """
+    return cv2.imdecode(
+        np.fromfile(strf_path(img_path), dtype=np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+
+
+def load_img(img: Union[PathType, np.ndarray]) -> np.ndarray:
+    """加载图像。
+
+    :param img: 图像路径或 numpy 数组
+
+    :return: OpenCV 格式的图像数组
+    """
+    if isinstance(img, np.ndarray):
+        return img
+    else:
+        return cv2_read(img)
+
+
+FeatureType = Literal["raw", "adaptive_bin", "text_map", "edge"]
 
 
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
     """特征提取器配置"""
 
-    mode: FeatureExtractionMode = "text_map"
+    mode: FeatureType = "text_map"
     blur_ksize: int = 3
     adaptive_block_size: int = 31
     adaptive_c: int = 7
@@ -41,8 +63,14 @@ class FeatureExtractorConfig:
 class ImageFeatureExtractor:
     """图像特征提取器，将图像转换为适合模板匹配的特征图"""
 
-    def __init__(self, config: FeatureExtractorConfig | None = None):
+    def __init__(self, config: FeatureExtractorConfig = None):
         self.config = config or FeatureExtractorConfig()
+        self.extractors = {
+            "raw": self.extract_raw,
+            "adaptive_bin": self.extract_adaptive_bin,
+            "text_map": self.extract_text_map,
+            "edge": self.extract_edge,
+        }
 
     @staticmethod
     def to_gray(img_bgr: np.ndarray) -> np.ndarray:
@@ -106,31 +134,19 @@ class ImageFeatureExtractor:
         # 转为灰度图
         gray = self.to_gray(img_bgr)
         gray = gray.astype(np.uint8, copy=False)
-
         # 应用模糊
         gray = self.apply_blur(gray)
-
         # 根据模式选择特征提取策略
-        mode_extractors = {
-            "raw": self.extract_raw,
-            "adaptive_bin": self.extract_adaptive_bin,
-            "text_map": self.extract_text_map,
-            "edge": self.extract_edge,
-        }
-
-        extractor = mode_extractors.get(self.config.mode)
-        if extractor is None:
-            raise ValueError(f"Unknown feature extraction mode: {self.config.mode}")
-
+        extractor = self.extractors.get(self.config.mode)
         return extractor(gray)
 
     def score_polarity_textmap(self, img: np.ndarray, morph_kernel: int = 7) -> dict:
         """计算文字极性分数（用于判断黑字白底 vs 白字黑底）。
 
-        返回：
-          - tophat_sum: 白字黑底更强
-          - blackhat_sum: 黑字白底更强
-          - polarity: 'white_on_dark' | 'dark_on_white'（基于 sum 比较的粗判）
+        :return: 包含以下键的字典：
+            - tophat_sum: 白字黑底更强
+            - blackhat_sum: 黑字白底更强
+            - polarity: 'white_on_dark' | 'dark_on_white'（基于 sum 比较的粗判）
         """
         gray = self.to_gray(img)
         ksize = max(3, int(morph_kernel))
@@ -139,7 +155,10 @@ class ImageFeatureExtractor:
         blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
         t_sum = float(np.sum(tophat))
         b_sum = float(np.sum(blackhat))
-        polarity = "white_on_dark" if t_sum >= b_sum else "dark_on_white"
+        if t_sum >= b_sum:
+            polarity = "white_on_dark"
+        else:
+            polarity = "dark_on_white"
         return {
             "tophat_sum": t_sum,
             "blackhat_sum": b_sum,
@@ -151,8 +170,10 @@ class ImageFeatureExtractor:
     ) -> float:
         """用背景-文字的亮度差做一个"选中反相"强度分数。
 
-        - text_mask: 文字区域为 1/255，背景为 0。
-        返回值越大，越像"亮背景 + 暗文字"（选中态）。
+        :param img: 输入图像
+        :param text_mask: 文字区域为 1/255，背景为 0。
+
+        :return: 亮度差分数，数值越大表示反相越明显
         """
         gray = self.to_gray(img).astype(np.float32)
         mask = (text_mask > 0).astype(np.uint8)
@@ -163,19 +184,6 @@ class ImageFeatureExtractor:
         return bg_mean - text_mean
 
 
-def cv2_read(img_path: PathType) -> np.ndarray:
-    """读取图像，支持中文路径。
-
-    :param img_path: 图像路径
-
-    :return: OpenCV 格式的图像数组
-    """
-    return cv2.imdecode(
-        np.fromfile(strf_path(img_path), dtype=np.uint8),
-        cv2.IMREAD_COLOR,
-    )
-
-
 class Lv1MenuMatcher:
     """Lv1菜单自适应匹配器"""
 
@@ -184,7 +192,7 @@ class Lv1MenuMatcher:
         auto_scale: bool = True,
         ref_width: int = 1024,
         ref_height: int = 768,
-        feature_mode: FeatureExtractionMode = "text_map",
+        feature_mode: FeatureType = "text_map",
     ):
         """初始化Lv1菜单匹配器。
 
@@ -199,7 +207,8 @@ class Lv1MenuMatcher:
         self.feature_extractor = ImageFeatureExtractor(
             FeatureExtractorConfig(mode=feature_mode)
         )
-        # 缓存模板的特征图：key=(template_name, scaled_w, scaled_h, config_hash)
+        # 缓存模板的特征图
+        # key=(template_name, scaled_w, scaled_h, config_hash)
         self._feature_cache: dict[tuple[str, int, int, int], np.ndarray] = {}
 
     def _get_config_hash(self) -> int:
@@ -327,15 +336,15 @@ class Lv1MenuMatcher:
 
 
 class Lv1MenuLocator:
-    def __init__(self, threshold: float = 0.8):
+    def __init__(self, threshold: float = 0.65):
         """初始化Lv1菜单定位器。
 
-        :param threshold: 匹配阈值，范围 [0, 1]，默认 0.8
+        :param threshold: 匹配阈值，范围 [0, 1]
         """
         self.threshold = threshold
-        self.templates = self._load_templates()
-        # 默认使用 text_map 特征提取模式（对黑白反相最友好）
-        self.matcher = Lv1MenuMatcher(feature_mode="text_map")
+        self.template_infos = LV1_INFOS
+        self.matcher = Lv1MenuMatcher()
+        self._load_templates()
 
     def _load_templates(self) -> list[dict]:
         """加载所有模板图像。
@@ -343,7 +352,7 @@ class Lv1MenuLocator:
         :return: 包含模板信息的列表
         """
         templates = []
-        for info in LV1_INFOS:
+        for info in self.template_infos:
             template_path = MENU_IMGS_DIR / info["img"]
             template_img = cv2_read(template_path)
             templates.append(
@@ -355,18 +364,7 @@ class Lv1MenuLocator:
                     "path": str(template_path),
                 }
             )
-        return templates
-
-    def _load_image(self, img: Union[PathType, np.ndarray]) -> np.ndarray:
-        """加载图像。
-
-        :param img: 图像路径或 numpy 数组
-        :return: OpenCV 格式的图像数组
-        """
-        if isinstance(img, np.ndarray):
-            return img
-        else:
-            return cv2_read(img)
+        self.templates = templates
 
     def match_best(self, img: Union[PathType, np.ndarray]) -> dict:
         """匹配Lv1菜单，返回最佳匹配结果。
@@ -380,8 +378,7 @@ class Lv1MenuLocator:
             - location: tuple, 匹配区域 (x, y, w, h)
             - center: tuple, 匹配区域中心点 (x, y)
         """
-        source_img = self._load_image(img)
-
+        src_img = load_img(img)
         best_match = {
             "found": False,
             "name": None,
@@ -390,40 +387,27 @@ class Lv1MenuLocator:
             "center": None,
             "file": None,
         }
-
         for template_info in self.templates:
-            match_result = self.matcher.match_template(source_img, template_info)
-
-            # 如果当前匹配度更高，更新最佳匹配
+            match_result = self.matcher.match_template(src_img, template_info)
             if match_result["confidence"] > best_match["confidence"]:
                 best_match = match_result
                 best_match["found"] = match_result["confidence"] >= self.threshold
-
         return best_match
 
-    def match_all(
-        self, img: Union[PathType, np.ndarray], threshold: float = None
-    ) -> list[dict]:
+    def match_all(self, img: Union[PathType, np.ndarray]) -> list[dict]:
         """匹配所有符合阈值的菜单项。
 
         :param img: 输入图像路径或数组
         :param threshold: 匹配阈值，如果为 None 则使用初始化时的阈值
         :return: 所有匹配结果的列表，按置信度降序排列
         """
-        if threshold is None:
-            threshold = self.threshold
-
-        img_np = self._load_image(img)
+        img_np = load_img(img)
         matches = []
-
         for template_info in self.templates:
             match_result = self.matcher.match_template(img_np, template_info)
-
-            if match_result["confidence"] >= threshold:
+            if match_result["confidence"] >= self.threshold:
                 match_result["found"] = True
                 matches.append(match_result)
-
-        # 按置信度降序排列
         matches.sort(key=lambda x: x["confidence"], reverse=True)
         return matches
 
@@ -554,17 +538,18 @@ class MenuLocatorTester:
 
         :param img_path: 输入图像路径
         """
+        # 匹配
         img_path = Path(img_path)
-        source_img = cv2_read(img_path)
+        src_img = cv2_read(img_path)
         result = self.locator.match_best(str(img_path))
         self._log_result_line(result, idx=idx)
-
-        source_img = self._plot_result_on_image(source_img, result)
+        # 可视化+保存
+        src_img = self._plot_result_on_image(src_img, result)
         save_path = self._get_result_path(img_path)
-        self._save_result_image(source_img, save_path)
+        self._save_result_image(src_img, save_path)
         json_path = save_path.with_suffix(".json")
         self._save_result_json(result, json_path)
-        return source_img
+        return src_img
 
     def batch_test_match_and_visualize(self, img_dir: PathType):
         """批量可视化测试目录中的所有图像。
