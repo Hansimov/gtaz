@@ -11,7 +11,8 @@ from pathlib import Path
 from tclogger import PathType, TCLogger, dict_to_str, logstr, strf_path
 from typing import Literal, Union
 
-from .commons import MENU_IMGS_DIR, LV1_INFOS, FOCUS_INFOS
+from .commons import MENU_IMGS_DIR
+from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
 from .commons import key_note, val_mesg
 
 
@@ -184,8 +185,8 @@ class ImageFeatureExtractor:
         return bg_mean - text_mean
 
 
-class Lv1MenuMatcher:
-    """Lv1菜单自适应匹配器"""
+class MenuMatcher:
+    """菜单匹配器"""
 
     def __init__(
         self,
@@ -194,7 +195,7 @@ class Lv1MenuMatcher:
         ref_height: int = 768,
         feature_mode: FeatureType = "text_map",
     ):
-        """初始化Lv1菜单匹配器。
+        """初始化菜单匹配器。
 
         :param ref_width: 参考分辨率宽度
         :param ref_height: 参考分辨率高度
@@ -327,7 +328,7 @@ class Lv1MenuMatcher:
 
         return {
             "name": template_info["name"],
-            "confidence": float(max_val),
+            "score": float(max_val),
             "rect": (x, y, scaled_w, scaled_h),
             "center": (center_x, center_y),
             "level": template_info["level"],
@@ -335,15 +336,14 @@ class Lv1MenuMatcher:
         }
 
 
-class Lv1MenuLocator:
+class MenuLocator:
     def __init__(self, threshold: float = 0.65):
-        """初始化Lv1菜单定位器。
+        """初始化菜单定位器。
 
         :param threshold: 匹配阈值，范围 [0, 1]
         """
         self.threshold = threshold
-        self.template_infos = LV1_INFOS
-        self.matcher = Lv1MenuMatcher()
+        self.matcher = MenuMatcher()
         self._load_templates()
 
     def _load_templates(self) -> list[dict]:
@@ -351,11 +351,11 @@ class Lv1MenuLocator:
 
         :return: 包含模板信息的列表
         """
-        templates = []
-        for info in self.template_infos:
+        self.header_templates: list[dict] = []
+        for info in MENU_HEADER_INFOS:
             template_path = MENU_IMGS_DIR / info["img"]
             template_img = cv2_read(template_path)
-            templates.append(
+            self.header_templates.append(
                 {
                     "name": info["name"],
                     "level": info["level"],
@@ -364,17 +364,30 @@ class Lv1MenuLocator:
                     "path": str(template_path),
                 }
             )
-        self.templates = templates
 
-    def match_best(self, img: Union[PathType, np.ndarray]) -> dict:
-        """匹配Lv1菜单，返回最佳匹配结果。
+        self.focus_templates: list[dict] = []
+        for info in MENU_FOCUS_INFOS:
+            template_path = MENU_IMGS_DIR / info["img"]
+            template_img = cv2_read(template_path)
+            self.focus_templates.append(
+                {
+                    "name": info["name"],
+                    "level": info["level"],
+                    "index": info["index"],
+                    "img": template_img,
+                    "path": str(template_path),
+                }
+            )
+
+    def match_header_rect(self, img: Union[PathType, np.ndarray]) -> dict:
+        """匹配菜单，返回最匹配的菜单标题区域。
 
         :param img: 输入图像路径或数组
 
         :return: 匹配结果字典，包含以下键：
             - found: bool, 是否找到匹配
             - name: str, 匹配的菜单名称
-            - confidence: float, 匹配置信度 [0, 1]
+            - score: float, 匹配置信度 [0, 1]
             - location: tuple, 匹配区域 (x, y, w, h)
             - center: tuple, 匹配区域中心点 (x, y)
         """
@@ -382,39 +395,22 @@ class Lv1MenuLocator:
         best_match = {
             "found": False,
             "name": None,
-            "confidence": 0.0,
+            "score": 0.0,
             "rect": None,
             "center": None,
             "file": None,
         }
-        for template_info in self.templates:
+        for template_info in self.header_templates:
             match_result = self.matcher.match_template(src_img, template_info)
-            if match_result["confidence"] > best_match["confidence"]:
+            if match_result["score"] > best_match["score"]:
                 best_match = match_result
-                best_match["found"] = match_result["confidence"] >= self.threshold
+                best_match["found"] = match_result["score"] >= self.threshold
         return best_match
-
-    def match_all(self, img: Union[PathType, np.ndarray]) -> list[dict]:
-        """匹配所有符合阈值的菜单项。
-
-        :param img: 输入图像路径或数组
-        :param threshold: 匹配阈值，如果为 None 则使用初始化时的阈值
-        :return: 所有匹配结果的列表，按置信度降序排列
-        """
-        img_np = load_img(img)
-        matches = []
-        for template_info in self.templates:
-            match_result = self.matcher.match_template(img_np, template_info)
-            if match_result["confidence"] >= self.threshold:
-                match_result["found"] = True
-                matches.append(match_result)
-        matches.sort(key=lambda x: x["confidence"], reverse=True)
-        return matches
 
 
 class MenuLocatorTester:
     def __init__(self):
-        self.locator = Lv1MenuLocator(threshold=0.8)
+        self.locator = MenuLocator()
 
     def _plot_result_on_image(self, img: np.ndarray, result: dict) -> np.ndarray:
         """在图像上绘制匹配结果。
@@ -425,10 +421,10 @@ class MenuLocatorTester:
         :return: 绘制后的图像数组
         """
         x, y, w, h = result["rect"]
-        confidence = result["confidence"]
+        score = result["score"]
         name = result["name"]
         cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        text = f"{confidence:.2f}"
+        text = f"{score:.2f}"
         cv2.putText(
             img,
             text,
@@ -488,7 +484,7 @@ class MenuLocatorTester:
         info_dict = {
             "found": result["found"],
             "name": result["name"],
-            "confidence": f"{result['confidence']:.4f}",
+            "score": f"{result['score']:.4f}",
             "rect": result["rect"],
             "center": result["center"],
         }
@@ -499,7 +495,7 @@ class MenuLocatorTester:
             idx_str = f"[{idx}] "
         else:
             idx_str = ""
-        conf_str = f"{result['confidence']:.4f}"
+        conf_str = f"{result['score']:.4f}"
         logger.mesg(
             f"  * {idx_str}"
             f"{logstr.okay(result['name'])}, "
@@ -516,20 +512,12 @@ class MenuLocatorTester:
         for idx, result in enumerate(results, 1):
             self._log_result_line(result, idx=idx)
 
-    def test_match_best(self, img_path: PathType) -> dict:
+    def test_match_header_rect(self, img_path: PathType) -> dict:
         """测试单个最佳匹配。"""
         logger.note(f"测试图像: {img_path}")
-        result = self.locator.match_best(img_path)
+        result = self.locator.match_header_rect(img_path)
         self._log_result(result)
         return result
-
-    def test_match_all(self, img_path: str, threshold: float = 0.8):
-        """测试所有匹配。"""
-        logger.note(f"测试图像: {img_path}")
-        logger.note(f"匹配阈值: {threshold}")
-        results = self.locator.match_all(img_path, threshold=threshold)
-        self._log_results(results)
-        return results
 
     def test_match_and_visualize(
         self, img_path: PathType, idx: int = None
@@ -541,7 +529,7 @@ class MenuLocatorTester:
         # 匹配
         img_path = Path(img_path)
         src_img = cv2_read(img_path)
-        result = self.locator.match_best(str(img_path))
+        result = self.locator.match_header_rect(str(img_path))
         self._log_result_line(result, idx=idx)
         # 可视化+保存
         src_img = self._plot_result_on_image(src_img, result)
