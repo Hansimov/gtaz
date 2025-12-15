@@ -29,6 +29,90 @@ def cv2_read(img_path: PathType) -> np.ndarray:
     )
 
 
+class Lv1MenuMatcher:
+    """Lv1菜单自适应匹配器"""
+
+    def __init__(
+        self,
+        ref_height: int = 768,
+        auto_scale: bool = True,
+    ):
+        """初始化Lv1菜单匹配器。
+
+        :param ref_height: 参考分辨率高度
+        :param auto_scale: 使用自适应缩放
+        """
+        self.ref_height = ref_height
+        self.auto_scale = auto_scale
+
+    def calc_scale(self, source_img: np.ndarray, template: np.ndarray) -> float:
+        """计算源图像相对于模板的缩放比例。
+
+        :param source_img: 源图像
+        :param template: 模板图像
+
+        :return: 缩放比例
+        """
+        if not self.auto_scale:
+            return 1.0
+
+        # 使用图像高度计算缩放比例
+        source_height = source_img.shape[0]
+        scale = source_height / self.ref_height
+        return scale
+
+    def match_template(self, source_img: np.ndarray, template_info: dict) -> dict:
+        """对单个模板执行自适应匹配。
+
+        :param source_img: 源图像
+        :param template_info: 模板信息字典
+        :return: 匹配结果字典
+        """
+        template = template_info["img"]
+
+        # 计算自适应缩放比例
+        scale = self.calc_scale(source_img, template)
+
+        # 根据缩放比例调整模板大小
+        h, w = template.shape[:2]
+        scaled_w = int(w * scale)
+        scaled_h = int(h * scale)
+
+        # 检查缩放后的尺寸是否合理
+        if (
+            scaled_w > source_img.shape[1]
+            or scaled_h > source_img.shape[0]
+            or scaled_w < 10
+            or scaled_h < 10
+        ):
+            # 如果尺寸不合理，使用原始模板
+            scaled_template = template
+            scaled_w, scaled_h = w, h
+        else:
+            # 缩放模板
+            scaled_template = cv2.resize(
+                template, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA
+            )
+
+        # 执行模板匹配
+        result = cv2.matchTemplate(source_img, scaled_template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+
+        # 计算匹配区域和中心点
+        x, y = max_loc
+        center_x = x + scaled_w // 2
+        center_y = y + scaled_h // 2
+
+        return {
+            "name": template_info["name"],
+            "confidence": float(max_val),
+            "rect": (x, y, scaled_w, scaled_h),
+            "center": (center_x, center_y),
+            "level": template_info["level"],
+            "index": template_info["index"],
+        }
+
+
 class Lv1MenuLocator:
     def __init__(self, threshold: float = 0.8):
         """初始化Lv1菜单定位器。
@@ -37,6 +121,7 @@ class Lv1MenuLocator:
         """
         self.threshold = threshold
         self.templates = self._load_templates()
+        self.matcher = Lv1MenuMatcher()
 
     def _load_templates(self) -> list[dict]:
         """加载所有模板图像。
@@ -69,34 +154,6 @@ class Lv1MenuLocator:
         else:
             return cv2_read(img)
 
-    def _match_template(self, source_img: np.ndarray, template_info: dict) -> dict:
-        """对单个模板执行匹配。
-
-        :param source_img: 源图像
-        :param template_info: 模板信息字典
-        :return: 匹配结果字典
-        """
-        template = template_info["img"]
-
-        # 执行模板匹配
-        result = cv2.matchTemplate(source_img, template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-        # 计算匹配区域和中心点
-        h, w = template.shape[:2]
-        x, y = max_loc
-        center_x = x + w // 2
-        center_y = y + h // 2
-
-        return {
-            "name": template_info["name"],
-            "confidence": float(max_val),
-            "rect": (x, y, w, h),
-            "center": (center_x, center_y),
-            "level": template_info["level"],
-            "index": template_info["index"],
-        }
-
     def match_best(self, img: Union[PathType, np.ndarray]) -> dict:
         """匹配Lv1菜单，返回最佳匹配结果。
 
@@ -121,7 +178,7 @@ class Lv1MenuLocator:
         }
 
         for template_info in self.templates:
-            match_result = self._match_template(source_img, template_info)
+            match_result = self.matcher.match_template(source_img, template_info)
 
             # 如果当前匹配度更高，更新最佳匹配
             if match_result["confidence"] > best_match["confidence"]:
@@ -146,7 +203,7 @@ class Lv1MenuLocator:
         matches = []
 
         for template_info in self.templates:
-            match_result = self._match_template(source_img, template_info)
+            match_result = self.matcher.match_template(source_img, template_info)
 
             if match_result["confidence"] >= threshold:
                 match_result["found"] = True
@@ -320,7 +377,9 @@ class MenuLocatorTester:
         logger.note("菜单定位测试")
         logger.note("=" * 50)
 
-        img_dir = Path(__file__).parents[1] / "cache" / "menus" / "2025-12-14_23-01-58"
+        cache_menus = Path(__file__).parents[1] / "cache" / "menus"
+        img_dir = cache_menus / "2025-12-14_23-01-58"
+        # img_dir = cache_menus / "2025-12-15_08-22-57"
 
         # imgs = list(img_dir.glob("*.jpg"))
         # img = imgs[0]
