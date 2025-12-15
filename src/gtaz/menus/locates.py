@@ -45,6 +45,11 @@ def load_img(img: Union[PathType, np.ndarray]) -> np.ndarray:
         return cv2_read(img)
 
 
+def crop_img(img_np: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
+    x1, y1, x2, y2 = rect
+    return img_np[y1:y2, x1:x2]
+
+
 FeatureType = Literal["raw", "adaptive_bin", "text_map", "edge"]
 
 
@@ -63,6 +68,21 @@ class MatchResult:
     def to_dict(self) -> dict:
         """转换为字典"""
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class MergedMatchResult:
+    """合并的模板匹配结果，包含标题和焦点"""
+
+    header: MatchResult
+    focus: MatchResult
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "header": self.header.to_dict(),
+            "focus": self.focus.to_dict(),
+        }
 
 
 @dataclass(frozen=True)
@@ -225,6 +245,9 @@ class MenuMatcher:
         self.feature_extractor = ImageFeatureExtractor(
             FeatureExtractorConfig(mode=feature_mode)
         )
+        # 当前图像的尺寸（通过 set_img_size 设置）
+        self.img_width: int = ref_width
+        self.img_height: int = ref_height
         # 缓存模板的特征图
         # key=(template_name, scaled_w, scaled_h, config_hash)
         self._feature_cache: dict[tuple[str, int, int, int], np.ndarray] = {}
@@ -243,51 +266,49 @@ class MenuMatcher:
             )
         )
 
-    def _is_same_size(self, img_np: np.ndarray) -> bool:
-        """检查图像是否与参考尺寸相同。
+    def set_img_size(self, img_np: np.ndarray) -> None:
+        """设置当前要处理的图像尺寸。
 
         :param img_np: 输入图像
+        """
+        self.img_height, self.img_width = img_np.shape[:2]
+
+    def _is_same_size(self) -> bool:
+        """检查当前图像是否与参考尺寸相同。
+
         :return: 是否相同尺寸
         """
-        return img_np.shape[1] == self.ref_width and img_np.shape[0] == self.ref_height
+        return self.img_width == self.ref_width and self.img_height == self.ref_height
 
-    def _calc_scale(self, img_np: np.ndarray) -> float:
-        """计算源图像相对于模板的缩放比例。
-
-        :param img_np: 源图像
+    def _calc_scale(self) -> float:
+        """计算当前图像相对于模板的缩放比例。
 
         :return: 缩放比例
         """
         if not self.auto_scale:
             return 1.0
-
         # 使用图像高度计算缩放比例
-        source_height = img_np.shape[0]
-        scale = source_height / self.ref_height
-        return scale
+        return self.img_height / self.ref_height
 
-    def _scale_template(
-        self, img_np: np.ndarray, template: np.ndarray
-    ) -> tuple[np.ndarray, int, int]:
-        """根据源图像尺寸缩放模板图像。"""
-        if not self.auto_scale or self._is_same_size(img_np):
+    def _is_bad_scale_size(self, scaled_w: int, scaled_h: int):
+        return (
+            scaled_w > self.img_width
+            or scaled_h > self.img_height
+            or scaled_w < 8
+            or scaled_h < 8
+        )
+
+    def _scale_template(self, template: np.ndarray) -> tuple[np.ndarray, int, int]:
+        """根据当前图像尺寸缩放模板图像。"""
+        if not self.auto_scale or self._is_same_size():
             return template, template.shape[1], template.shape[0]
-
         # 计算自适应缩放比例
-        scale = self._calc_scale(img_np)
-
+        scale = self._calc_scale()
         # 根据缩放比例调整模板大小
         h, w = template.shape[:2]
         scaled_w = int(w * scale)
         scaled_h = int(h * scale)
-
-        # 检查缩放后的尺寸是否合理
-        if (
-            scaled_w > img_np.shape[1]
-            or scaled_h > img_np.shape[0]
-            or scaled_w < 10
-            or scaled_h < 10
-        ):
+        if self._is_bad_scale_size(scaled_w, scaled_h):
             # 如果尺寸不合理，使用原始模板
             scaled_template = template
             scaled_w, scaled_h = w, h
@@ -324,27 +345,22 @@ class MenuMatcher:
         :return: 匹配结果 MatchResult
         """
         template = template_info["img"]
-
         # 自适应缩放模板
-        scaled_template, scaled_w, scaled_h = self._scale_template(img_np, template)
-
+        scaled_template, scaled_w, scaled_h = self._scale_template(template)
         # 提取特征以提升对亮度/反相的鲁棒性
         src_features = self.feature_extractor.extract_features(img_np)
         tpl_features = self._get_template_features(
             template_info, scaled_template, scaled_w, scaled_h
         )
-
         # 执行模板匹配
         result = cv2.matchTemplate(src_features, tpl_features, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
         # 计算匹配区域和中心点
         x1, y1 = max_loc
         x2 = x1 + scaled_w
         y2 = y1 + scaled_h
         center_x = x1 + scaled_w // 2
         center_y = y1 + scaled_h // 2
-
         return MatchResult(
             name=template_info["name"],
             score=float(max_val),
@@ -402,7 +418,7 @@ class MenuLocator:
                 }
             )
 
-    def match_header(self, img: Union[PathType, np.ndarray]) -> MatchResult:
+    def match_header(self, img_np: np.ndarray) -> MatchResult:
         """匹配菜单，返回最匹配的菜单标题区域。
 
         :param img: 输入图像路径或数组
@@ -416,43 +432,77 @@ class MenuLocator:
             - level: int, 菜单层级
             - index: int, 菜单索引
         """
-        src_img = load_img(img)
+        self.matcher.set_img_size(img_np)
         best_match = None
         for template_info in self.header_templates:
-            match_result = self.matcher.match_template(src_img, template_info)
+            match_result = self.matcher.match_template(img_np, template_info)
             if best_match is None or match_result.score > best_match.score:
                 best_match = match_result
         return best_match
 
-    def match_focus(self):
-        pass
+    def _align_match_result(
+        self, focus_result: MatchResult, header_result: MatchResult
+    ) -> MatchResult:
+        # 标题栏区域的全局坐标：hx1, hy1, hx2, hy2
+        hx1, hy1, hx2, hy2 = header_result.rect
+        # 匹配区域的局部坐标
+        lx1, ly1, lx2, ly2 = focus_result.rect
+        # 匹配区域的全局坐标
+        gx1 = hx1 + lx1
+        gx2 = hx1 + lx2
+        gy1 = hy1 + ly1
+        gy2 = hy1 + ly2
+        # 匹配区域的全局中心
+        center_gx = focus_result.rect_center[0] + hx1
+        center_gy = focus_result.rect_center[1] + hy1
+        # 修正坐标后的最终结果
+        focus_result.rect = (gx1, gy1, gx2, gy2)
+        focus_result.rect_size = focus_result.rect_size
+        focus_result.rect_center = (center_gx, center_gy)
+        return focus_result
+
+    def match_focus(
+        self, img_np: np.ndarray, header_result: MatchResult
+    ) -> MatchResult:
+        """匹配菜单，返回最匹配的菜单焦点区域。
+
+        :param img_np: 完整的输入图像数组
+        :param header_result: match_header 的匹配结果
+
+        :return: 匹配结果 MatchResult，坐标为全局坐标（相对于完整图像）
+        """
+        cropped_img = crop_img(img_np, header_result.rect)
+        best_match = None
+        for template_info in self.focus_templates:
+            match_result = self.matcher.match_template(cropped_img, template_info)
+            if best_match is None or match_result.score > best_match.score:
+                best_match = match_result
+        final_match = self._align_match_result(best_match, header_result)
+        return final_match
 
 
 class MenuLocatorTester:
     def __init__(self):
         self.locator = MenuLocator()
 
-    def _plot_result_on_image(self, img: np.ndarray, result: MatchResult) -> np.ndarray:
+    def _plot_result_on_image(
+        self,
+        img: np.ndarray,
+        result: MatchResult,
+        color: tuple[int, int, int] = (0, 255, 0),
+        thickness: int = 2,
+    ) -> np.ndarray:
         """在图像上绘制匹配结果。
 
         :param img: 输入图像数组
         :param result: 匹配结果
+        :param color: 矩形颜色 (B, G, R)
+        :param thickness: 线条粗细
 
         :return: 绘制后的图像数组
         """
         x1, y1, x2, y2 = result.rect
-        score = result.score
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        text = f"{score:.2f}"
-        cv2.putText(
-            img,
-            text,
-            (x1, y1 - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (122, 122, 0),
-            2,
-        )
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
         return img
 
     def _get_result_path(self, img_path: Path) -> Path:
@@ -482,7 +532,9 @@ class MenuLocatorTester:
             im_buf_arr.tofile(str(save_path))
         # logger.file(f"  * 绘制已保存: {save_path}")
 
-    def _save_result_json(self, result: MatchResult, save_path: Path) -> None:
+    def _save_result_json(
+        self, result: Union[MatchResult, MergedMatchResult], save_path: Path
+    ) -> None:
         """保存JSON结果。
 
         :param result: 匹配结果
@@ -531,16 +583,21 @@ class MenuLocatorTester:
         """
         # 匹配
         img_path = Path(img_path)
-        src_img = cv2_read(img_path)
-        result = self.locator.match_header(str(img_path))
-        self._log_result_line(result, idx=idx)
-        # 可视化+保存
-        src_img = self._plot_result_on_image(src_img, result)
+        img_np = cv2_read(img_path)
+        header_result = self.locator.match_header(img_np)
+        self._log_result_line(header_result, idx=idx)
+        focus_result = self.locator.match_focus(img_np, header_result=header_result)
+        self._log_result_line(focus_result, idx=idx)
+        # 可视化
+        img_np = self._plot_result_on_image(img_np, header_result)
+        img_np = self._plot_result_on_image(img_np, focus_result, color=(0, 0, 255))
         save_path = self._get_result_path(img_path)
-        self._save_result_image(src_img, save_path)
+        # 保存可视化结果和匹配信息
+        self._save_result_image(img_np, save_path)
+        merged_result = MergedMatchResult(header=header_result, focus=focus_result)
         json_path = save_path.with_suffix(".json")
-        self._save_result_json(result, json_path)
-        return src_img
+        self._save_result_json(merged_result, json_path)
+        return img_np
 
     def batch_test_match_and_visualize(self, img_dir: PathType):
         """批量可视化测试目录中的所有图像。
