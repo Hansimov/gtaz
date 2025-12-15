@@ -17,7 +17,7 @@ from .commons import MENU_IMGS_DIR, LV1_INFOS, key_note, val_mesg
 logger = TCLogger(name="GTAMenuLocator", use_prefix=True, use_prefix_ms=True)
 
 
-PreprocessMode = Literal[
+FeatureExtractionMode = Literal[
     "raw",
     "adaptive_bin",
     "text_map",
@@ -26,8 +26,10 @@ PreprocessMode = Literal[
 
 
 @dataclass(frozen=True)
-class PreprocessConfig:
-    mode: PreprocessMode = "text_map"
+class FeatureExtractorConfig:
+    """特征提取器配置"""
+
+    mode: FeatureExtractionMode = "text_map"
     blur_ksize: int = 3
     adaptive_block_size: int = 31
     adaptive_c: int = 7
@@ -36,102 +38,129 @@ class PreprocessConfig:
     canny2: int = 150
 
 
-def _to_gray(img_bgr: np.ndarray) -> np.ndarray:
-    if img_bgr.ndim == 2:
-        return img_bgr
-    if img_bgr.shape[2] == 1:
-        return img_bgr[:, :, 0]
-    # Lab 的 L 通道对亮度更稳定
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    return lab[:, :, 0]
+class ImageFeatureExtractor:
+    """图像特征提取器，将图像转换为适合模板匹配的特征图"""
 
+    def __init__(self, config: FeatureExtractorConfig | None = None):
+        self.config = config or FeatureExtractorConfig()
 
-def _odd_ksize(v: int, min_value: int = 3) -> int:
-    v = int(v)
-    if v < min_value:
-        v = min_value
-    if v % 2 == 0:
-        v += 1
-    return v
+    @staticmethod
+    def to_gray(img_bgr: np.ndarray) -> np.ndarray:
+        """将BGR图像转换为灰度图。使用Lab色彩空间的L通道以提高亮度稳定性。"""
+        if img_bgr.ndim == 2:
+            return img_bgr
+        if img_bgr.shape[2] == 1:
+            return img_bgr[:, :, 0]
+        # Lab 的 L 通道对亮度更稳定
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        return lab[:, :, 0]
 
+    @staticmethod
+    def ensure_odd_ksize(value: int, min_value: int = 3) -> int:
+        """确保内核大小为奇数（OpenCV要求）"""
+        value = max(int(value), min_value)
+        return value if value % 2 == 1 else value + 1
 
-def _preprocess_gray(gray: np.ndarray, cfg: PreprocessConfig) -> np.ndarray:
-    gray = gray.astype(np.uint8, copy=False)
-    k = _odd_ksize(cfg.blur_ksize, 1)
-    if k > 1:
-        gray = cv2.GaussianBlur(gray, (k, k), 0)
-
-    if cfg.mode == "raw":
+    def apply_blur(self, gray: np.ndarray) -> np.ndarray:
+        """应用高斯模糊以降低噪声"""
+        ksize = self.ensure_odd_ksize(self.config.blur_ksize, 1)
+        if ksize > 1:
+            return cv2.GaussianBlur(gray, (ksize, ksize), 0)
         return gray
 
-    if cfg.mode == "adaptive_bin":
-        bs = _odd_ksize(cfg.adaptive_block_size, 3)
-        bin_img = cv2.adaptiveThreshold(
+    def extract_raw(self, gray: np.ndarray) -> np.ndarray:
+        """原始模式：仅返回灰度图"""
+        return gray
+
+    def extract_adaptive_bin(self, gray: np.ndarray) -> np.ndarray:
+        """自适应二值化模式：适用于光照不均匀的场景"""
+        block_size = self.ensure_odd_ksize(self.config.adaptive_block_size, 3)
+        return cv2.adaptiveThreshold(
             gray,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
-            bs,
-            int(cfg.adaptive_c),
+            block_size,
+            self.config.adaptive_c,
         )
-        return bin_img
 
-    if cfg.mode == "text_map":
-        ksize = max(3, int(cfg.morph_kernel))
+    def extract_text_map(self, gray: np.ndarray) -> np.ndarray:
+        """文字映射模式：提取文字特征，对黑底白字/白底黑字反相鲁棒"""
+        ksize = max(3, int(self.config.morph_kernel))
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
         tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
         blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
-        # 两种极性的文字统一到“亮响应”
+        # 统一两种极性的文字到"亮响应"
         return cv2.max(tophat, blackhat)
 
-    if cfg.mode == "edge":
-        edges = cv2.Canny(gray, int(cfg.canny1), int(cfg.canny2))
-        return edges
+    def extract_edge(self, gray: np.ndarray) -> np.ndarray:
+        """边缘检测模式：提取轮廓特征"""
+        return cv2.Canny(gray, self.config.canny1, self.config.canny2)
 
-    raise ValueError(f"Unknown preprocess mode: {cfg.mode}")
+    def extract_features(self, img_bgr: np.ndarray) -> np.ndarray:
+        """执行完整的特征提取流程
 
+        :param img_bgr: 输入的BGR图像
+        :return: 提取后的特征图
+        """
+        # 转为灰度图
+        gray = self.to_gray(img_bgr)
+        gray = gray.astype(np.uint8, copy=False)
 
-def preprocess_image(img_bgr: np.ndarray, cfg: PreprocessConfig) -> np.ndarray:
-    gray = _to_gray(img_bgr)
-    return _preprocess_gray(gray, cfg)
+        # 应用模糊
+        gray = self.apply_blur(gray)
 
+        # 根据模式选择特征提取策略
+        mode_extractors = {
+            "raw": self.extract_raw,
+            "adaptive_bin": self.extract_adaptive_bin,
+            "text_map": self.extract_text_map,
+            "edge": self.extract_edge,
+        }
 
-def score_polarity_textmap(gray_or_bgr: np.ndarray, morph_kernel: int = 7) -> dict:
-    """计算文字极性分数（用于判断黑字白底 vs 白字黑底）。
+        extractor = mode_extractors.get(self.config.mode)
+        if extractor is None:
+            raise ValueError(f"Unknown feature extraction mode: {self.config.mode}")
 
-    返回：
-      - tophat_sum: 白字黑底更强
-      - blackhat_sum: 黑字白底更强
-      - polarity: 'white_on_dark' | 'dark_on_white'（基于 sum 比较的粗判）
-    """
-    gray = _to_gray(gray_or_bgr)
-    ksize = max(3, int(morph_kernel))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
-    tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
-    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
-    t_sum = float(np.sum(tophat))
-    b_sum = float(np.sum(blackhat))
-    polarity = "white_on_dark" if t_sum >= b_sum else "dark_on_white"
-    return {
-        "tophat_sum": t_sum,
-        "blackhat_sum": b_sum,
-        "polarity": polarity,
-    }
+        return extractor(gray)
 
+    def score_polarity_textmap(self, img: np.ndarray, morph_kernel: int = 7) -> dict:
+        """计算文字极性分数（用于判断黑字白底 vs 白字黑底）。
 
-def score_selected_by_contrast(gray_or_bgr: np.ndarray, text_mask: np.ndarray) -> float:
-    """用背景-文字的亮度差做一个“选中反相”强度分数。
+        返回：
+          - tophat_sum: 白字黑底更强
+          - blackhat_sum: 黑字白底更强
+          - polarity: 'white_on_dark' | 'dark_on_white'（基于 sum 比较的粗判）
+        """
+        gray = self.to_gray(img)
+        ksize = max(3, int(morph_kernel))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
+        tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        t_sum = float(np.sum(tophat))
+        b_sum = float(np.sum(blackhat))
+        polarity = "white_on_dark" if t_sum >= b_sum else "dark_on_white"
+        return {
+            "tophat_sum": t_sum,
+            "blackhat_sum": b_sum,
+            "polarity": polarity,
+        }
 
-    - text_mask: 文字区域为 1/255，背景为 0。
-    返回值越大，越像“亮背景 + 暗文字”（选中态）。
-    """
-    gray = _to_gray(gray_or_bgr).astype(np.float32)
-    mask = (text_mask > 0).astype(np.uint8)
-    if mask.sum() == 0 or mask.size == 0:
-        return 0.0
-    text_mean = float(gray[mask > 0].mean())
-    bg_mean = float(gray[mask == 0].mean())
-    return bg_mean - text_mean
+    def score_selected_by_contrast(
+        self, img: np.ndarray, text_mask: np.ndarray
+    ) -> float:
+        """用背景-文字的亮度差做一个"选中反相"强度分数。
+
+        - text_mask: 文字区域为 1/255，背景为 0。
+        返回值越大，越像"亮背景 + 暗文字"（选中态）。
+        """
+        gray = self.to_gray(img).astype(np.float32)
+        mask = (text_mask > 0).astype(np.uint8)
+        if mask.sum() == 0 or mask.size == 0:
+            return 0.0
+        text_mean = float(gray[mask > 0].mean())
+        bg_mean = float(gray[mask == 0].mean())
+        return bg_mean - text_mean
 
 
 def cv2_read(img_path: PathType) -> np.ndarray:
@@ -155,19 +184,37 @@ class Lv1MenuMatcher:
         auto_scale: bool = True,
         ref_width: int = 1024,
         ref_height: int = 768,
-        preprocess: PreprocessConfig | None = None,
+        feature_mode: FeatureExtractionMode = "text_map",
     ):
         """初始化Lv1菜单匹配器。
 
+        :param ref_width: 参考分辨率宽度
         :param ref_height: 参考分辨率高度
         :param auto_scale: 使用自适应缩放
+        :param feature_mode: 特征提取模式
         """
         self.auto_scale = auto_scale
         self.ref_width = ref_width
         self.ref_height = ref_height
-        self.preprocess = preprocess or PreprocessConfig()
-        # 缓存模板的预处理结果：key=(template_name, scaled_w, scaled_h, preprocess)
-        self._tpl_cache: dict[tuple[str, int, int, PreprocessConfig], np.ndarray] = {}
+        self.feature_extractor = ImageFeatureExtractor(
+            FeatureExtractorConfig(mode=feature_mode)
+        )
+        # 缓存模板的特征图：key=(template_name, scaled_w, scaled_h, config_hash)
+        self._feature_cache: dict[tuple[str, int, int, int], np.ndarray] = {}
+
+    def _get_config_hash(self) -> int:
+        """获取配置的哈希值用于缓存"""
+        return hash(
+            (
+                self.feature_extractor.config.mode,
+                self.feature_extractor.config.blur_ksize,
+                self.feature_extractor.config.adaptive_block_size,
+                self.feature_extractor.config.adaptive_c,
+                self.feature_extractor.config.morph_kernel,
+                self.feature_extractor.config.canny1,
+                self.feature_extractor.config.canny2,
+            )
+        )
 
     def _is_same_size(self, img_np: np.ndarray) -> bool:
         """检查图像是否与参考尺寸相同。
@@ -181,7 +228,6 @@ class Lv1MenuMatcher:
         """计算源图像相对于模板的缩放比例。
 
         :param img_np: 源图像
-        :param template: 模板图像
 
         :return: 缩放比例
         """
@@ -225,20 +271,22 @@ class Lv1MenuMatcher:
             )
         return scaled_template, scaled_w, scaled_h
 
-    def _get_template_feat(
+    def _get_template_features(
         self,
         template_info: dict,
         scaled_template: np.ndarray,
         scaled_w: int,
         scaled_h: int,
     ) -> np.ndarray:
-        key = (template_info["name"], scaled_w, scaled_h, self.preprocess)
-        cached = self._tpl_cache.get(key)
+        """获取模板特征图（带缓存）"""
+        config_hash = self._get_config_hash()
+        key = (template_info["name"], scaled_w, scaled_h, config_hash)
+        cached = self._feature_cache.get(key)
         if cached is not None:
             return cached
-        feat = preprocess_image(scaled_template, self.preprocess)
-        self._tpl_cache[key] = feat
-        return feat
+        features = self.feature_extractor.extract_features(scaled_template)
+        self._feature_cache[key] = features
+        return features
 
     def match_template(self, img_np: np.ndarray, template_info: dict) -> dict:
         """对单个模板执行自适应匹配。
@@ -253,14 +301,14 @@ class Lv1MenuMatcher:
         # 自适应缩放模板
         scaled_template, scaled_w, scaled_h = self._scale_template(img_np, template)
 
-        # 预处理到“结构域”匹配，提升对亮度/反相鲁棒性
-        src_feat = preprocess_image(img_np, self.preprocess)
-        tpl_feat = self._get_template_feat(
+        # 提取特征以提升对亮度/反相的鲁棒性
+        src_features = self.feature_extractor.extract_features(img_np)
+        tpl_features = self._get_template_features(
             template_info, scaled_template, scaled_w, scaled_h
         )
 
         # 执行模板匹配
-        result = cv2.matchTemplate(src_feat, tpl_feat, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(src_features, tpl_features, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
         # 计算匹配区域和中心点
@@ -286,13 +334,8 @@ class Lv1MenuLocator:
         """
         self.threshold = threshold
         self.templates = self._load_templates()
-        # 默认使用 text_map：对“白字黑底 / 黑字白底”反相最友好
-        self.matcher = Lv1MenuMatcher(preprocess=PreprocessConfig(mode="text_map"))
-
-    def set_preprocess(self, cfg: PreprocessConfig) -> None:
-        """切换匹配预处理配置（不破坏既有 API）。"""
-        self.matcher.preprocess = cfg
-        self.matcher._tpl_cache.clear()
+        # 默认使用 text_map 特征提取模式（对黑白反相最友好）
+        self.matcher = Lv1MenuMatcher(feature_mode="text_map")
 
     def _load_templates(self) -> list[dict]:
         """加载所有模板图像。

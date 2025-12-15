@@ -6,6 +6,7 @@ dist/
 src/*.egg-info/
 __pycache__
 checkpoints/
+*.bak
 *.log
 *.chats
 *.notes
