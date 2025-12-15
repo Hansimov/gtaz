@@ -1,6 +1,7 @@
 from pathlib import Path
 from tclogger import strf_path, logstr
 
+# 分辨率
 RESOLUTIONS = [
     (1024, 768),
     (1152, 864),
@@ -20,10 +21,12 @@ RESOLUTIONS = [
     (1920, 1080),
 ]
 
-
+# 菜单模板目录
 MENU_IMGS_DIR = Path(__file__).parent / "imgs"
 
-# 标题栏
+# ======================== 标题和焦点 ========================= #
+
+# 菜单标题
 MENU_HEADER_INFOS = [
     {"name": "地图", "img": "header_地图.jpg", "level": 1, "index": 0},
     {"name": "在线", "img": "header_在线.jpg", "level": 1, "index": 1},
@@ -36,7 +39,7 @@ MENU_HEADER_INFOS = [
     {"name": "相册", "img": "header_相册.jpg", "level": 1, "index": 8},
 ]
 
-# 标题焦点
+# 菜单焦点
 MENU_FOCUS_INFOS = [
     {"name": "地图", "img": "focus_地图.jpg", "level": 1, "index": 0},
     {"name": "在线", "img": "focus_在线.jpg", "level": 1, "index": 1},
@@ -49,16 +52,19 @@ MENU_FOCUS_INFOS = [
     {"name": "相册", "img": "focus_相册.jpg", "level": 1, "index": 8},
 ]
 
+# ========================= 列表 ========================= #
+
 # 列表最大尺寸
 MAX_LIST_SIZE = (330, 485)
+
 # 列表最大可见条目数
 MAX_VISIBLE_ITEMS = 16
 
 # (1024x768 分辨率) 列表尺寸拟合公式:
 # height = visible * 29 + 25
 
-# 一级菜单列表
-MENU_LIST_INFOS = [
+# 一级列表
+LIST_INFOS = [
     {"name": "在线", "img": "list_在线.jpg", "level": 1, "total": 18},
     {"name": "在线", "img": "list_在线_1.jpg", "level": 1, "total": 18},
     {"name": "在线", "img": "list_在线_2.jpg", "level": 1, "total": 18},
@@ -67,14 +73,38 @@ MENU_LIST_INFOS = [
     {"name": "统计", "img": "list_统计.jpg", "level": 1, "total": 10},
 ]
 
-# 二级菜单列表: "在线"
+# 二级列表: ["在线"]
 LIST_在线_INFOS = [
-    {"name": "在线_差事", "img": "list_在线_差事.jpg", "level": 2, "total": 3},
-    {"name": "在线_游玩清单", "level": 2, "total": 6},
-    {"name": "在线_寻找新战局", "level": 2, "total": 5},
+    {"name": "差事", "img": "list_在线_差事.jpg", "level": 2, "total": 3},
+    {"name": "游玩清单", "img": "list_在线_游玩清单.jpg", "level": 2, "total": 6},
+    {"name": "寻找新战局", "img": "list_在线_寻找新战局.jpg", "level": 2, "total": 5},
 ]
 
-# 条目: ["在线"]
+# 三级列表: ["在线", "差事"]
+LIST_在线_差事_INFOS = [
+    {"name": "快速加入", "img": "list_在线_差事_快速加入.jpg", "level": 3, "total": 12},
+    {"name": "进行差事", "img": "list_在线_差事_进行差事.jpg", "level": 3, "total": 6},
+]
+
+# 四级列表: ["在线", "差事", "进行差事"]
+LIST_在线_差事_进行差事_INFOS = [
+    {
+        "name": "我的差事",
+        "img": "list_在线_差事_进行差事_我的差事.jpg",
+        "level": 4,
+        "total": 10,
+    },
+    {
+        "name": "已收藏的",
+        "img": "list_在线_差事_进行差事_已收藏的.jpg",
+        "level": 4,
+        "total": 14,
+    },
+]
+
+# ========================= 条目 ========================= #
+
+# 二级条目: ["在线"]
 ITEM_在线_INFOS = [
     {"name": "差事", "img": "item_在线_差事.jpg", "level": 2, "index": 0},
     {"name": "加入好友", "img": "item_在线_加入好友.jpg", "level": 2, "index": 1},
@@ -121,14 +151,142 @@ ITEM_在线_INFOS = [
     {"name": "退出游戏", "img": "item_在线_退出游戏.jpg", "level": 2, "index": 17},
 ]
 
-# 条目: ["在线", "差事"]
+# 三级条目: ["在线", "差事"]
 ITEM_在线_差事_INFOS = [
     {"name": "快速加入", "img": "item_在线_差事_快速加入.jpg", "level": 3, "index": 0},
     {"name": "进行差事", "img": "item_在线_差事_进行差事.jpg", "level": 3, "index": 1},
     {"name": "举报差事", "img": "item_在线_差事_举报差事.jpg", "level": 3, "index": 2},
 ]
 
-# 条目: ["在线", "寻找新战局"]
+# 四级条目: ["在线", "差事", "进行差事"]
+ITEM_在线_差事_进行差事_INFOS = [
+    {
+        "name": "我的差事",
+        "img": "item_在线_差事_进行差事_我的差事.jpg",
+        "level": 4,
+        "index": 0,
+    },
+    {
+        "name": "已收藏的",
+        "img": "item_在线_差事_进行差事_已收藏的.jpg",
+        "level": 4,
+        "index": 1,
+    },
+    {
+        "name": "最近玩过",
+        "img": "item_在线_差事_进行差事_最近玩过.jpg",
+        "level": 4,
+        "index": 2,
+    },
+    {
+        "name": "Rockstar制作",
+        "img": "item_在线_差事_进行差事_Rockstar制作.jpg",
+        "level": 4,
+        "index": 3,
+    },
+    {
+        "name": "社区差事",
+        "img": "item_在线_差事_进行差事_社区差事.jpg",
+        "level": 4,
+        "index": 4,
+    },
+    {
+        "name": "Rockstar认证",
+        "img": "item_在线_差事_进行差事_Rockstar认证.jpg",
+        "level": 4,
+        "index": 5,
+    },
+]
+
+# 五级条目: ["在线", "差事", "进行差事", "已收藏的"]
+ITEM_在线_差事_进行差事_已收藏的_INFOS = [
+    {
+        "name": "竞技场之战",
+        "img": "item_在线_差事_进行差事_已收藏的_竞技场之战.jpg",
+        "level": 5,
+        "index": 0,
+    },
+    {
+        "name": "标靶射击",
+        "img": "item_在线_差事_进行差事_已收藏的_标靶射击.jpg",
+        "level": 5,
+        "index": 1,
+    },
+    {
+        "name": "特技竞速",
+        "img": "item_在线_差事_进行差事_已收藏的_特技竞速.jpg",
+        "level": 5,
+        "index": 2,
+    },
+    {
+        "name": "竞速",
+        "img": "item_在线_差事_进行差事_已收藏的_竞速.jpg",
+        "level": 5,
+        "index": 3,
+    },
+    {
+        "name": "死斗游戏",
+        "img": "item_在线_差事_进行差事_已收藏的_死斗游戏.jpg",
+        "level": 5,
+        "index": 4,
+    },
+    {
+        "name": "夺取",
+        "img": "item_在线_差事_进行差事_已收藏的_夺取.jpg",
+        "level": 5,
+        "index": 5,
+    },
+    {
+        "name": "团队生存游戏",
+        "img": "item_在线_差事_进行差事_已收藏的_团队生存游戏.jpg",
+        "level": 5,
+        "index": 6,
+    },
+    {
+        "name": "占山为王",
+        "img": "item_在线_差事_进行差事_已收藏的_占山为王.jpg",
+        "level": 5,
+        "index": 7,
+    },
+    {
+        "name": "生存战",
+        "img": "item_在线_差事_进行差事_已收藏的_生存战.jpg",
+        "level": 5,
+        "index": 8,
+    },
+    {
+        "name": "任务",
+        "img": "item_在线_差事_进行差事_已收藏的_任务.jpg",
+        "level": 5,
+        "index": 9,
+    },
+    {
+        "name": "对战",
+        "img": "item_在线_差事_进行差事_已收藏的_对战.jpg",
+        "level": 5,
+        "index": 10,
+    },
+    {
+        "name": "对抗模式",
+        "img": "item_在线_差事_进行差事_已收藏的_对抗模式.jpg",
+        "level": 5,
+        "index": 11,
+    },
+    {
+        "name": "跳伞",
+        "img": "item_在线_差事_进行差事_已收藏的_跳伞.jpg",
+        "level": 5,
+        "index": 12,
+    },
+    {
+        "name": "任务制作器内容",
+        "img": "item_在线_差事_进行差事_已收藏的_任务制作器内容.jpg",
+        "level": 5,
+        "index": 13,
+    },
+]
+
+# 三级条目: ["在线", "寻找新战局"]
 ITEM_在线_寻找新战局_INFOS = [
     {
         "name": "公开战局",
@@ -161,6 +319,19 @@ ITEM_在线_寻找新战局_INFOS = [
         "index": 4,
     },
 ]
+
+# ========================= 退出 ========================= #
+
+# 退出提示
+EXIT_INFOS = [
+    {"name": "游戏", "img": "exit_游戏.jpg"},
+    {"name": "故事模式", "img": "exit_故事模式.jpg"},
+    {"name": "主菜单", "img": "exit_主菜单.jpg"},
+    {"name": "战局", "img": "exit_战局.jpg"},
+    {"name": "快速加入", "img": "exit_快速加入.jpg"},
+]
+
+# ========================= 工具函数 ========================= #
 
 
 def find_latest_jpg() -> str:
