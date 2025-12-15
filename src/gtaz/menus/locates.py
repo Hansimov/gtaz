@@ -5,7 +5,7 @@ GTA 菜单 定位模块
 import cv2
 import json
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from tclogger import PathType, TCLogger, dict_to_str, logstr, strf_path
@@ -46,6 +46,23 @@ def load_img(img: Union[PathType, np.ndarray]) -> np.ndarray:
 
 
 FeatureType = Literal["raw", "adaptive_bin", "text_map", "edge"]
+
+
+@dataclass
+class MatchResult:
+    """模板匹配结果"""
+
+    name: str
+    score: float
+    rect: tuple[int, int, int, int]  # (x1, y1, x2, y2)
+    rect_size: tuple[int, int]  # (scaled_w, scaled_h)
+    rect_center: tuple[int, int]  # (center_x, center_y)
+    level: int
+    index: int
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -298,13 +315,13 @@ class MenuMatcher:
         self._feature_cache[key] = features
         return features
 
-    def match_template(self, img_np: np.ndarray, template_info: dict) -> dict:
+    def match_template(self, img_np: np.ndarray, template_info: dict) -> MatchResult:
         """对单个模板执行自适应匹配。
 
         :param img_np: 源图像
         :param template_info: 模板信息字典
 
-        :return: 匹配结果字典
+        :return: 匹配结果 MatchResult
         """
         template = template_info["img"]
 
@@ -322,18 +339,21 @@ class MenuMatcher:
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
         # 计算匹配区域和中心点
-        x, y = max_loc
-        center_x = x + scaled_w // 2
-        center_y = y + scaled_h // 2
+        x1, y1 = max_loc
+        x2 = x1 + scaled_w
+        y2 = y1 + scaled_h
+        center_x = x1 + scaled_w // 2
+        center_y = y1 + scaled_h // 2
 
-        return {
-            "name": template_info["name"],
-            "score": float(max_val),
-            "rect": (x, y, scaled_w, scaled_h),
-            "center": (center_x, center_y),
-            "level": template_info["level"],
-            "index": template_info["index"],
-        }
+        return MatchResult(
+            name=template_info["name"],
+            score=float(max_val),
+            rect=(x1, y1, x2, y2),
+            rect_size=(scaled_w, scaled_h),
+            rect_center=(center_x, center_y),
+            level=template_info["level"],
+            index=template_info["index"],
+        )
 
 
 class MenuLocator:
@@ -379,56 +399,52 @@ class MenuLocator:
                 }
             )
 
-    def match_header_rect(self, img: Union[PathType, np.ndarray]) -> dict:
+    def match_header(self, img: Union[PathType, np.ndarray]) -> MatchResult:
         """匹配菜单，返回最匹配的菜单标题区域。
 
         :param img: 输入图像路径或数组
 
-        :return: 匹配结果字典，包含以下键：
-            - found: bool, 是否找到匹配
+        :return: 匹配结果 MatchResult，包含以下字段：
             - name: str, 匹配的菜单名称
             - score: float, 匹配置信度 [0, 1]
-            - location: tuple, 匹配区域 (x, y, w, h)
-            - center: tuple, 匹配区域中心点 (x, y)
+            - rect: tuple, 匹配区域 (x1, y1, x2, y2)
+            - rect_size: tuple, 缩放后的模板尺寸 (scaled_w, scaled_h)
+            - rect_center: tuple, 匹配区域中心点 (center_x, center_y)
+            - level: int, 菜单层级
+            - index: int, 菜单索引
         """
         src_img = load_img(img)
-        best_match = {
-            "found": False,
-            "name": None,
-            "score": 0.0,
-            "rect": None,
-            "center": None,
-            "file": None,
-        }
+        best_match = None
         for template_info in self.header_templates:
             match_result = self.matcher.match_template(src_img, template_info)
-            if match_result["score"] > best_match["score"]:
+            if best_match is None or match_result.score > best_match.score:
                 best_match = match_result
-                best_match["found"] = match_result["score"] >= self.threshold
         return best_match
+
+    def match_focus(self):
+        pass
 
 
 class MenuLocatorTester:
     def __init__(self):
         self.locator = MenuLocator()
 
-    def _plot_result_on_image(self, img: np.ndarray, result: dict) -> np.ndarray:
+    def _plot_result_on_image(self, img: np.ndarray, result: MatchResult) -> np.ndarray:
         """在图像上绘制匹配结果。
 
         :param img: 输入图像数组
-        :param results: 匹配结果
+        :param result: 匹配结果
 
         :return: 绘制后的图像数组
         """
-        x, y, w, h = result["rect"]
-        score = result["score"]
-        name = result["name"]
-        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        x1, y1, x2, y2 = result.rect
+        score = result.score
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         text = f"{score:.2f}"
         cv2.putText(
             img,
             text,
-            (x, y - 10),
+            (x1, y1 - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (122, 122, 0),
@@ -463,61 +479,45 @@ class MenuLocatorTester:
             im_buf_arr.tofile(str(save_path))
         # logger.file(f"  * 绘制已保存: {save_path}")
 
-    def _save_result_json(self, result: dict, save_path: Path) -> None:
+    def _save_result_json(self, result: MatchResult, save_path: Path) -> None:
         """保存JSON结果。
 
-        :param result: 匹配结果字典
+        :param result: 匹配结果
         :param save_path: JSON保存路径
         """
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+            json.dump(result.to_dict(), f, ensure_ascii=False, indent=2)
         # logger.file(f"  * 信息已保存: {save_path}")
 
-    def _log_result(self, result: dict):
+    def _log_result(self, result: MatchResult):
         """打印匹配结果
 
-        :param result: 匹配结果字典
+        :param result: 匹配结果
         """
         logger.note("匹配结果:")
         info_dict = {
-            "found": result["found"],
-            "name": result["name"],
-            "score": f"{result['score']:.4f}",
-            "rect": result["rect"],
-            "center": result["center"],
+            "name": result.name,
+            "score": f"{result.score:.4f}",
+            "rect": result.rect,
+            "rect_size": result.rect_size,
+            "rect_center": result.rect_center,
         }
         logger.mesg(dict_to_str(info_dict), indent=2)
 
-    def _log_result_line(self, result: dict, idx: int = None):
+    def _log_result_line(self, result: MatchResult, idx: int = None):
         if idx is not None:
             idx_str = f"[{idx}] "
         else:
             idx_str = ""
-        conf_str = f"{result['score']:.4f}"
+        conf_str = f"{result.score:.4f}"
         logger.mesg(
             f"  * {idx_str}"
-            f"{logstr.okay(result['name'])}, "
+            f"{logstr.okay(result.name)}, "
             f"{key_note('置信度')}: {logstr.okay(conf_str)}, "
-            f"{key_note('区域')}: {val_mesg(result['rect'])}"
+            f"{key_note('区域')}: {val_mesg(result.rect)}"
         )
-
-    def _log_results(self, results: list[dict]):
-        """打印多个匹配结果
-
-        :param results: 匹配结果列表
-        """
-        logger.okay(f"共匹配到 {len(results)} 个结果:")
-        for idx, result in enumerate(results, 1):
-            self._log_result_line(result, idx=idx)
-
-    def test_match_header_rect(self, img_path: PathType) -> dict:
-        """测试单个最佳匹配。"""
-        logger.note(f"测试图像: {img_path}")
-        result = self.locator.match_header_rect(img_path)
-        self._log_result(result)
-        return result
 
     def test_match_and_visualize(
         self, img_path: PathType, idx: int = None
