@@ -50,7 +50,7 @@ def crop_img(img_np: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
     return img_np[y1:y2, x1:x2]
 
 
-FeatureType = Literal["raw", "adaptive_bin", "text_map", "edge"]
+FeatureType = Literal["raw", "adaptive_bin", "text_map", "edge", "focus"]
 
 
 @dataclass
@@ -108,7 +108,22 @@ class ImageFeatureExtractor:
             "adaptive_bin": self.extract_adaptive_bin,
             "text_map": self.extract_text_map,
             "edge": self.extract_edge,
+            "focus": self.extract_raw,
         }
+
+    def get_hash(self) -> int:
+        """获取配置的哈希值"""
+        return hash(
+            (
+                self.config.mode,
+                self.config.blur_ksize,
+                self.config.adaptive_block_size,
+                self.config.adaptive_c,
+                self.config.morph_kernel,
+                self.config.canny1,
+                self.config.canny2,
+            )
+        )
 
     @staticmethod
     def to_gray(img_bgr: np.ndarray) -> np.ndarray:
@@ -172,9 +187,10 @@ class ImageFeatureExtractor:
         # 转为灰度图
         gray = self.to_gray(img_bgr)
         gray = gray.astype(np.uint8, copy=False)
-        # 应用模糊
-        gray = self.apply_blur(gray)
-        # 根据模式选择特征提取策略
+        if self.config.mode not in ["focus"]:
+            # 应用模糊
+            gray = self.apply_blur(gray)
+        # 根据模式，选择特征提取策略
         extractor = self.extractors.get(self.config.mode)
         return extractor(gray)
 
@@ -230,41 +246,28 @@ class MenuMatcher:
         auto_scale: bool = True,
         ref_width: int = 1024,
         ref_height: int = 768,
-        feature_mode: FeatureType = "text_map",
     ):
         """初始化菜单匹配器。
 
+        :param auto_scale: 使用自适应缩放
         :param ref_width: 参考分辨率宽度
         :param ref_height: 参考分辨率高度
-        :param auto_scale: 使用自适应缩放
-        :param feature_mode: 特征提取模式
         """
         self.auto_scale = auto_scale
         self.ref_width = ref_width
         self.ref_height = ref_height
-        self.feature_extractor = ImageFeatureExtractor(
-            FeatureExtractorConfig(mode=feature_mode)
-        )
-        # 当前图像的尺寸（通过 set_img_size 设置）
+        # 当前图像尺寸
         self.img_width: int = ref_width
         self.img_height: int = ref_height
-        # 缓存模板的特征图
-        # key=(template_name, scaled_w, scaled_h, config_hash)
-        self._feature_cache: dict[tuple[str, int, int, int], np.ndarray] = {}
-
-    def _get_config_hash(self) -> int:
-        """获取配置的哈希值用于缓存"""
-        return hash(
-            (
-                self.feature_extractor.config.mode,
-                self.feature_extractor.config.blur_ksize,
-                self.feature_extractor.config.adaptive_block_size,
-                self.feature_extractor.config.adaptive_c,
-                self.feature_extractor.config.morph_kernel,
-                self.feature_extractor.config.canny1,
-                self.feature_extractor.config.canny2,
-            )
+        # 创建特征提取器，header 和 focus 使用不同的配置
+        self.header_extractor = ImageFeatureExtractor(
+            FeatureExtractorConfig(mode="text_map")
         )
+        self.focus_extractor = ImageFeatureExtractor(
+            FeatureExtractorConfig(mode="focus")
+        )
+        # 缓存模板的特征图
+        self._feature_cache: dict[tuple, np.ndarray] = {}
 
     def set_img_size(self, img_np: np.ndarray) -> None:
         """设置当前要处理的图像尺寸。
@@ -325,22 +328,31 @@ class MenuMatcher:
         scaled_template: np.ndarray,
         scaled_w: int,
         scaled_h: int,
+        extractor: ImageFeatureExtractor,
     ) -> np.ndarray:
         """获取模板特征图（带缓存）"""
-        config_hash = self._get_config_hash()
-        key = (template_info["name"], scaled_w, scaled_h, config_hash)
+        key = (
+            template_info["name"],
+            template_info["path"],
+            scaled_w,
+            scaled_h,
+            extractor.get_hash(),
+        )
         cached = self._feature_cache.get(key)
         if cached is not None:
             return cached
-        features = self.feature_extractor.extract_features(scaled_template)
+        features = extractor.extract_features(scaled_template)
         self._feature_cache[key] = features
         return features
 
-    def match_template(self, img_np: np.ndarray, template_info: dict) -> MatchResult:
+    def match_template(
+        self, img_np: np.ndarray, template_info: dict, extractor: ImageFeatureExtractor
+    ) -> MatchResult:
         """对单个模板执行自适应匹配。
 
         :param img_np: 源图像
         :param template_info: 模板信息字典
+        :param extractor: 特征提取器
 
         :return: 匹配结果 MatchResult
         """
@@ -348,9 +360,9 @@ class MenuMatcher:
         # 自适应缩放模板
         scaled_template, scaled_w, scaled_h = self._scale_template(template)
         # 提取特征以提升对亮度/反相的鲁棒性
-        src_features = self.feature_extractor.extract_features(img_np)
+        src_features = extractor.extract_features(img_np)
         tpl_features = self._get_template_features(
-            template_info, scaled_template, scaled_w, scaled_h
+            template_info, scaled_template, scaled_w, scaled_h, extractor
         )
         # 执行模板匹配
         result = cv2.matchTemplate(src_features, tpl_features, cv2.TM_CCOEFF_NORMED)
@@ -435,7 +447,9 @@ class MenuLocator:
         self.matcher.set_img_size(img_np)
         best_match = None
         for template_info in self.header_templates:
-            match_result = self.matcher.match_template(img_np, template_info)
+            match_result = self.matcher.match_template(
+                img_np, template_info, self.matcher.header_extractor
+            )
             if best_match is None or match_result.score > best_match.score:
                 best_match = match_result
         return best_match
@@ -474,7 +488,9 @@ class MenuLocator:
         cropped_img = crop_img(img_np, header_result.rect)
         best_match = None
         for template_info in self.focus_templates:
-            match_result = self.matcher.match_template(cropped_img, template_info)
+            match_result = self.matcher.match_template(
+                cropped_img, template_info, self.matcher.focus_extractor
+            )
             if best_match is None or match_result.score > best_match.score:
                 best_match = match_result
         final_match = self._align_match_result(best_match, header_result)
