@@ -5,15 +5,133 @@ GTA 菜单 定位模块
 import cv2
 import json
 import numpy as np
+from dataclasses import dataclass
 from pathlib import Path
 
 from tclogger import PathType, TCLogger, dict_to_str, logstr, strf_path
-from typing import Union
+from typing import Literal, Union
 
 from .commons import MENU_IMGS_DIR, LV1_INFOS, key_note, val_mesg
 
 
 logger = TCLogger(name="GTAMenuLocator", use_prefix=True, use_prefix_ms=True)
+
+
+PreprocessMode = Literal[
+    "raw",
+    "adaptive_bin",
+    "text_map",
+    "edge",
+]
+
+
+@dataclass(frozen=True)
+class PreprocessConfig:
+    mode: PreprocessMode = "text_map"
+    blur_ksize: int = 3
+    adaptive_block_size: int = 31
+    adaptive_c: int = 7
+    morph_kernel: int = 7
+    canny1: int = 60
+    canny2: int = 150
+
+
+def _to_gray(img_bgr: np.ndarray) -> np.ndarray:
+    if img_bgr.ndim == 2:
+        return img_bgr
+    if img_bgr.shape[2] == 1:
+        return img_bgr[:, :, 0]
+    # Lab 的 L 通道对亮度更稳定
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    return lab[:, :, 0]
+
+
+def _odd_ksize(v: int, min_value: int = 3) -> int:
+    v = int(v)
+    if v < min_value:
+        v = min_value
+    if v % 2 == 0:
+        v += 1
+    return v
+
+
+def _preprocess_gray(gray: np.ndarray, cfg: PreprocessConfig) -> np.ndarray:
+    gray = gray.astype(np.uint8, copy=False)
+    k = _odd_ksize(cfg.blur_ksize, 1)
+    if k > 1:
+        gray = cv2.GaussianBlur(gray, (k, k), 0)
+
+    if cfg.mode == "raw":
+        return gray
+
+    if cfg.mode == "adaptive_bin":
+        bs = _odd_ksize(cfg.adaptive_block_size, 3)
+        bin_img = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            bs,
+            int(cfg.adaptive_c),
+        )
+        return bin_img
+
+    if cfg.mode == "text_map":
+        ksize = max(3, int(cfg.morph_kernel))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
+        tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        # 两种极性的文字统一到“亮响应”
+        return cv2.max(tophat, blackhat)
+
+    if cfg.mode == "edge":
+        edges = cv2.Canny(gray, int(cfg.canny1), int(cfg.canny2))
+        return edges
+
+    raise ValueError(f"Unknown preprocess mode: {cfg.mode}")
+
+
+def preprocess_image(img_bgr: np.ndarray, cfg: PreprocessConfig) -> np.ndarray:
+    gray = _to_gray(img_bgr)
+    return _preprocess_gray(gray, cfg)
+
+
+def score_polarity_textmap(gray_or_bgr: np.ndarray, morph_kernel: int = 7) -> dict:
+    """计算文字极性分数（用于判断黑字白底 vs 白字黑底）。
+
+    返回：
+      - tophat_sum: 白字黑底更强
+      - blackhat_sum: 黑字白底更强
+      - polarity: 'white_on_dark' | 'dark_on_white'（基于 sum 比较的粗判）
+    """
+    gray = _to_gray(gray_or_bgr)
+    ksize = max(3, int(morph_kernel))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
+    tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+    t_sum = float(np.sum(tophat))
+    b_sum = float(np.sum(blackhat))
+    polarity = "white_on_dark" if t_sum >= b_sum else "dark_on_white"
+    return {
+        "tophat_sum": t_sum,
+        "blackhat_sum": b_sum,
+        "polarity": polarity,
+    }
+
+
+def score_selected_by_contrast(gray_or_bgr: np.ndarray, text_mask: np.ndarray) -> float:
+    """用背景-文字的亮度差做一个“选中反相”强度分数。
+
+    - text_mask: 文字区域为 1/255，背景为 0。
+    返回值越大，越像“亮背景 + 暗文字”（选中态）。
+    """
+    gray = _to_gray(gray_or_bgr).astype(np.float32)
+    mask = (text_mask > 0).astype(np.uint8)
+    if mask.sum() == 0 or mask.size == 0:
+        return 0.0
+    text_mean = float(gray[mask > 0].mean())
+    bg_mean = float(gray[mask == 0].mean())
+    return bg_mean - text_mean
 
 
 def cv2_read(img_path: PathType) -> np.ndarray:
@@ -37,6 +155,7 @@ class Lv1MenuMatcher:
         auto_scale: bool = True,
         ref_width: int = 1024,
         ref_height: int = 768,
+        preprocess: PreprocessConfig | None = None,
     ):
         """初始化Lv1菜单匹配器。
 
@@ -46,6 +165,9 @@ class Lv1MenuMatcher:
         self.auto_scale = auto_scale
         self.ref_width = ref_width
         self.ref_height = ref_height
+        self.preprocess = preprocess or PreprocessConfig()
+        # 缓存模板的预处理结果：key=(template_name, scaled_w, scaled_h, preprocess)
+        self._tpl_cache: dict[tuple[str, int, int, PreprocessConfig], np.ndarray] = {}
 
     def _is_same_size(self, img_np: np.ndarray) -> bool:
         """检查图像是否与参考尺寸相同。
@@ -103,6 +225,21 @@ class Lv1MenuMatcher:
             )
         return scaled_template, scaled_w, scaled_h
 
+    def _get_template_feat(
+        self,
+        template_info: dict,
+        scaled_template: np.ndarray,
+        scaled_w: int,
+        scaled_h: int,
+    ) -> np.ndarray:
+        key = (template_info["name"], scaled_w, scaled_h, self.preprocess)
+        cached = self._tpl_cache.get(key)
+        if cached is not None:
+            return cached
+        feat = preprocess_image(scaled_template, self.preprocess)
+        self._tpl_cache[key] = feat
+        return feat
+
     def match_template(self, img_np: np.ndarray, template_info: dict) -> dict:
         """对单个模板执行自适应匹配。
 
@@ -116,8 +253,14 @@ class Lv1MenuMatcher:
         # 自适应缩放模板
         scaled_template, scaled_w, scaled_h = self._scale_template(img_np, template)
 
+        # 预处理到“结构域”匹配，提升对亮度/反相鲁棒性
+        src_feat = preprocess_image(img_np, self.preprocess)
+        tpl_feat = self._get_template_feat(
+            template_info, scaled_template, scaled_w, scaled_h
+        )
+
         # 执行模板匹配
-        result = cv2.matchTemplate(img_np, scaled_template, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(src_feat, tpl_feat, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
         # 计算匹配区域和中心点
@@ -143,7 +286,13 @@ class Lv1MenuLocator:
         """
         self.threshold = threshold
         self.templates = self._load_templates()
-        self.matcher = Lv1MenuMatcher()
+        # 默认使用 text_map：对“白字黑底 / 黑字白底”反相最友好
+        self.matcher = Lv1MenuMatcher(preprocess=PreprocessConfig(mode="text_map"))
+
+    def set_preprocess(self, cfg: PreprocessConfig) -> None:
+        """切换匹配预处理配置（不破坏既有 API）。"""
+        self.matcher.preprocess = cfg
+        self.matcher._tpl_cache.clear()
 
     def _load_templates(self) -> list[dict]:
         """加载所有模板图像。
@@ -323,10 +472,11 @@ class MenuLocatorTester:
             idx_str = f"[{idx}] "
         else:
             idx_str = ""
+        conf_str = f"{result['confidence']:.4f}"
         logger.mesg(
             f"  * {idx_str}"
             f"{logstr.okay(result['name'])}, "
-            f"{key_note('置信度')}: {logstr.okay(f'{result['confidence']:.4f}')}, "
+            f"{key_note('置信度')}: {logstr.okay(conf_str)}, "
             f"{key_note('区域')}: {val_mesg(result['rect'])}"
         )
 
