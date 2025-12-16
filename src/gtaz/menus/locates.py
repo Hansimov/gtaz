@@ -496,8 +496,22 @@ class MenuLocator:
         final_match = self._align_match_result(best_match, header_result)
         return final_match
 
+    def match_list(
+        self, img_np: np.ndarray, header_result: MatchResult, focus_result: MatchResult
+    ) -> MatchResult:
+        pass
 
-class MenuLocatorTester:
+    def match_item(
+        self,
+        img_np: np.ndarray,
+        header_result: MatchResult,
+        focus_result: MatchResult,
+        list_result: MatchResult,
+    ) -> MatchResult:
+        pass
+
+
+class MenuLocatorRunner:
     def __init__(self):
         self.locator = MenuLocator()
 
@@ -512,13 +526,14 @@ class MenuLocatorTester:
 
         :param img: 输入图像数组
         :param result: 匹配结果
-        :param color: 矩形颜色 (B, G, R)
+        :param color: 矩形颜色 (R, G, B)
         :param thickness: 线条粗细
 
         :return: 绘制后的图像数组
         """
         x1, y1, x2, y2 = result.rect
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+        bgr_color = (color[2], color[1], color[0])  # 转为 BGR 格式
+        cv2.rectangle(img, (x1, y1), (x2, y2), bgr_color, thickness)
         return img
 
     def _get_result_path(self, img_path: Path) -> Path:
@@ -577,63 +592,84 @@ class MenuLocatorTester:
         }
         logger.mesg(dict_to_str(info_dict), indent=2)
 
-    def _log_result_line(self, result: MatchResult, idx: int = None):
-        if idx is not None:
-            idx_str = f"[{idx}] "
-        else:
+    def _log_result_line(
+        self, result: MatchResult, idx: int = None, name_type: str = None
+    ):
+        if idx is None:
             idx_str = ""
+        else:
+            idx_str = f"[{idx}] "
+
+        if name_type is None:
+            name_type_str = ""
+        else:
+            name_type_str = f"{key_note(name_type)}: "
+
         conf_str = f"{result.score:.4f}"
         logger.mesg(
             f"  * {idx_str}"
-            f"{logstr.okay(result.name)}, "
+            f"{name_type_str}{logstr.okay(result.name)}, "
             f"{key_note('置信度')}: {logstr.okay(conf_str)}, "
             f"{key_note('区域')}: {val_mesg(result.rect)}"
         )
 
-    def test_match_and_visualize(
-        self, img_path: PathType, idx: int = None
-    ) -> np.ndarray:
+    def match_and_visualize(self, img_path: PathType, idx: int = None) -> np.ndarray:
         """可视化匹配结果。
 
         :param img_path: 输入图像路径
         """
-        # 匹配
+        # 读取图像
         img_path = Path(img_path)
         img_np = cv2_read(img_path)
+        # 匹配标题
         header_result = self.locator.match_header(img_np)
-        self._log_result_line(header_result, idx=idx)
+        self._log_result_line(header_result, idx=idx, name_type="标题")
+        # 匹配焦点
         focus_result = self.locator.match_focus(img_np, header_result=header_result)
-        self._log_result_line(focus_result, idx=idx)
+        self._log_result_line(focus_result, idx=idx, name_type="焦点")
+        # 匹配列表
+        list_result = self.locator.match_list(
+            img_np, header_result=header_result, focus_result=focus_result
+        )
+        self._log_result_line(list_result, idx=idx, name_type="列表")
+        # 匹配条目
+        item_result = self.locator.match_item(
+            img_np,
+            header_result=header_result,
+            focus_result=focus_result,
+            list_result=list_result,
+        )
+        self._log_result_line(item_result, idx=idx, name_type="条目")
         # 可视化
-        img_np = self._plot_result_on_image(img_np, header_result)
-        img_np = self._plot_result_on_image(img_np, focus_result, color=(0, 0, 255))
-        save_path = self._get_result_path(img_path)
+        img_np = self._plot_result_on_image(img_np, header_result, color=(0, 255, 0))
+        img_np = self._plot_result_on_image(img_np, focus_result, color=(255, 0, 0))
+        img_np = self._plot_result_on_image(img_np, list_result, color=(0, 128, 128))
+        img_np = self._plot_result_on_image(img_np, item_result, color=(128, 128, 0))
         # 保存可视化结果和匹配信息
+        save_path = self._get_result_path(img_path)
         self._save_result_image(img_np, save_path)
         merged_result = MergedMatchResult(header=header_result, focus=focus_result)
         json_path = save_path.with_suffix(".json")
         self._save_result_json(merged_result, json_path)
         return img_np
 
-    def batch_test_match_and_visualize(self, img_dir: PathType):
+    def multi_match_and_visualize(self, img_dir: PathType):
         """批量可视化测试目录中的所有图像。
 
         :param img_dir: 图像目录
         """
-        logger.note("运行批量可视化测试...")
-
+        logger.note("运行批量可视化处理...")
+        # 读取目录中所有图像
         img_dir = Path(img_dir)
         img_paths = sorted(img_dir.glob("*.jpg"))
-
         logger.note(f"读取图像目录: [{img_dir}]")
         logger.okay(f"找到 {len(img_paths)} 张图像")
-
+        # 逐张处理
         for i, img_path in enumerate(img_paths, 1):
             idx_str = f"[{logstr.mesg(i)}/{logstr.file(len(img_paths))}] "
             logger.note(f"{idx_str}处理图像: {img_path.name}")
-            self.test_match_and_visualize(str(img_path))
-
-        logger.okay(f"批量测试完成！共测试图像: {len(img_paths)}")
+            self.match_and_visualize(str(img_path), idx=i)
+        logger.okay(f"批量处理完成！共处理图像: {len(img_paths)}")
 
     def run(self):
         """运行所有测试"""
@@ -647,17 +683,17 @@ class MenuLocatorTester:
 
         # imgs = list(img_dir.glob("*.jpg"))
         # img = imgs[0]
-        # self.test_match_and_visualize(str(img))
+        # self.match_and_visualize(str(img))
 
-        self.batch_test_match_and_visualize(img_dir)
+        self.multi_match_and_visualize(img_dir)
 
 
-def test_menu_locator():
-    tester = MenuLocatorTester()
-    tester.run()
+def run_menu_locator():
+    runner = MenuLocatorRunner()
+    runner.run()
 
 
 if __name__ == "__main__":
-    test_menu_locator()
+    run_menu_locator()
 
     # python -m gtaz.menus.locates
