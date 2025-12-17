@@ -605,12 +605,23 @@ class MenuLocatorRunner:
         else:
             name_type_str = f"{key_note(name_type)}: "
 
-        conf_str = f"{result.score:.4f}"
+        score = result.score
+        if score >= 0.88:
+            logstr_func = logstr.okay
+        elif score < 0.5:
+            logstr_func = logstr.warn
+        else:
+            logstr_func = logstr.file
+
+        name_str = logstr_func(result.name)
+        score_str = logstr_func(f"{score:.4f}")
+        rect_str = logstr_func(result.rect)
+
         logger.mesg(
             f"  * {idx_str}"
-            f"{name_type_str}{logstr.okay(result.name)}, "
-            f"{key_note('置信度')}: {logstr.okay(conf_str)}, "
-            f"{key_note('区域')}: {val_mesg(result.rect)}"
+            f"{name_type_str}{name_str}, "
+            f"{key_note('置信度')}: {score_str}, "
+            f"{key_note('区域')}: {rect_str}"
         )
 
     def match_and_visualize(self, img_path: PathType, idx: int = None) -> np.ndarray:
@@ -679,7 +690,8 @@ class MenuLocatorRunner:
 
         cache_menus = Path(__file__).parents[1] / "cache" / "menus"
         # img_dir = cache_menus / "2025-12-14_23-01-58"
-        img_dir = cache_menus / "2025-12-15_08-22-57"
+        # img_dir = cache_menus / "2025-12-15_08-22-57"
+        img_dir = cache_menus / "2025-12-17_09-50-09"
 
         # imgs = list(img_dir.glob("*.jpg"))
         # img = imgs[0]
