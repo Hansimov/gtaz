@@ -113,13 +113,19 @@ class MergedMatchResult:
 
     header: MatchResult
     focus: MatchResult
+    list: MatchResult
+    item: MatchResult
 
     def to_dict(self) -> dict:
         """转换为字典"""
-        return {
-            "header": self.header.to_dict(),
-            "focus": self.focus.to_dict(),
-        }
+        res_dict = {}
+        for key in ["header", "focus", "list", "item"]:
+            result = getattr(self, key)
+            if result is None:
+                res_dict[key] = None
+            else:
+                res_dict[key] = result.to_dict()
+        return res_dict
 
 
 @dataclass(frozen=True)
@@ -876,7 +882,9 @@ class MenuLocatorRunner:
         # 保存可视化结果和匹配信息
         save_path = self._get_result_path(img_path)
         self._save_result_image(img_np, save_path)
-        merged_result = MergedMatchResult(header=header_result, focus=focus_result)
+        merged_result = MergedMatchResult(
+            header=header_result, focus=focus_result, list=list_result, item=item_result
+        )
         json_path = save_path.with_suffix(".json")
         self._save_result_json(merged_result, json_path)
         return img_np

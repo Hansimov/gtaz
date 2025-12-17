@@ -84,10 +84,6 @@ class MenuInteractor:
         self.click_button(Button.B)
 
 
-class MenuNavigator:
-    pass
-
-
 class MenuInteractorTester:
     """菜单交互测试"""
 
