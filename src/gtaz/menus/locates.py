@@ -13,6 +13,15 @@ from typing import Literal, Union
 
 from .commons import MENU_IMGS_DIR
 from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
+from .commons import LIST_INFOS, LIST_在线_INFOS, LIST_在线_差事_INFOS
+from .commons import LIST_在线_差事_进行差事_INFOS
+from .commons import ITEM_在线_INFOS, ITEM_在线_差事_INFOS
+from .commons import (
+    ITEM_在线_差事_进行差事_INFOS,
+    ITEM_在线_差事_进行差事_已收藏的_INFOS,
+)
+from .commons import ITEM_在线_寻找新战局_INFOS
+from .commons import REF_WIDTH, REF_HEIGHT, MAX_LIST_SIZE
 from .commons import key_note, val_mesg
 
 
@@ -47,10 +56,14 @@ def load_img(img: Union[PathType, np.ndarray]) -> np.ndarray:
 
 def crop_img(img_np: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
     x1, y1, x2, y2 = rect
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
     return img_np[y1:y2, x1:x2]
 
 
-FeatureType = Literal["raw", "adaptive_bin", "text_map", "edge", "focus"]
+FeatureType = Literal["raw", "header", "focus", "list", "item"]
 
 
 @dataclass
@@ -63,11 +76,26 @@ class MatchResult:
     rect_size: tuple[int, int]  # (scaled_w, scaled_h)
     rect_center: tuple[int, int]  # (center_x, center_y)
     level: int
-    index: int
+    index: int = -1  # 对于列表模板，使用 -1 表示无效索引
+    total: int = -1  # 对于列表模板，存储总条目数
 
     def to_dict(self) -> dict:
         """转换为字典"""
         return asdict(self)
+
+
+class FailedMatchResult(MatchResult):
+    def __init__(self, name: str):
+        super().__init__(
+            name=name,
+            score=0.0,
+            rect=(0, 0, 0, 0),
+            rect_size=(0, 0),
+            rect_center=(0, 0),
+            level=-1,
+            index=-1,
+            total=-1,
+        )
 
 
 @dataclass(frozen=True)
@@ -105,10 +133,10 @@ class ImageFeatureExtractor:
         self.config = config or FeatureExtractorConfig()
         self.extractors = {
             "raw": self.extract_raw,
-            "adaptive_bin": self.extract_adaptive_bin,
-            "text_map": self.extract_text_map,
-            "edge": self.extract_edge,
+            "header": self.extract_text_map,
             "focus": self.extract_raw,
+            "list": self.extract_text_map,
+            "item": self.extract_raw,
         }
 
     def get_hash(self) -> int:
@@ -187,7 +215,7 @@ class ImageFeatureExtractor:
         # 转为灰度图
         gray = self.to_gray(img_bgr)
         gray = gray.astype(np.uint8, copy=False)
-        if self.config.mode not in ["focus"]:
+        if self.config.mode not in ["focus", "item"]:
             # 应用模糊
             gray = self.apply_blur(gray)
         # 根据模式，选择特征提取策略
@@ -244,8 +272,8 @@ class MenuMatcher:
     def __init__(
         self,
         auto_scale: bool = True,
-        ref_width: int = 1024,
-        ref_height: int = 768,
+        ref_width: int = REF_WIDTH,
+        ref_height: int = REF_HEIGHT,
     ):
         """初始化菜单匹配器。
 
@@ -259,13 +287,15 @@ class MenuMatcher:
         # 当前图像尺寸
         self.img_width: int = ref_width
         self.img_height: int = ref_height
-        # 创建特征提取器，header 和 focus 使用不同的配置
+        # 创建特征提取器，不同元素使用不同的配置
         self.header_extractor = ImageFeatureExtractor(
-            FeatureExtractorConfig(mode="text_map")
+            FeatureExtractorConfig(mode="header")
         )
         self.focus_extractor = ImageFeatureExtractor(
             FeatureExtractorConfig(mode="focus")
         )
+        self.list_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="list"))
+        self.item_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="item"))
         # 缓存模板的特征图
         self._feature_cache: dict[tuple, np.ndarray] = {}
 
@@ -345,29 +375,19 @@ class MenuMatcher:
         self._feature_cache[key] = features
         return features
 
-    def match_template(
-        self, img_np: np.ndarray, template_info: dict, extractor: ImageFeatureExtractor
+    def _is_bad_img_size(self, img_np: np.ndarray) -> bool:
+        return img_np.size == 0 or img_np.shape[0] == 0 or img_np.shape[1] == 0
+
+    def _is_bad_template_size(
+        self, img_np: np.ndarray, scaled_w: int, scaled_h: int
+    ) -> bool:
+        src_h, src_w = img_np.shape[:2]
+        return scaled_h > src_h or scaled_w > src_w
+
+    def _build_match_result(
+        self, result: np.ndarray, template_info: dict, scaled_w: int, scaled_h: int
     ) -> MatchResult:
-        """对单个模板执行自适应匹配。
-
-        :param img_np: 源图像
-        :param template_info: 模板信息字典
-        :param extractor: 特征提取器
-
-        :return: 匹配结果 MatchResult
-        """
-        template = template_info["img"]
-        # 自适应缩放模板
-        scaled_template, scaled_w, scaled_h = self._scale_template(template)
-        # 提取特征以提升对亮度/反相的鲁棒性
-        src_features = extractor.extract_features(img_np)
-        tpl_features = self._get_template_features(
-            template_info, scaled_template, scaled_w, scaled_h, extractor
-        )
-        # 执行模板匹配
-        result = cv2.matchTemplate(src_features, tpl_features, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        # 计算匹配区域和中心点
         x1, y1 = max_loc
         x2 = x1 + scaled_w
         y2 = y1 + scaled_h
@@ -379,8 +399,42 @@ class MenuMatcher:
             rect=(x1, y1, x2, y2),
             rect_size=(scaled_w, scaled_h),
             rect_center=(center_x, center_y),
-            level=template_info["level"],
-            index=template_info["index"],
+            level=template_info.get("level"),
+            index=template_info.get("index"),
+        )
+
+    def match_template(
+        self, img_np: np.ndarray, template_info: dict, extractor: ImageFeatureExtractor
+    ) -> MatchResult:
+        """对单个模板执行自适应匹配。
+
+        :param img_np: 源图像
+        :param template_info: 模板信息字典
+        :param extractor: 特征提取器
+
+        :return: 匹配结果 MatchResult
+        """
+        # 检查源图像是否为空
+        if self._is_bad_img_size(img_np):
+            return FailedMatchResult("无效图像")
+        # 自适应缩放模板
+        template = template_info["img"]
+        scaled_template, scaled_w, scaled_h = self._scale_template(template)
+        # 检查模板尺寸是否大于源图像
+        if self._is_bad_template_size(img_np, scaled_w, scaled_h):
+            return FailedMatchResult("无效模板")
+        # 提取图像和模板特征
+        src_features = extractor.extract_features(img_np)
+        tpl_features = self._get_template_features(
+            template_info, scaled_template, scaled_w, scaled_h, extractor
+        )
+        # 执行模板匹配
+        result = cv2.matchTemplate(src_features, tpl_features, cv2.TM_CCOEFF_NORMED)
+        return self._build_match_result(
+            result=result,
+            template_info=template_info,
+            scaled_w=scaled_w,
+            scaled_h=scaled_h,
         )
 
 
@@ -399,6 +453,7 @@ class MenuLocator:
 
         :return: 包含模板信息的列表
         """
+        # 加载标题模板
         used_header_names = ["地图", "在线", "设置"]
         self.header_templates: list[dict] = []
         for info in MENU_HEADER_INFOS:
@@ -415,7 +470,7 @@ class MenuLocator:
                     "path": str(template_path),
                 }
             )
-
+        # 加载焦点模板
         self.focus_templates: list[dict] = []
         for info in MENU_FOCUS_INFOS:
             template_path = MENU_IMGS_DIR / info["img"]
@@ -429,6 +484,55 @@ class MenuLocator:
                     "path": str(template_path),
                 }
             )
+        # 加载列表模板
+        self.list_templates: list[dict] = []
+        all_list_infos = (
+            LIST_INFOS
+            + LIST_在线_INFOS
+            + LIST_在线_差事_INFOS
+            + LIST_在线_差事_进行差事_INFOS
+        )
+        for info in all_list_infos:
+            template_path = MENU_IMGS_DIR / info["img"]
+            template_img = cv2_read(template_path)
+            self.list_templates.append(
+                {
+                    "name": info["name"],
+                    "level": info["level"],
+                    "total": info["total"],
+                    "img": template_img,
+                    "path": str(template_path),
+                }
+            )
+        # 加载条目模板
+        self.item_templates: list[dict] = []
+        all_item_infos = (
+            ITEM_在线_INFOS
+            + ITEM_在线_差事_INFOS
+            + ITEM_在线_差事_进行差事_INFOS
+            + ITEM_在线_差事_进行差事_已收藏的_INFOS
+            + ITEM_在线_寻找新战局_INFOS
+        )
+        for info in all_item_infos:
+            template_path = MENU_IMGS_DIR / info["img"]
+            template_img = cv2_read(template_path)
+            self.item_templates.append(
+                {
+                    "name": info["name"],
+                    "level": info["level"],
+                    "index": info["index"],
+                    "img": template_img,
+                    "path": str(template_path),
+                }
+            )
+
+    def _should_update_best_match(
+        self, match_result: MatchResult, best_match: MatchResult
+    ) -> bool:
+        return best_match is None or match_result.score > best_match.score
+
+    def _is_bad_match(self, match_result: MatchResult) -> bool:
+        return match_result is None or match_result.score == 0.0
 
     def match_header(self, img_np: np.ndarray) -> MatchResult:
         """匹配菜单，返回最匹配的菜单标题区域。
@@ -450,30 +554,42 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 img_np, template_info, self.matcher.header_extractor
             )
-            if best_match is None or match_result.score > best_match.score:
+            if self._should_update_best_match(match_result, best_match):
                 best_match = match_result
         return best_match
 
-    def _align_match_result(
+    def _align_result(
+        self, result: MatchResult, offset_x: int, offset_y: int
+    ) -> MatchResult:
+        """将局部坐标的匹配结果转换为全局坐标。
+
+        :param result: 局部坐标的匹配结果
+        :param offset_x: X轴偏移量
+        :param offset_y: Y轴偏移量
+        :return: 全局坐标的匹配结果
+        """
+        # 匹配区域的局部坐标
+        lx1, ly1, lx2, ly2 = result.rect
+        # 匹配区域的全局坐标
+        gx1 = offset_x + lx1
+        gx2 = offset_x + lx2
+        gy1 = offset_y + ly1
+        gy2 = offset_y + ly2
+        # 匹配区域的全局中心
+        center_gx = result.rect_center[0] + offset_x
+        center_gy = result.rect_center[1] + offset_y
+        # 修正坐标后的最终结果
+        result.rect = (gx1, gy1, gx2, gy2)
+        result.rect_size = result.rect_size
+        result.rect_center = (center_gx, center_gy)
+        return result
+
+    def _align_focus_result(
         self, focus_result: MatchResult, header_result: MatchResult
     ) -> MatchResult:
         # 标题栏区域的全局坐标：hx1, hy1, hx2, hy2
         hx1, hy1, hx2, hy2 = header_result.rect
-        # 匹配区域的局部坐标
-        lx1, ly1, lx2, ly2 = focus_result.rect
-        # 匹配区域的全局坐标
-        gx1 = hx1 + lx1
-        gx2 = hx1 + lx2
-        gy1 = hy1 + ly1
-        gy2 = hy1 + ly2
-        # 匹配区域的全局中心
-        center_gx = focus_result.rect_center[0] + hx1
-        center_gy = focus_result.rect_center[1] + hy1
-        # 修正坐标后的最终结果
-        focus_result.rect = (gx1, gy1, gx2, gy2)
-        focus_result.rect_size = focus_result.rect_size
-        focus_result.rect_center = (center_gx, center_gy)
-        return focus_result
+        return self._align_result(focus_result, hx1, hy1)
 
     def match_focus(
         self, img_np: np.ndarray, header_result: MatchResult
@@ -491,15 +607,67 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 cropped_img, template_info, self.matcher.focus_extractor
             )
-            if best_match is None or match_result.score > best_match.score:
+            if self._should_update_best_match(match_result, best_match):
                 best_match = match_result
-        final_match = self._align_match_result(best_match, header_result)
+        final_match = self._align_focus_result(best_match, header_result)
         return final_match
+
+    def _calc_list_region(
+        self, header_result: MatchResult
+    ) -> tuple[int, int, int, int]:
+        """计算列表的匹配区域。
+
+        列表区域的左上角位置是 header_result 的左下角，
+        大小为 MAX_LIST_SIZE * scale，其中 scale 是全局图像缩放比例。
+
+        :param header_result: 标题匹配结果
+        :return: 列表区域 (x1, y1, x2, y2)
+        """
+        hx1, hy1, hx2, hy2 = header_result.rect
+        # 使用全局缩放比例，而不是基于 header 高度计算
+        scale = self.matcher._calc_scale()
+        # 计算列表区域大小
+        list_w = int(MAX_LIST_SIZE[0] * scale)
+        list_h = int(MAX_LIST_SIZE[1] * scale)
+        # 列表左上角 = 标题左下角
+        list_x1 = hx1
+        list_y1 = hy2
+        list_x2 = list_x1 + list_w
+        list_y2 = list_y1 + list_h
+        # 确保不超出图像边界
+        list_x2 = min(list_x2, self.matcher.img_width)
+        list_y2 = min(list_y2, self.matcher.img_height)
+        return (list_x1, list_y1, list_x2, list_y2)
 
     def match_list(
         self, img_np: np.ndarray, header_result: MatchResult, focus_result: MatchResult
     ) -> MatchResult:
-        pass
+        """匹配列表区域。
+
+        :param img_np: 完整的输入图像数组
+        :param header_result: 标题匹配结果
+        :param focus_result: 焦点匹配结果
+        :return: 列表匹配结果，坐标为全局坐标
+        """
+        # 计算列表区域
+        list_region = self._calc_list_region(header_result)
+        list_x1, list_y1, list_x2, list_y2 = list_region
+        # 裁剪列表区域
+        cropped_img = crop_img(img_np, list_region)
+        # 在裁剪区域内匹配模板
+        best_match = None
+        for template_info in self.list_templates:
+            match_result = self.matcher.match_template(
+                cropped_img, template_info, self.matcher.list_extractor
+            )
+            if self._should_update_best_match(match_result, best_match):
+                best_match = match_result
+        # 无效匹配
+        if self._is_bad_match(best_match):
+            return FailedMatchResult("未知列表")
+        # 将局部坐标转换为全局坐标
+        final_match = self._align_result(best_match, list_x1, list_y1)
+        return final_match
 
     def match_item(
         self,
@@ -508,7 +676,33 @@ class MenuLocator:
         focus_result: MatchResult,
         list_result: MatchResult,
     ) -> MatchResult:
-        pass
+        """匹配条目区域。
+
+        :param img_np: 完整的输入图像数组
+        :param header_result: 标题匹配结果
+        :param focus_result: 焦点匹配结果
+        :param list_result: 列表匹配结果
+        :return: 条目匹配结果，坐标为全局坐标
+        """
+        # 获取列表区域
+        list_rect = list_result.rect
+        list_x1, list_y1, list_x2, list_y2 = list_rect
+        # 裁剪列表区域
+        cropped_img = crop_img(img_np, list_rect)
+        # 在裁剪区域内匹配模板
+        best_match = None
+        for template_info in self.item_templates:
+            match_result = self.matcher.match_template(
+                cropped_img, template_info, self.matcher.item_extractor
+            )
+            if self._should_update_best_match(match_result, best_match):
+                best_match = match_result
+        # 无效匹配
+        if self._is_bad_match(best_match):
+            return FailedMatchResult("未知条目")
+        # 将局部坐标转换为全局坐标
+        final_match = self._align_result(best_match, list_x1, list_y1)
+        return final_match
 
 
 class MenuLocatorRunner:

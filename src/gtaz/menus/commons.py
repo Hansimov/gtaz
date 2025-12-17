@@ -21,6 +21,9 @@ RESOLUTIONS = [
     (1920, 1080),
 ]
 
+# 参考分辨率
+REF_WIDTH, REF_HEIGHT = 1024, 768
+
 # 菜单模板目录
 MENU_IMGS_DIR = Path(__file__).parent / "imgs"
 
