@@ -705,7 +705,7 @@ class ScreenCapturer:
 
     def capture_frame(
         self, action_info: KeyboardActionInfo = None, verbose: bool = True
-    ) -> str:
+    ) -> tuple[bytes, str]:
         """
         截取当前 GTAV 窗口画面。
 
@@ -717,29 +717,23 @@ class ScreenCapturer:
         # 获取窗口信息
         window_info = self._get_window_info()
         if not window_info:
-            return None
-
+            return None, None
         hwnd, width, height = window_info
-
         # 确保小地图裁剪区域已计算（仅首次）
         self._ensure_minimap_crop_region(width, height)
-
         # 截取窗口画面（支持后台窗口）
         raw_data = self._capture_window(hwnd, width, height)
         if not raw_data:
             logger.warn("截取窗口画面失败")
-            return None
-
+            return None, None
         # 如果仅截取小地图，在字节级别裁剪原始数据
         frame_width, frame_height = width, height
         if self._minimap_crop_region:
             raw_data, frame_width, frame_height = self._crop_raw_data(
                 raw_data, width, height, self._minimap_crop_region
             )
-
         # 缓存帧数据
         filename = self._cache_frame(raw_data, frame_width, frame_height, action_info)
-
         if verbose:
             cached_count = self.get_cached_frame_count()
             if action_info:
@@ -747,9 +741,9 @@ class ScreenCapturer:
                 logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
             else:
                 logger.okay(f"已截取并缓存 {cached_count} 帧")
-        return filename
+        return raw_data, filename
 
-    def try_capture_frame(self, verbose: bool = False) -> tuple[str, str]:
+    def try_capture_frame(self, verbose: bool = False) -> tuple[bytes, str, str]:
         """
         尝试截取一帧（用于外部循环调用）。
 
@@ -764,14 +758,17 @@ class ScreenCapturer:
             action_info = self.capture_detector.detect()
             if action_info.has_action:
                 # 有 capture_detector 则保存按键详细信息
-                filename = self.capture_frame(action_info=action_info, verbose=verbose)
+                raw_data, filename = self.capture_frame(
+                    action_info=action_info, verbose=verbose
+                )
                 extra_info = f" (按键: {', '.join(action_info.pressed_keys)})"
-                return filename, extra_info
-            return None, ""
-
+                return raw_data, filename, extra_info
+            else:
+                # 无按键动作，跳过截图
+                return None, None, ""
         # 普通模式：直接截图
-        filename = self.capture_frame(verbose=verbose)
-        return filename, ""
+        raw_data, filename = self.capture_frame(verbose=verbose)
+        return raw_data, filename, ""
 
     def flush_cache(self, verbose: bool = True) -> int:
         """
@@ -995,7 +992,9 @@ class RecordRunner:
                     break
 
             # 运行截图
-            filename, extra_info = self.capturer.try_capture_frame(verbose=False)
+            raw_data, filename, extra_info = self.capturer.try_capture_frame(
+                verbose=False
+            )
             if filename:
                 captured_count += 1
 
@@ -1184,4 +1183,4 @@ if __name__ == "__main__":
     # python -m gtaz.screens -g -i -m -f 10 -d 0
 
     # Case: 键盘触发 + 单帧 + 指定按键 + 保存目录
-    #  python -m gtaz.screens -i -s -k k -o "gtaz/cache/menus"
+    # python -m gtaz.screens -i -s -k k -o "gtaz/cache/menus"
