@@ -67,6 +67,18 @@ FeatureType = Literal["raw", "header", "focus", "list", "item"]
 
 
 @dataclass
+class TemplateInfo:
+    """模板信息"""
+
+    name: str
+    level: int
+    img: np.ndarray
+    path: str
+    index: int = -1  # 对于标题、焦点、条目模板
+    total: int = -1  # 对于列表模板
+
+
+@dataclass
 class MatchResult:
     """模板匹配结果"""
 
@@ -354,7 +366,7 @@ class MenuMatcher:
 
     def _get_template_features(
         self,
-        template_info: dict,
+        template_info: TemplateInfo,
         scaled_template: np.ndarray,
         scaled_w: int,
         scaled_h: int,
@@ -362,8 +374,8 @@ class MenuMatcher:
     ) -> np.ndarray:
         """获取模板特征图（带缓存）"""
         key = (
-            template_info["name"],
-            template_info["path"],
+            template_info.name,
+            template_info.path,
             scaled_w,
             scaled_h,
             extractor.get_hash(),
@@ -384,8 +396,12 @@ class MenuMatcher:
         src_h, src_w = img_np.shape[:2]
         return scaled_h > src_h or scaled_w > src_w
 
+    @staticmethod
     def _build_match_result(
-        self, result: np.ndarray, template_info: dict, scaled_w: int, scaled_h: int
+        result: np.ndarray,
+        template_info: TemplateInfo,
+        scaled_w: int,
+        scaled_h: int,
     ) -> MatchResult:
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
         x1, y1 = max_loc
@@ -394,22 +410,25 @@ class MenuMatcher:
         center_x = x1 + scaled_w // 2
         center_y = y1 + scaled_h // 2
         return MatchResult(
-            name=template_info["name"],
+            name=template_info.name,
             score=float(max_val),
             rect=(x1, y1, x2, y2),
             rect_size=(scaled_w, scaled_h),
             rect_center=(center_x, center_y),
-            level=template_info.get("level"),
-            index=template_info.get("index"),
+            level=template_info.level,
+            index=template_info.index,
         )
 
     def match_template(
-        self, img_np: np.ndarray, template_info: dict, extractor: ImageFeatureExtractor
+        self,
+        img_np: np.ndarray,
+        template_info: TemplateInfo,
+        extractor: ImageFeatureExtractor,
     ) -> MatchResult:
         """对单个模板执行自适应匹配。
 
         :param img_np: 源图像
-        :param template_info: 模板信息字典
+        :param template_info: 模板信息
         :param extractor: 特征提取器
 
         :return: 匹配结果 MatchResult
@@ -418,7 +437,7 @@ class MenuMatcher:
         if self._is_bad_img_size(img_np):
             return FailedMatchResult("无效图像")
         # 自适应缩放模板
-        template = template_info["img"]
+        template = template_info.img
         scaled_template, scaled_w, scaled_h = self._scale_template(template)
         # 检查模板尺寸是否大于源图像
         if self._is_bad_template_size(img_np, scaled_w, scaled_h):
@@ -448,64 +467,49 @@ class MenuLocator:
         self.matcher = MenuMatcher()
         self._load_templates()
 
-    def _load_templates(self) -> list[dict]:
-        """加载所有模板图像。
+    @staticmethod
+    def _build_template_info(info: dict) -> TemplateInfo:
+        """从配置字典加载单个模板信息。
 
-        :return: 包含模板信息的列表
+        :param info: 模板配置字典
+        :param kwargs: 额外的字段（如 index 或 total）
+        :return: TemplateInfo 实例
         """
+        template_path = MENU_IMGS_DIR / info["img"]
+        template_img = cv2_read(template_path)
+        return TemplateInfo(
+            name=info["name"],
+            level=info["level"],
+            img=template_img,
+            path=str(template_path),
+            index=info.get("index", -1),
+            total=info.get("total", -1),
+        )
+
+    def _load_templates(self) -> None:
+        """加载所有模板图像。"""
         # 加载标题模板
         used_header_names = ["地图", "在线", "设置"]
-        self.header_templates: list[dict] = []
-        for info in MENU_HEADER_INFOS:
-            if info["name"] not in used_header_names:
-                continue
-            template_path = MENU_IMGS_DIR / info["img"]
-            template_img = cv2_read(template_path)
-            self.header_templates.append(
-                {
-                    "name": info["name"],
-                    "level": info["level"],
-                    "index": info["index"],
-                    "img": template_img,
-                    "path": str(template_path),
-                }
-            )
+        self.header_templates: list[TemplateInfo] = [
+            self._build_template_info(info)
+            for info in MENU_HEADER_INFOS
+            if info["name"] in used_header_names
+        ]
         # 加载焦点模板
-        self.focus_templates: list[dict] = []
-        for info in MENU_FOCUS_INFOS:
-            template_path = MENU_IMGS_DIR / info["img"]
-            template_img = cv2_read(template_path)
-            self.focus_templates.append(
-                {
-                    "name": info["name"],
-                    "level": info["level"],
-                    "index": info["index"],
-                    "img": template_img,
-                    "path": str(template_path),
-                }
-            )
+        self.focus_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in MENU_FOCUS_INFOS
+        ]
         # 加载列表模板
-        self.list_templates: list[dict] = []
         all_list_infos = (
             LIST_INFOS
             + LIST_在线_INFOS
             + LIST_在线_差事_INFOS
             + LIST_在线_差事_进行差事_INFOS
         )
-        for info in all_list_infos:
-            template_path = MENU_IMGS_DIR / info["img"]
-            template_img = cv2_read(template_path)
-            self.list_templates.append(
-                {
-                    "name": info["name"],
-                    "level": info["level"],
-                    "total": info["total"],
-                    "img": template_img,
-                    "path": str(template_path),
-                }
-            )
+        self.list_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in all_list_infos
+        ]
         # 加载条目模板
-        self.item_templates: list[dict] = []
         all_item_infos = (
             ITEM_在线_INFOS
             + ITEM_在线_差事_INFOS
@@ -513,25 +517,16 @@ class MenuLocator:
             + ITEM_在线_差事_进行差事_已收藏的_INFOS
             + ITEM_在线_寻找新战局_INFOS
         )
-        for info in all_item_infos:
-            template_path = MENU_IMGS_DIR / info["img"]
-            template_img = cv2_read(template_path)
-            self.item_templates.append(
-                {
-                    "name": info["name"],
-                    "level": info["level"],
-                    "index": info["index"],
-                    "img": template_img,
-                    "path": str(template_path),
-                }
-            )
+        self.item_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in all_item_infos
+        ]
 
     def _should_update_best_match(
         self, match_result: MatchResult, best_match: MatchResult
     ) -> bool:
         return best_match is None or match_result.score > best_match.score
 
-    def _is_bad_match(self, match_result: MatchResult) -> bool:
+    def _is_bad_match_result(self, match_result: MatchResult) -> bool:
         return match_result is None or match_result.score == 0.0
 
     def match_header(self, img_np: np.ndarray) -> MatchResult:
@@ -663,7 +658,7 @@ class MenuLocator:
             if self._should_update_best_match(match_result, best_match):
                 best_match = match_result
         # 无效匹配
-        if self._is_bad_match(best_match):
+        if self._is_bad_match_result(best_match):
             return FailedMatchResult("未知列表")
         # 将局部坐标转换为全局坐标
         final_match = self._align_result(best_match, list_x1, list_y1)
@@ -698,7 +693,7 @@ class MenuLocator:
             if self._should_update_best_match(match_result, best_match):
                 best_match = match_result
         # 无效匹配
-        if self._is_bad_match(best_match):
+        if self._is_bad_match_result(best_match):
             return FailedMatchResult("未知条目")
         # 将局部坐标转换为全局坐标
         final_match = self._align_result(best_match, list_x1, list_y1)
