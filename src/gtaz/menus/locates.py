@@ -847,25 +847,22 @@ class MenuLocatorRunner:
             f"{key_note('区域')}: {rect_str}"
         )
 
-    def match_and_visualize(self, img_path: PathType, idx: int = None) -> np.ndarray:
-        """可视化匹配结果。
-
-        :param img_path: 输入图像路径
-        """
-        # 读取图像
-        img_path = Path(img_path)
-        img_np = cv2_read(img_path)
+    def locate(self, img_np: np.ndarray, verbose: bool = True) -> MergedMatchResult:
+        """匹配所有菜单元素，返回合并的匹配结果。"""
         # 匹配标题
         header_result = self.locator.match_header(img_np)
-        self._log_result_line(header_result, idx=idx, name_type="标题")
+        if verbose:
+            self._log_result_line(header_result, name_type="标题")
         # 匹配焦点
         focus_result = self.locator.match_focus(img_np, header_result=header_result)
-        self._log_result_line(focus_result, idx=idx, name_type="焦点")
+        if verbose:
+            self._log_result_line(focus_result, name_type="焦点")
         # 匹配列表
         list_result = self.locator.match_list(
             img_np, header_result=header_result, focus_result=focus_result
         )
-        self._log_result_line(list_result, idx=idx, name_type="列表")
+        if verbose:
+            self._log_result_line(list_result, name_type="列表")
         # 匹配条目
         item_result = self.locator.match_item(
             img_np,
@@ -873,7 +870,28 @@ class MenuLocatorRunner:
             focus_result=focus_result,
             list_result=list_result,
         )
-        self._log_result_line(item_result, idx=idx, name_type="条目")
+        if verbose:
+            self._log_result_line(item_result, name_type="条目")
+        # 合并结果
+        merged_result = MergedMatchResult(
+            header=header_result, focus=focus_result, list=list_result, item=item_result
+        )
+        return merged_result
+
+    def locate_and_visualize(self, img_path: PathType) -> np.ndarray:
+        """可视化匹配结果。
+
+        :param img_path: 输入图像路径
+        """
+        # 读取图像
+        img_path = Path(img_path)
+        img_np = cv2_read(img_path)
+        # 匹配
+        merged_result = self.locate(img_np)
+        header_result = merged_result.header
+        focus_result = merged_result.focus
+        list_result = merged_result.list
+        item_result = merged_result.item
         # 可视化
         img_np = self._plot_result_on_image(img_np, header_result, color=(0, 255, 0))
         img_np = self._plot_result_on_image(img_np, focus_result, color=(255, 0, 0))
@@ -882,14 +900,11 @@ class MenuLocatorRunner:
         # 保存可视化结果和匹配信息
         save_path = self._get_result_path(img_path)
         self._save_result_image(img_np, save_path)
-        merged_result = MergedMatchResult(
-            header=header_result, focus=focus_result, list=list_result, item=item_result
-        )
         json_path = save_path.with_suffix(".json")
         self._save_result_json(merged_result, json_path)
         return img_np
 
-    def multi_match_and_visualize(self, img_dir: PathType):
+    def multi_locate_and_visualize(self, img_dir: PathType):
         """批量可视化测试目录中的所有图像。
 
         :param img_dir: 图像目录
@@ -904,7 +919,7 @@ class MenuLocatorRunner:
         for i, img_path in enumerate(img_paths, 1):
             idx_str = f"[{logstr.mesg(i)}/{logstr.file(len(img_paths))}] "
             logger.note(f"{idx_str}处理图像: {img_path.name}")
-            self.match_and_visualize(str(img_path), idx=i)
+            self.locate_and_visualize(str(img_path))
         logger.okay(f"批量处理完成！共处理图像: {len(img_paths)}")
 
     def run(self):
@@ -922,7 +937,7 @@ class MenuLocatorRunner:
         # img = imgs[0]
         # self.match_and_visualize(str(img))
 
-        self.multi_match_and_visualize(img_dir)
+        self.multi_locate_and_visualize(img_dir)
 
 
 def run_menu_locator():
