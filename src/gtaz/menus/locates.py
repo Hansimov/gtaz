@@ -13,14 +13,7 @@ from typing import Literal, Union
 
 from .commons import MENU_IMGS_DIR
 from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
-from .commons import LIST_INFOS, LIST_在线_INFOS, LIST_在线_差事_INFOS
-from .commons import LIST_在线_差事_进行差事_INFOS
-from .commons import ITEM_在线_INFOS, ITEM_在线_差事_INFOS
-from .commons import (
-    ITEM_在线_差事_进行差事_INFOS,
-    ITEM_在线_差事_进行差事_已收藏的_INFOS,
-)
-from .commons import ITEM_在线_寻找新战局_INFOS
+from .commons import MENU_LIST_INFOS, MENU_ITEM_INFOS
 from .commons import REF_WIDTH, REF_HEIGHT, MAX_LIST_SIZE
 from .commons import key_note, val_mesg
 
@@ -71,11 +64,13 @@ class TemplateInfo:
     """模板信息"""
 
     name: str
-    level: int
+    names: tuple[str, ...]  # 仅限: 列表、条目
+    parent: tuple[str, ...]  # 仅限: 列表、条目
     img: np.ndarray
-    path: str
-    index: int = -1  # 对于标题、焦点、条目模板
-    total: int = -1  # 对于列表模板
+    img_path: str
+    level: int
+    index: int = -1  # 仅限: 标题、焦点、条目
+    total: int = -1  # 仅限: 列表
 
 
 @dataclass
@@ -83,6 +78,7 @@ class MatchResult:
     """模板匹配结果"""
 
     name: str
+    names: tuple[str, ...]
     score: float
     rect: tuple[int, int, int, int]  # (x1, y1, x2, y2)
     rect_size: tuple[int, int]  # (scaled_w, scaled_h)
@@ -100,6 +96,7 @@ class FailedMatchResult(MatchResult):
     def __init__(self, name: str):
         super().__init__(
             name=name,
+            names=None,
             score=0.0,
             rect=(0, 0, 0, 0),
             rect_size=(0, 0),
@@ -375,7 +372,7 @@ class MenuMatcher:
         """获取模板特征图（带缓存）"""
         key = (
             template_info.name,
-            template_info.path,
+            template_info.img_path,
             scaled_w,
             scaled_h,
             extractor.get_hash(),
@@ -411,6 +408,7 @@ class MenuMatcher:
         center_y = y1 + scaled_h // 2
         return MatchResult(
             name=template_info.name,
+            names=template_info.names,
             score=float(max_val),
             rect=(x1, y1, x2, y2),
             rect_size=(scaled_w, scaled_h),
@@ -475,13 +473,15 @@ class MenuLocator:
         :param kwargs: 额外的字段（如 index 或 total）
         :return: TemplateInfo 实例
         """
-        template_path = MENU_IMGS_DIR / info["img"]
-        template_img = cv2_read(template_path)
+        img_path = MENU_IMGS_DIR / info["img"]
+        template_img = cv2_read(img_path)
         return TemplateInfo(
             name=info["name"],
-            level=info["level"],
+            names=info.get("names", None),
+            parent=info.get("parent", None),
             img=template_img,
-            path=str(template_path),
+            img_path=str(img_path),
+            level=info["level"],
             index=info.get("index", -1),
             total=info.get("total", -1),
         )
@@ -500,25 +500,12 @@ class MenuLocator:
             self._build_template_info(info) for info in MENU_FOCUS_INFOS
         ]
         # 加载列表模板
-        all_list_infos = (
-            LIST_INFOS
-            + LIST_在线_INFOS
-            + LIST_在线_差事_INFOS
-            + LIST_在线_差事_进行差事_INFOS
-        )
         self.list_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in all_list_infos
+            self._build_template_info(info) for info in MENU_LIST_INFOS
         ]
         # 加载条目模板
-        all_item_infos = (
-            ITEM_在线_INFOS
-            + ITEM_在线_差事_INFOS
-            + ITEM_在线_差事_进行差事_INFOS
-            + ITEM_在线_差事_进行差事_已收藏的_INFOS
-            + ITEM_在线_寻找新战局_INFOS
-        )
         self.item_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in all_item_infos
+            self._build_template_info(info) for info in MENU_ITEM_INFOS
         ]
 
     def _should_update_best_match(
@@ -634,6 +621,26 @@ class MenuLocator:
         list_y2 = min(list_y2, self.matcher.img_height)
         return (list_x1, list_y1, list_x2, list_y2)
 
+    @staticmethod
+    def _is_names_start_with(names: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+        if names is None or prefix is None or len(prefix) > len(names):
+            return False
+        return names[: len(prefix)] == prefix
+
+    def _filter_list_templates(self, focus_result: MatchResult) -> list[TemplateInfo]:
+        """筛选列表模板，仅保留 names 以 focus_result.name 开头的模板。
+
+        :param focus_result: 焦点匹配结果
+
+        :return: 筛选后的列表模板列表
+        """
+        filtered = [
+            template
+            for template in self.list_templates
+            if self._is_names_start_with(template.names, (focus_result.name,))
+        ]
+        return filtered
+
     def match_list(
         self, img_np: np.ndarray, header_result: MatchResult, focus_result: MatchResult
     ) -> MatchResult:
@@ -649,9 +656,10 @@ class MenuLocator:
         list_x1, list_y1, list_x2, list_y2 = list_region
         # 裁剪列表区域
         cropped_img = crop_img(img_np, list_region)
-        # 在裁剪区域内匹配模板
+        # 匹配模板
+        filtered_list_templates = self._filter_list_templates(focus_result)
         best_match = None
-        for template_info in self.list_templates:
+        for template_info in filtered_list_templates:
             match_result = self.matcher.match_template(
                 cropped_img, template_info, self.matcher.list_extractor
             )
@@ -663,6 +671,25 @@ class MenuLocator:
         # 将局部坐标转换为全局坐标
         final_match = self._align_result(best_match, list_x1, list_y1)
         return final_match
+
+    def _filter_item_templates(
+        self, focus_result: MatchResult, list_result: MatchResult
+    ) -> list[TemplateInfo]:
+        """筛选条目模板，仅保留 names 同时以 focus_result.name 和 list_result.names 开头，并且正好在 list_result.names 下一个层级的模板。
+
+        :param focus_result: 焦点匹配结果
+        :param list_result: 列表匹配结果
+        :return: 筛选后的条目模板列表
+        """
+        list_prefix = list_result.names
+        filtered = [
+            template
+            for template in self.item_templates
+            if self._is_names_start_with(template.names, (focus_result.name,))
+            and self._is_names_start_with(template.names, list_prefix)
+            and len(template.names) == len(list_prefix) + 1
+        ]
+        return filtered
 
     def match_item(
         self,
@@ -684,9 +711,10 @@ class MenuLocator:
         list_x1, list_y1, list_x2, list_y2 = list_rect
         # 裁剪列表区域
         cropped_img = crop_img(img_np, list_rect)
-        # 在裁剪区域内匹配模板
+        # 匹配模板
+        filtered_item_templates = self._filter_item_templates(focus_result, list_result)
         best_match = None
-        for template_info in self.item_templates:
+        for template_info in filtered_item_templates:
             match_result = self.matcher.match_template(
                 cropped_img, template_info, self.matcher.item_extractor
             )

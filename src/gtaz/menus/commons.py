@@ -27,6 +27,15 @@ REF_WIDTH, REF_HEIGHT = 1024, 768
 # 菜单模板目录
 MENU_IMGS_DIR = Path(__file__).parent / "imgs"
 
+
+def add_names(list_infos: list[dict], parent: tuple) -> list[dict]:
+    """添加父级信息和完整名称路径"""
+    for info in list_infos:
+        info["parent"] = parent
+        info["names"] = parent + (info["name"],)
+    return list_infos
+
+
 # ======================== 标题和焦点 ========================= #
 
 # 菜单标题
@@ -67,7 +76,7 @@ MAX_VISIBLE_ITEMS = 16
 # height = visible * 29 + 25
 
 # 一级列表
-LIST_INFOS = [
+LIST_MAIN_INFOS = [
     {"name": "在线", "img": "list_在线.jpg", "level": 1, "total": 18},
     {"name": "在线", "img": "list_在线_1.jpg", "level": 1, "total": 18},
     {"name": "在线", "img": "list_在线_2.jpg", "level": 1, "total": 18},
@@ -75,6 +84,7 @@ LIST_INFOS = [
     {"name": "设置", "img": "list_设置.jpg", "level": 1, "total": 5},
     {"name": "统计", "img": "list_统计.jpg", "level": 1, "total": 10},
 ]
+LIST_MAIN_INFOS = add_names(LIST_MAIN_INFOS, ())
 
 # 二级列表: ["在线"]
 LIST_在线_INFOS = [
@@ -82,12 +92,14 @@ LIST_在线_INFOS = [
     {"name": "游玩清单", "img": "list_在线_游玩清单.jpg", "level": 2, "total": 6},
     {"name": "寻找新战局", "img": "list_在线_寻找新战局.jpg", "level": 2, "total": 5},
 ]
+LIST_在线_INFOS = add_names(LIST_在线_INFOS, ("在线",))
 
 # 三级列表: ["在线", "差事"]
 LIST_在线_差事_INFOS = [
     {"name": "快速加入", "img": "list_在线_差事_快速加入.jpg", "level": 3, "total": 12},
     {"name": "进行差事", "img": "list_在线_差事_进行差事.jpg", "level": 3, "total": 6},
 ]
+LIST_在线_差事_INFOS = add_names(LIST_在线_差事_INFOS, ("在线", "差事"))
 
 # 四级列表: ["在线", "差事", "进行差事"]
 LIST_在线_差事_进行差事_INFOS = [
@@ -104,6 +116,17 @@ LIST_在线_差事_进行差事_INFOS = [
         "total": 14,
     },
 ]
+LIST_在线_差事_进行差事_INFOS = add_names(
+    LIST_在线_差事_进行差事_INFOS, ("在线", "差事", "进行差事")
+)
+
+# 菜单列表合集
+MENU_LIST_INFOS = (
+    LIST_MAIN_INFOS
+    + LIST_在线_INFOS
+    + LIST_在线_差事_INFOS
+    + LIST_在线_差事_进行差事_INFOS
+)
 
 # ========================= 条目 ========================= #
 
@@ -153,6 +176,7 @@ ITEM_在线_INFOS = [
     {"name": "退至主菜单", "img": "item_在线_退至主菜单.jpg", "level": 2, "index": 16},
     {"name": "退出游戏", "img": "item_在线_退出游戏.jpg", "level": 2, "index": 17},
 ]
+iTEM_在线_INFOS = add_names(ITEM_在线_INFOS, ("在线",))
 
 # 三级条目: ["在线", "差事"]
 ITEM_在线_差事_INFOS = [
@@ -160,6 +184,7 @@ ITEM_在线_差事_INFOS = [
     {"name": "进行差事", "img": "item_在线_差事_进行差事.jpg", "level": 3, "index": 1},
     {"name": "举报差事", "img": "item_在线_差事_举报差事.jpg", "level": 3, "index": 2},
 ]
+ITEM_在线_差事_INFOS = add_names(ITEM_在线_差事_INFOS, ("在线", "差事"))
 
 # 四级条目: ["在线", "差事", "进行差事"]
 ITEM_在线_差事_进行差事_INFOS = [
@@ -200,6 +225,9 @@ ITEM_在线_差事_进行差事_INFOS = [
         "index": 5,
     },
 ]
+ITEM_在线_差事_进行差事_INFOS = add_names(
+    ITEM_在线_差事_进行差事_INFOS, ("在线", "差事", "进行差事")
+)
 
 # 五级条目: ["在线", "差事", "进行差事", "已收藏的"]
 ITEM_在线_差事_进行差事_已收藏的_INFOS = [
@@ -288,6 +316,9 @@ ITEM_在线_差事_进行差事_已收藏的_INFOS = [
         "index": 13,
     },
 ]
+ITEM_在线_差事_进行差事_已收藏的_INFOS = add_names(
+    ITEM_在线_差事_进行差事_已收藏的_INFOS, ("在线", "差事", "进行差事", "已收藏的")
+)
 
 # 三级条目: ["在线", "寻找新战局"]
 ITEM_在线_寻找新战局_INFOS = [
@@ -322,6 +353,18 @@ ITEM_在线_寻找新战局_INFOS = [
         "index": 4,
     },
 ]
+ITEM_在线_寻找新战局_INFOS = add_names(
+    ITEM_在线_寻找新战局_INFOS, ("在线", "寻找新战局")
+)
+
+# 菜单条目合集
+MENU_ITEM_INFOS = (
+    ITEM_在线_INFOS
+    + ITEM_在线_差事_INFOS
+    + ITEM_在线_差事_进行差事_INFOS
+    + ITEM_在线_差事_进行差事_已收藏的_INFOS
+    + ITEM_在线_寻找新战局_INFOS
+)
 
 # ========================= 退出 ========================= #
 
