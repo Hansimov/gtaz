@@ -84,9 +84,7 @@ def sleep_ms(ms: int):
 
 
 class GamepadSimulator:
-    """
-    模拟手柄操作
-    """
+    """模拟手柄操作"""
 
     def __init__(self):
         self.pad = None
@@ -163,7 +161,7 @@ class GamepadSimulator:
         except Exception as e:
             logger.warn(f"松开按钮失败: {e}")
 
-    def press_button(self, button: AnyButton, duration_ms: int = 100):
+    def press_button(self, button: AnyButton, duration_ms: int = 150):
         """按下按钮，一段时间后松开"""
         try:
             self.hold_button(button)
@@ -172,6 +170,10 @@ class GamepadSimulator:
             logger.warn(f"按下按钮失败: {e}")
         finally:
             self.release_button(button)
+
+    def click_button(self, button: AnyButton, duration_ms: int = 150):
+        """快速点击按钮，默认持续时间为150毫秒"""
+        self.press_button(button, duration_ms)
 
     # =============== 左摇杆操作 ================ #
     def _set_left_joystick(self, direction: JoystickDirection):
@@ -311,11 +313,11 @@ class GamepadSimulator:
 def test_gamepad_simulator():
     """测试手柄功能"""
     with GamepadSimulator() as simulator:
-        # 测试按钮点击
+        logger.note("测试：点击 A 键 ...")
         simulator.press_button(Button.A)
-        # 测试摇杆移动
+        logger.note("测试：按住 B 键 500ms ...")
         simulator.press_left_joystick(JoystickDirection.FULL_UP, duration_ms=500)
-        # 测试扳机
+        logger.note("测试：按住右扳机（全按）500ms ...")
         simulator.press_right_trigger(TriggerPressure.FULL, duration_ms=500)
 
 
