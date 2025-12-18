@@ -3,6 +3,7 @@
 import argparse
 import ctypes
 import json
+import numpy as np
 import time
 import threading
 
@@ -11,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from PIL import Image
 from tclogger import PathType, TCLogger, TCLogbar, logstr
-
 
 from .windows import GTAVWindowLocator
 from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
@@ -114,6 +114,20 @@ class CapturedFrame:
     """键盘动作信息"""
     frame_index: int = 0
     """帧序号"""
+
+    def to_np(self, channels: int = 4) -> np.ndarray:
+        """
+        将帧数据 bytes 转换为 np.ndarray
+
+        :param channels: 通道数，默认为 4 (BGRA)
+
+        :return: shape 为 (height, width, channels) 的 np.ndarray
+        """
+        # 转换为 np.ndarray
+        arr = np.frombuffer(self.raw_data, dtype=np.uint8)
+        # reshape 为图像形状 (height, width, channels)
+        arr = arr.reshape((self.height, self.width, channels))
+        return arr
 
 
 class DetectorManager:
@@ -654,22 +668,22 @@ class ScreenCapturer:
 
         return buffer.raw
 
-    def _cache_frame(
+    def _build_captured_frame(
         self,
         raw_data: bytes,
         width: int,
         height: int,
         action_info: KeyboardActionInfo = None,
-    ) -> str:
+    ) -> CapturedFrame:
         """
-        将帧数据添加到缓存。
+        构建 CapturedFrame 对象。
 
         :param raw_data: BGRA 格式的原始位图数据
         :param width: 图像宽度
         :param height: 图像高度
         :param action_info: 键盘动作信息（可选）
 
-        :return: 预生成的文件名
+        :return: CapturedFrame 对象
         """
         self._frame_count += 1
         filename = self._generate_filename(self._frame_count)
@@ -683,9 +697,28 @@ class ScreenCapturer:
             action_info=action_info,
             frame_index=self._frame_count,
         )
+        return frame
 
+    def _cache_frame(
+        self,
+        raw_data: bytes,
+        width: int,
+        height: int,
+        action_info: KeyboardActionInfo = None,
+    ) -> CapturedFrame:
+        """
+        将帧数据添加到缓存。
+
+        :param raw_data: BGRA 格式的原始位图数据
+        :param width: 图像宽度
+        :param height: 图像高度
+        :param action_info: 键盘动作信息（可选）
+
+        :return: CapturedFrame 对象
+        """
+        frame = self._build_captured_frame(raw_data, width, height, action_info)
         self.cacher.add_frame(frame)
-        return filename
+        return frame
 
     def _ensure_minimap_crop_region(self, width: int, height: int):
         """
@@ -705,19 +738,19 @@ class ScreenCapturer:
 
     def capture_frame(
         self, action_info: KeyboardActionInfo = None, verbose: bool = True
-    ) -> tuple[bytes, str]:
+    ) -> CapturedFrame:
         """
         截取当前 GTAV 窗口画面。
 
         :param verbose: 是否打印保存日志
         :param action_info: 键盘动作信息
 
-        :return: 预生成的文件名，失败则返回 None
+        :return: CapturedFrame 对象，失败则返回 None
         """
         # 获取窗口信息
         window_info = self._get_window_info()
         if not window_info:
-            return None, None
+            return None
         hwnd, width, height = window_info
         # 确保小地图裁剪区域已计算（仅首次）
         self._ensure_minimap_crop_region(width, height)
@@ -725,7 +758,7 @@ class ScreenCapturer:
         raw_data = self._capture_window(hwnd, width, height)
         if not raw_data:
             logger.warn("截取窗口画面失败")
-            return None, None
+            return None
         # 如果仅截取小地图，在字节级别裁剪原始数据
         frame_width, frame_height = width, height
         if self._minimap_crop_region:
@@ -733,7 +766,7 @@ class ScreenCapturer:
                 raw_data, width, height, self._minimap_crop_region
             )
         # 缓存帧数据
-        filename = self._cache_frame(raw_data, frame_width, frame_height, action_info)
+        frame = self._cache_frame(raw_data, frame_width, frame_height, action_info)
         if verbose:
             cached_count = self.get_cached_frame_count()
             if action_info:
@@ -741,9 +774,9 @@ class ScreenCapturer:
                 logger.okay(f"已截取并缓存 {cached_count} 帧 (按键: {keys_str})")
             else:
                 logger.okay(f"已截取并缓存 {cached_count} 帧")
-        return raw_data, filename
+        return frame
 
-    def try_capture_frame(self, verbose: bool = False) -> tuple[bytes, str, str]:
+    def try_capture_frame(self, verbose: bool = False) -> tuple[CapturedFrame, str]:
         """
         尝试截取一帧（用于外部循环调用）。
 
@@ -751,24 +784,22 @@ class ScreenCapturer:
         键盘触发模式：仅在有按键动作时截图
 
         :param verbose: 是否打印日志
-        :return: (文件名, 额外信息) - 如果未截图则返回 (None, "")
+        :return: (CapturedFrame对象, 额外信息) - 如果未截图则返回 (None, "")
         """
         # 键盘触发模式：检测按键状态
         if self.capture_detector:
             action_info = self.capture_detector.detect()
             if action_info.has_action:
                 # 有 capture_detector 则保存按键详细信息
-                raw_data, filename = self.capture_frame(
-                    action_info=action_info, verbose=verbose
-                )
+                frame = self.capture_frame(action_info=action_info, verbose=verbose)
                 extra_info = f" (按键: {', '.join(action_info.pressed_keys)})"
-                return raw_data, filename, extra_info
+                return frame, extra_info
             else:
                 # 无按键动作，跳过截图
-                return None, None, ""
+                return None, ""
         # 普通模式：直接截图
-        raw_data, filename = self.capture_frame(verbose=verbose)
-        return raw_data, filename, ""
+        frame = self.capture_frame(verbose=verbose)
+        return frame, ""
 
     def flush_cache(self, verbose: bool = True) -> int:
         """
@@ -992,10 +1023,8 @@ class RecordRunner:
                     break
 
             # 运行截图
-            raw_data, filename, extra_info = self.capturer.try_capture_frame(
-                verbose=False
-            )
-            if filename:
+            frame, extra_info = self.capturer.try_capture_frame(verbose=False)
+            if frame:
                 captured_count += 1
 
                 # 键盘触发模式：首次截图时初始化 start_time
@@ -1006,13 +1035,13 @@ class RecordRunner:
 
                 if self.single:
                     self.capturer.flush_cache(verbose=True)
-                    logger.okay(f"单帧截图成功: {filename}")
+                    logger.okay(f"单帧截图成功: {frame.filename}")
                     break
 
                 self._log_loop_progress(elapsed, extra_info)
 
             # 等待至下一次 tick
-            next_tick_time = self._wait_until_next_tick(next_tick_time, bool(filename))
+            next_tick_time = self._wait_until_next_tick(next_tick_time, bool(frame))
 
         # 完成并保存
         if not self.single and captured_count > 0:
