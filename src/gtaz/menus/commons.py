@@ -380,6 +380,12 @@ EXIT_INFOS = [
 # ========================= 工具函数 ========================= #
 
 
+def is_names_start_with(names: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    if names is None or prefix is None or len(prefix) > len(names):
+        return False
+    return names[: len(prefix)] == prefix
+
+
 def find_latest_jpg() -> str:
     menus_path = Path(__file__).parents[1] / "cache" / "menus"
     jpgs = list(menus_path.glob("**/*.jpg"))

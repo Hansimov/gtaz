@@ -15,10 +15,13 @@ from .commons import MENU_IMGS_DIR
 from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
 from .commons import MENU_LIST_INFOS, MENU_ITEM_INFOS
 from .commons import REF_WIDTH, REF_HEIGHT, MAX_LIST_SIZE
-from .commons import key_note, val_mesg
+from .commons import key_note, val_mesg, is_names_start_with
 
 
 logger = TCLogger(name="GTAMenuLocator", use_prefix=True, use_prefix_ms=True)
+
+
+MATCH_THRESHOLD = 0.5
 
 
 def cv2_read(img_path: PathType) -> np.ndarray:
@@ -107,14 +110,25 @@ class FailedMatchResult(MatchResult):
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class MergedMatchResult:
-    """合并的模板匹配结果，包含标题和焦点"""
+    """合并的模板匹配结果"""
 
-    header: MatchResult
-    focus: MatchResult
-    list: MatchResult
-    item: MatchResult
+    header: MatchResult = None
+    focus: MatchResult = None
+    list: MatchResult = None
+    item: MatchResult = None
+
+    def __post_init__(self):
+        """初始化默认值"""
+        if self.header is None:
+            self.header = FailedMatchResult("默认标题")
+        if self.focus is None:
+            self.focus = FailedMatchResult("默认焦点")
+        if self.list is None:
+            self.list = FailedMatchResult("默认列表")
+        if self.item is None:
+            self.item = FailedMatchResult("默认条目")
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -514,12 +528,14 @@ class MenuLocator:
             self._build_template_info(info) for info in MENU_ITEM_INFOS
         ]
 
+    @staticmethod
     def _should_update_best_match(
-        self, match_result: MatchResult, best_match: MatchResult
+        match_result: MatchResult, best_match: MatchResult
     ) -> bool:
         return best_match is None or match_result.score > best_match.score
 
-    def _is_bad_match_result(self, match_result: MatchResult) -> bool:
+    @staticmethod
+    def _is_bad_match_result(match_result: MatchResult) -> bool:
         return match_result is None or match_result.score == 0.0
 
     def match_header(self, img_np: np.ndarray) -> MatchResult:
@@ -627,12 +643,6 @@ class MenuLocator:
         list_y2 = min(list_y2, self.matcher.img_height)
         return (list_x1, list_y1, list_x2, list_y2)
 
-    @staticmethod
-    def _is_names_start_with(names: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
-        if names is None or prefix is None or len(prefix) > len(names):
-            return False
-        return names[: len(prefix)] == prefix
-
     def _filter_list_templates(self, focus_result: MatchResult) -> list[TemplateInfo]:
         """筛选列表模板，仅保留 names 以 focus_result.name 开头的模板。
 
@@ -643,7 +653,7 @@ class MenuLocator:
         filtered = [
             template
             for template in self.list_templates
-            if self._is_names_start_with(template.names, (focus_result.name,))
+            if is_names_start_with(template.names, (focus_result.name,))
         ]
         return filtered
 
@@ -691,8 +701,8 @@ class MenuLocator:
         filtered = [
             template
             for template in self.item_templates
-            if self._is_names_start_with(template.names, (focus_result.name,))
-            and self._is_names_start_with(template.names, list_prefix)
+            if is_names_start_with(template.names, (focus_result.name,))
+            and is_names_start_with(template.names, list_prefix)
             and len(template.names) == len(list_prefix) + 1
         ]
         return filtered
@@ -847,16 +857,27 @@ class MenuLocatorRunner:
             f"{key_note('区域')}: {rect_str}"
         )
 
+    @staticmethod
+    def _is_score_too_low(result: MatchResult) -> bool:
+        """判断匹配结果的分数是否低于阈值"""
+        return result.score < MATCH_THRESHOLD
+
     def locate(self, img_np: np.ndarray, verbose: bool = True) -> MergedMatchResult:
         """匹配所有菜单元素，返回合并的匹配结果。"""
         # 匹配标题
         header_result = self.locator.match_header(img_np)
         if verbose:
             self._log_result_line(header_result, name_type="标题")
+        # 标题匹配分数过低，提前返回
+        if self._is_score_too_low(header_result):
+            return MergedMatchResult(header=header_result)
         # 匹配焦点
         focus_result = self.locator.match_focus(img_np, header_result=header_result)
         if verbose:
             self._log_result_line(focus_result, name_type="焦点")
+        # 焦点匹配分数过低，提前返回
+        if self._is_score_too_low(focus_result):
+            return MergedMatchResult(header=header_result, focus=focus_result)
         # 匹配列表
         list_result = self.locator.match_list(
             img_np, header_result=header_result, focus_result=focus_result
