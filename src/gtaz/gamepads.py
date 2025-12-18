@@ -120,16 +120,16 @@ class GamepadSimulator:
         """重置手柄状态"""
         if self.pad:
             try:
-                logger.note("正在重置手柄状态...")
+                logger.mesg("正在重置手柄状态...")
                 self.pad.reset()
                 self.pad.update()
-                logger.okay("手柄状态已重置")
+                logger.mesg("手柄状态已重置")
             except Exception as e:
                 logger.warn(f"重置手柄失败: {e}")
 
     def _wake_gamepad(self):
         """唤醒手柄"""
-        self.press_button(Button.A)
+        self.press_left_joystick(JoystickDirection.HALF_LEFT, duration_ms=10)
 
     # ================ 手柄生命周期管理 ================= #
     def __enter__(self):
