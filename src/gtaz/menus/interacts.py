@@ -16,6 +16,7 @@ class MenuInteractor:
     def __init__(self, gamepad: GamepadSimulator = None):
         self.gamepad = gamepad or GamepadSimulator()
 
+    # ================ 等待和循环 ================ #
     def wait_until_ready(self, duration_ms: int = 100):
         """等待以确保操作生效"""
         sleep_ms(duration_ms)
@@ -31,50 +32,58 @@ class MenuInteractor:
             self.wait_except_first_time(duration_ms, i)
             yield
 
+    # ================ 点击按钮 ================ #
     def click_button(self, button: Button, times: int = 1):
         """点击指定按钮"""
         for _ in self._actions_loop(times):
             self.gamepad.click_button(button)
 
-    def open_pause_menu(self) -> None:
-        """打开暂停菜单（START 键）"""
+    # ================ 菜单操作 ================ #
+    def toggle_menu(self) -> None:
+        """打开/切换菜单（START 键），再次按下可关闭菜单"""
         self.click_button(Button.START)
 
     def hide_menu(self) -> None:
         """隐藏菜单（Y 键）"""
         self.click_button(Button.Y)
 
-    def close_menu(self) -> None:
-        """关闭当前菜单（B 键）"""
-        self.click_button(Button.B)
-
     def open_interaction_menu(self) -> None:
         """打开互动菜单（长按 BACK/SELECT 键）"""
         self.gamepad.press_button(Button.BACK, 1000)
         self.wait_until_ready()
 
+    # =============== 确认/取消/选择/返回 ================ #
     def confirm(self) -> None:
-        """确认/选择（A 键）"""
+        """确认（A 键）"""
         self.click_button(Button.A)
 
     def cancel(self, times: int = 1) -> None:
-        """取消/返回（B 键）"""
+        """取消（B 键）"""
         self.click_button(Button.B, times)
 
-    def navigate_up(self, times: int = 1) -> None:
-        """菜单向上导航"""
+    def select(self, times: int = 1) -> None:
+        """选择（A 键）"""
+        self.click_button(Button.A, times)
+
+    def back(self, times: int = 1) -> None:
+        """返回（B 键）"""
+        self.click_button(Button.B, times)
+
+    # =============== 菜单项选择 ================ #
+    def nav_up(self, times: int = 1) -> None:
+        """向上选择菜单项"""
         self.click_button(Button.DPAD_UP, times)
 
-    def navigate_down(self, times: int = 1) -> None:
-        """菜单向下导航"""
+    def nav_down(self, times: int = 1) -> None:
+        """向下选择菜单项"""
         self.click_button(Button.DPAD_DOWN, times)
 
-    def navigate_left(self, times: int = 1) -> None:
-        """菜单向左导航"""
+    def nav_left(self, times: int = 1) -> None:
+        """向左选择菜单项"""
         self.click_button(Button.DPAD_LEFT, times)
 
-    def navigate_right(self, times: int = 1) -> None:
-        """菜单向右导航"""
+    def nav_right(self, times: int = 1) -> None:
+        """向右选择菜单项"""
         self.click_button(Button.DPAD_RIGHT, times)
 
     def tab_left(self, times: int = 1) -> None:
@@ -85,6 +94,7 @@ class MenuInteractor:
         """切换到右侧标签页（RB 键）"""
         self.click_button(Button.RIGHT_SHOULDER, times)
 
+    # =============== 手机操作 ================ #
     def open_phone(self) -> None:
         """打开手机（上方向键）"""
         self.click_button(Button.DPAD_UP)
@@ -104,7 +114,7 @@ class MenuInteractorTester:
         sleep(1)
 
         logger.note("测试：打开暂停菜单 ...")
-        menu.open_pause_menu()
+        menu.toggle_menu()
         sleep(3)
 
         logger.note("测试：向右选择标签 x3 ...")
@@ -120,11 +130,15 @@ class MenuInteractorTester:
         sleep(2)
 
         logger.note("测试：向下选择标签 x3 ...")
-        menu.navigate_down(3)
+        menu.nav_down(3)
+        sleep(2)
+
+        logger.note("测试：向上选择标签 x2 ...")
+        menu.nav_up(2)
         sleep(2)
 
         logger.note("测试：关闭暂停菜单 ...")
-        menu.open_pause_menu()
+        menu.toggle_menu()
         # menu.close_menu()
         sleep(1)
 
