@@ -184,43 +184,225 @@ class MenuNavigatePlanner:
             actions = (Action.NAV_UP, up_moves)
         return actions
 
-    def plan_from_origin(self, names: list[str]) -> list[tuple[str, int]]:
-        """规划从菜单关闭状态到 names 的导航路径
+    def sum_actions_times(self, actions: list[tuple[str, int]]) -> int:
+        """计算动作列表中所有动作的总次数"""
+        total = 0
+        for action, times in actions:
+            if action and times:
+                total += times
+        return total
 
-        :param names: 目标菜单项名称列表
+    @staticmethod
+    def _log_error_parent_names(parent_names: list[str]) -> None:
+        logger.warn(f"无法获取菜单项信息: 父级菜单路径 {parent_names}")
+
+    def _calc_common_prefix_length(
+        self, src_names: list[str], dst_names: list[str]
+    ) -> int:
+        """找到两个路径的公共前缀长度
+
+        :param src_names: 当前菜单项名称列表
+        :param dst_names: 目标菜单项名称列表
+
+        :return: 公共前缀长度
+        """
+        common_len = 0
+        min_len = min(len(src_names), len(dst_names))
+        for i in range(min_len):
+            if src_names[i] == dst_names[i]:
+                common_len += 1
+            else:
+                break
+        return common_len
+
+    def _plan_backward(
+        self, src_names: list[str], dst_names: list[str]
+    ) -> list[tuple[str, int]]:
+        """规划回退到目标路径
+
+        :param src_names: 当前菜单项名称列表
+        :param dst_names: 公共前缀名称列表
+
+        :return: 回退动作列表
+        """
+        actions: list[tuple[str, int]] = []
+        # 回退到 common_len 层级
+        cancel_times = len(src_names) - len(dst_names)
+        if cancel_times > 0:
+            actions.append((Action.CANCEL, cancel_times))
+        return actions
+
+    def _plan_backward_to_sibling(
+        self, src_names: list[str], dst_names: list[str]
+    ) -> list[tuple[str, int]]:
+        """规划回退到平级位置
+
+        :param src_names: 当前菜单项名称列表
+        :param dst_names: 公共前缀名称列表
+
+        :return: 回退动作列表
+        """
+        actions: list[tuple[str, int]] = []
+        # 回退到 common_len + 1 层级，也即平级位置
+        cancel_times = len(src_names) - len(dst_names) - 1
+        if cancel_times > 0:
+            actions.append((Action.CANCEL, cancel_times))
+        return actions
+
+    def _plan_forward(
+        self, src_names: list[str], dst_names: list[str]
+    ) -> list[tuple[str, int]]:
+        """规划从公共前缀位置前进到目标位置
+
+        :param src_names: 公共前缀名称列表
+        :param dst_names: 目标菜单项名称列表
+
+        :return: 前进动作列表
+        """
+        actions: list[tuple[str, int]] = []
+        # 从公共前缀的下一级开始，逐级前进到目标
+        for level in range(len(src_names) + 1, len(dst_names) + 1):
+            # 确认进入下一级菜单
+            actions.append((Action.CONFIRM, 1))
+            # 获取当前层级的父级路径和映射信息
+            parent_names = dst_names[: level - 1]
+            item_infos = MENU_PARENT_TO_ITEM_INFOS.get(tuple(parent_names))
+            if item_infos is None:
+                self._log_error_parent_names(parent_names)
+                break
+            # 导航到目标条目
+            dst_name = dst_names[level - 1]
+            nav_action = self._calc_item_nav_actions(0, dst_name, item_infos=item_infos)
+            actions.append(nav_action)
+        return actions
+
+    def _is_sibling(self, src_names: list[str], dst_names: list[str]) -> bool:
+        """判断当前路径和目标路径是否平级
+
+        也即：路径长度相同，且有公共父级，只有最后一项不同
+        例如: ['在线', '差事'] -> ['在线', '游玩清单']
+
+        :param src_names: 当前菜单项名称列表
+        :param dst_names: 目标菜单项名称列表
+        :param common_len: 公共前缀长度
+
+        :return: 是否为平级切换
+        """
+        common_len = self._calc_common_prefix_length(src_names, dst_names)
+        return (
+            len(src_names) == len(dst_names)  # 路径长度相同
+            and len(src_names) > 1  # 至少有一级父级
+            and common_len == len(src_names) - 1  # 只有最后一项不同
+        )
+
+    def _plan_sibling(
+        self, src_names: list[str], dst_names: list[str]
+    ) -> list[tuple[str, int]]:
+        """规划平级切换的导航路径
+
+        :param src_names: 当前菜单项名称列表
+        :param dst_names: 目标菜单项名称列表
+
+        :return: 导航路径动作列表
+        """
+        actions: list[tuple[str, int]] = []
+        # 获取父级路径
+        parent_names = src_names[:-1]
+        # 获取该级的条目信息
+        item_infos = MENU_PARENT_TO_ITEM_INFOS.get(tuple(parent_names))
+        if item_infos is None:
+            logger.warn(f"无法获取菜单项信息: 父级菜单路径 {parent_names}")
+            return actions
+        # 获取当前和目标条目名称
+        src_item_name = src_names[-1]
+        dst_item_name = dst_names[-1]
+        # 计算从当前项到目标项的导航动作
+        nav_action = self._calc_item_nav_actions(
+            src_item_name, dst_item_name, item_infos=item_infos
+        )
+        actions.append(nav_action)
+        return actions
+
+    def plan_from_origin(self, dst_names: list[str]) -> list[tuple[str, int]]:
+        """从头规划导航路径：从菜单关闭状态，到 names 对应位置
+
+        :param dst_names: 目标菜单项名称列表
 
         :return: 导航路径动作列表，每个动作为 (action, times) 元组
         """
         actions: list[tuple[str, int]] = []
-        if not names:
+        if not dst_names:
             return []
         # 打开菜单
         actions.append((Action.TOGGLE_MENU, 1))
         # 切换到目标标签页
-        dst_tab_name = names[0]
+        dst_tab_name = dst_names[0]
         tab_action = self._calc_tab_switch_actions(0, dst_tab_name)
         actions.append(tab_action)
-        # 确认进入标签页
-        actions.append((Action.CONFIRM, 1))
-        # 依次导航到目标菜单项
-        for level in range(2, len(names) + 1):
-            pre_names = names[: level - 1]
-            item_infos = MENU_PARENT_TO_ITEM_INFOS.get(tuple(pre_names))
-            if item_infos is None:
-                logger.warn(f"无法获取菜单项信息: 父级菜单路径 {pre_names}")
-                break
-            dst_item_name = names[level - 1]
-            nav_action = self._calc_item_nav_actions(
-                0, dst_item_name, item_infos=item_infos
-            )
-            actions.append(nav_action)
-            # 确认进入菜单项
-            actions.append((Action.CONFIRM, 1))
+        # 前进到目标位置
+        forward_actions = self._plan_forward([dst_tab_name], dst_names)
+        actions.extend(forward_actions)
         return actions
 
-    def plan(self, src_names: list[str], dst_names: list[str]) -> list[str]:
-        """规划从 src_names 到 dst_names 的导航路径"""
-        pass
+    def plan_from_source(
+        self, src_names: list[str], dst_names: list[str]
+    ) -> list[tuple[str, int]]:
+        """规划导航路径: 从 src_names 到 dst_names
+
+        :param src_names: 当前菜单项名称列表
+        :param dst_names: 目标菜单项名称列表
+
+        :return: 导航路径动作列表，每个动作为 (action, times) 元组
+        """
+        # 边界情况: 当前菜单未打开，从头规划
+        if not src_names:
+            return self.plan_from_origin(dst_names)
+        # 边界情况: 目标是关闭菜单，直接关闭菜单
+        if not dst_names:
+            return [(Action.TOGGLE_MENU, 1)]
+        # 边界情况: 当前位置即目标位置，什么都不做
+        if src_names == dst_names:
+            return []
+
+        actions: list[tuple[str, int]] = []
+
+        # 找到公共前缀
+        common_len = self._calc_common_prefix_length(src_names, dst_names)
+        common_names = src_names[:common_len]
+
+        # 特殊情况：跨标签页
+        if common_len == 0:
+            tab_action = self._calc_tab_switch_actions(src_names[0], dst_names[0])
+            actions.append(tab_action)
+            # 从标签页切换后，前进到目标位置
+            forward_actions = self._plan_forward([dst_names[0]], dst_names)
+            actions.extend(forward_actions)
+            return actions
+
+        # 从当前位置回退到公共前缀下一级，也即平级位置
+        if len(src_names) >= common_len + 1:
+            backward_actions = self._plan_backward_to_sibling(src_names, common_names)
+            actions.extend(backward_actions)
+
+        # 使用公共前缀下一级，作为中间位置
+        mid_names = src_names[: common_len + 1]
+        mid_len = len(mid_names)
+
+        # 目标恰好为公共前缀，回退
+        if len(dst_names) < mid_len:
+            # 事实上等价于 len(dst_names) == common_len
+            backward_actions = self._plan_backward(mid_names, dst_names)
+            actions.extend(backward_actions)
+        # 目标恰好和中间位置平级，平移
+        elif len(dst_names) == mid_len:
+            forward_actions = self._plan_sibling(mid_names, dst_names)
+            actions.extend(forward_actions)
+        # 目标为中间位置的更深层级，前进
+        else:
+            forward_actions = self._plan_forward(mid_names, dst_names)
+            actions.extend(forward_actions)
+
+        return actions
 
 
 class MenuNavigator:
@@ -264,19 +446,105 @@ def test_planner():
     logger.note("测试: MenuNavigatePlanner...")
     planner = MenuNavigatePlanner()
 
-    def _log_planner(names: list[str]):
-        logger.mesg(f"规划路径: {names}")
+    def _log_plan_from_origin(names: list[str]):
+        logger.mesg(f"规划路径 (从原点): {names}")
         paths = planner.plan_from_origin(names)
         logger.okay(f"规划结果: {paths}")
+        logger.mesg(f"总步数: {planner.sum_actions_times(paths)}\n")
 
-    names = ["设置"]
-    _log_planner(names)
+    def _log_plan_from_source(src_names: list[str], dst_names: list[str]):
+        logger.mesg(f"规划路径: {src_names} -> {dst_names}")
+        paths = planner.plan_from_source(src_names, dst_names)
+        logger.okay(f"规划结果: {paths}")
+        logger.mesg(f"总步数: {planner.sum_actions_times(paths)}\n")
 
-    names = ["在线", "差事", "进行差事"]
-    _log_planner(names)
+    # 测试从原点出发的路径规划
+    logger.note("=== 测试: 从原点出发 ===")
+    origin_cases = [
+        ["设置"],
+        ["在线", "差事", "进行差事"],
+        ["在线", "差事", "进行差事", "已收藏的"],
+    ]
+    for names in origin_cases:
+        _log_plan_from_origin(names)
 
-    names = ["在线", "差事", "进行差事", "已收藏的"]
-    _log_planner(names)
+    # 测试完整路径规划
+    logger.note("=== 测试: 边界情况 ===")
+    boundary_cases = [
+        ([], ["在线"]),  # 空路径到目标
+        (["在线"], []),  # 当前位置到空路径 (关闭菜单)
+        (["在线"], ["在线"]),  # 当前位置即目标位置
+    ]
+    for src, dst in boundary_cases:
+        _log_plan_from_source(src, dst)
+
+    logger.note("=== 测试: 同级标签页切换 ===")
+    tab_switch_cases = [
+        (["在线"], ["设置"]),
+        (["设置"], ["地图"]),
+    ]
+    for src, dst in tab_switch_cases:
+        _log_plan_from_source(src, dst)
+
+    logger.note("=== 测试: 同一标签页内的导航 ===")
+    same_tab_nav_cases = [
+        (["在线"], ["在线", "差事"]),  # 一级到二级
+        (["在线"], ["在线", "退出游戏"]),  # 一级到二级
+        (["在线", "差事"], ["在线", "差事", "进行差事"]),  # 二级到三级
+        (
+            ["在线", "差事", "进行差事"],
+            ["在线", "差事", "进行差事", "已收藏的"],
+        ),  # 三级到四级
+        (["在线"], ["在线", "差事", "进行差事", "已收藏的"]),  # 一级到四级
+    ]
+    for src, dst in same_tab_nav_cases:
+        _log_plan_from_source(src, dst)
+
+    logger.note("=== 测试: 同一标签页内的回退 ===")
+    backward_cases = [
+        (
+            ["在线", "差事", "进行差事", "已收藏的"],
+            ["在线", "差事", "进行差事"],
+        ),  # 四级到三级
+        (["在线", "差事", "进行差事"], ["在线", "差事"]),  # 三级到二级
+        (["在线", "差事", "进行差事", "已收藏的"], ["在线"]),  # 四级到一级
+    ]
+    for src, dst in backward_cases:
+        _log_plan_from_source(src, dst)
+
+    logger.note("=== 测试: 同一标签页内的平级切换 ===")
+    sibling_switch_cases = [
+        (["在线", "差事"], ["在线", "游玩清单"]),  # 优化: 只需要导航
+        (
+            ["在线", "差事", "快速加入"],
+            ["在线", "差事", "进行差事"],
+        ),  # 优化: 只需要导航
+    ]
+    for src, dst in sibling_switch_cases:
+        _log_plan_from_source(src, dst)
+
+    logger.note("=== 测试: 跨标签页的复杂导航 ===")
+    cross_tab_cases = [
+        (["在线", "差事", "进行差事", "已收藏的"], ["设置"]),  # 优化: 无需回退
+        (["设置"], ["在线", "差事", "进行差事", "已收藏的"]),  # 优化: 无需回退
+        (["在线", "差事", "进行差事"], ["地图"]),  # 优化: 无需回退
+    ]
+    for src, dst in cross_tab_cases:
+        _log_plan_from_source(src, dst)
+
+    logger.note("=== 测试: 不同分支的切换 ===")
+    branch_switch_cases = [
+        (
+            ["在线", "差事", "进行差事"],
+            ["在线", "寻找新战局"],
+        ),  # 优化: cancel 1次 + nav
+        (
+            ["在线", "差事", "进行差事", "已收藏的"],
+            ["在线", "游玩清单"],
+        ),  # 优化: cancel 2次 + nav
+    ]
+    for src, dst in branch_switch_cases:
+        _log_plan_from_source(src, dst)
 
 
 def test_menu_navigator():
