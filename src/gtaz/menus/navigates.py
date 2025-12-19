@@ -18,17 +18,17 @@ class LocateNamesConverter:
     @staticmethod
     def _is_list_belongs_to_focus(r: MergedMatchResult) -> bool:
         """判断 focus.names 是否是 list.names 的前缀"""
-        return is_names_start_with(tuple(r.list.names), tuple(r.focus.names))
+        return is_names_start_with(r.list.names, r.focus.names)
 
     @staticmethod
     def _is_item_belongs_to_list(r: MergedMatchResult) -> bool:
         """判断 list.names 是否是 item.names 的前缀"""
-        return is_names_start_with(tuple(r.item.names), tuple(r.list.names))
+        return is_names_start_with(r.item.names, r.list.names)
 
     @staticmethod
     def _is_item_belongs_to_focus(r: MergedMatchResult) -> bool:
         """判断focus.names 是否是 item.names 的前缀"""
-        return is_names_start_with(tuple(r.item.names), tuple(r.focus.names))
+        return is_names_start_with(r.item.names, r.focus.names)
 
     def to_names(self, r: MergedMatchResult) -> list[str]:
         """将菜单定位结果转换为菜单路径表示形式"""
@@ -418,10 +418,16 @@ class MenuNavigator:
         frame_np = self.capturer.capture_frame().to_np()
         return self.locator.locate(frame_np)
 
-    def locate_menu(self) -> list[str]:
+    def locate_names(self) -> list[str]:
         """获取当前菜单项名称列表"""
         locate_result = self.locate()
         return self.converter.to_names(locate_result)
+
+    def plan_actions(self, dst_names: list[str]) -> list[tuple[str, int]]:
+        """规划导航到指定菜单项的动作"""
+        src_names = self.locate_names()
+        actions = self.planner.plan_from_source(src_names, dst_names)
+        return actions
 
     def ensure_menu_opened(self):
         """确保菜单处于打开状态"""
@@ -437,9 +443,33 @@ class MenuNavigator:
             # 菜单已打开，执行关闭操作
             self.interactor.toggle_menu()
 
-    def go_to(self, names: list[str]) -> None:
+    def execute_actions(self, actions: list[tuple[str, int]]):
+        for action in actions:
+            act, times = action
+            if act == Action.TOGGLE_MENU:
+                self.interactor.toggle_menu()
+            elif act == Action.CONFIRM:
+                self.interactor.confirm()
+            elif act == Action.CANCEL:
+                self.interactor.cancel(times)
+            elif act == Action.NAV_UP:
+                self.interactor.nav_up(times)
+            elif act == Action.NAV_DOWN:
+                self.interactor.nav_down(times)
+            elif act == Action.TAB_LEFT:
+                self.interactor.tab_left(times)
+            elif act == Action.TAB_RIGHT:
+                self.interactor.tab_right(times)
+            else:
+                logger.warn(f"未知导航动作: {act}")
+            # 每次操作后等待菜单稳定
+            self.interactor.wait_until_ready()
+
+    def go_to(self, dst_names: list[str]):
         """导航到指定菜单项"""
-        pass
+        actions = self.plan_actions(dst_names)
+        logger.mesg(f"导航动作: {actions}")
+        self.execute_actions(actions)
 
 
 def test_planner():
@@ -537,11 +567,15 @@ def test_planner():
         (
             ["在线", "差事", "进行差事"],
             ["在线", "寻找新战局"],
-        ),  # 优化: cancel 1次 + nav
+        ),
         (
             ["在线", "差事", "进行差事", "已收藏的"],
             ["在线", "游玩清单"],
-        ),  # 优化: cancel 2次 + nav
+        ),
+        (
+            ["在线", "加入帮会成员"],
+            ["在线", "差事", "进行差事", "已收藏的"],
+        ),
     ]
     for src, dst in branch_switch_cases:
         _log_plan_from_source(src, dst)
@@ -550,12 +584,20 @@ def test_planner():
 def test_menu_navigator():
     logger.note("测试: MenuNavigator...")
     navigator = MenuNavigator()
-    names = navigator.locate_menu()
+    names = navigator.locate_names()
+    logger.mesg(f"当前路径: {names}")
+
+    dst_names = ["在线", "差事", "进行差事", "已收藏的"]
+    # dst_names = ["在线"]
+    logger.mesg(f"导航到: {dst_names}")
+    navigator.go_to(dst_names)
+
+    names = navigator.locate_names()
     logger.mesg(f"当前路径: {names}")
 
 
 if __name__ == "__main__":
-    test_planner()
-    # test_menu_navigator()
+    # test_planner()
+    test_menu_navigator()
 
     # python -m gtaz.menus.navigates

@@ -63,6 +63,7 @@ MENU_FOCUS_INFOS = [
     {"name": "统计", "img": "focus_统计.jpg", "level": 1, "index": 7},
     {"name": "相册", "img": "focus_相册.jpg", "level": 1, "index": 8},
 ]
+MENU_FOCUS_INFOS = add_names(MENU_FOCUS_INFOS, ())
 
 # ========================= 列表 ========================= #
 
@@ -396,7 +397,7 @@ EXIT_INFOS = [
 def is_names_start_with(names: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
     if names is None or prefix is None or len(prefix) > len(names):
         return False
-    return names[: len(prefix)] == prefix
+    return tuple(names[: len(prefix)]) == tuple(prefix)
 
 
 def find_latest_jpg() -> str:

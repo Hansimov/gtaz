@@ -42,6 +42,7 @@ class MenuInteractor:
     def toggle_menu(self) -> None:
         """打开/切换菜单（START 键），再次按下可关闭菜单"""
         self.click_button(Button.START)
+        self.wait_until_ready(400)
 
     def hide_menu(self) -> None:
         """隐藏菜单（Y 键）"""
@@ -56,10 +57,12 @@ class MenuInteractor:
     def confirm(self) -> None:
         """确认（A 键）"""
         self.click_button(Button.A)
+        self.wait_until_ready(300)
 
     def cancel(self, times: int = 1) -> None:
         """取消（B 键）"""
         self.click_button(Button.B, times)
+        self.wait_until_ready(300)
 
     def select(self, times: int = 1) -> None:
         """选择（A 键）"""
