@@ -22,6 +22,7 @@ logger = TCLogger(name="GTAMenuLocator", use_prefix=True, use_prefix_ms=True)
 
 
 MATCH_THRESHOLD = 0.5
+HIGH_THRESHOLD = 0.8
 
 
 def cv2_read(img_path: PathType) -> np.ndarray:
@@ -744,6 +745,16 @@ class MenuLocator:
         return final_match
 
 
+def is_score_too_low(result: MatchResult, threshold: float = None) -> bool:
+    """判断匹配结果的分数是否低于阈值"""
+    return result.score < (threshold or MATCH_THRESHOLD)
+
+
+def is_score_high(result: MatchResult, threshold: float = None) -> bool:
+    """判断匹配结果的分数是否高于阈值"""
+    return result.score >= (threshold or HIGH_THRESHOLD)
+
+
 class MenuLocatorRunner:
     def __init__(self):
         self.locator = MenuLocator()
@@ -857,11 +868,6 @@ class MenuLocatorRunner:
             f"{key_note('区域')}: {rect_str}"
         )
 
-    @staticmethod
-    def _is_score_too_low(result: MatchResult) -> bool:
-        """判断匹配结果的分数是否低于阈值"""
-        return result.score < MATCH_THRESHOLD
-
     def locate(self, img_np: np.ndarray, verbose: bool = True) -> MergedMatchResult:
         """匹配所有菜单元素，返回合并的匹配结果。"""
         # 匹配标题
@@ -869,14 +875,14 @@ class MenuLocatorRunner:
         if verbose:
             self._log_result_line(header_result, name_type="标题")
         # 标题匹配分数过低，提前返回
-        if self._is_score_too_low(header_result):
+        if is_score_too_low(header_result):
             return MergedMatchResult(header=header_result)
         # 匹配焦点
         focus_result = self.locator.match_focus(img_np, header_result=header_result)
         if verbose:
             self._log_result_line(focus_result, name_type="焦点")
         # 焦点匹配分数过低，提前返回
-        if self._is_score_too_low(focus_result):
+        if is_score_too_low(focus_result):
             return MergedMatchResult(header=header_result, focus=focus_result)
         # 匹配列表
         list_result = self.locator.match_list(

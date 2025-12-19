@@ -366,6 +366,19 @@ MENU_ITEM_INFOS = (
     + ITEM_在线_寻找新战局_INFOS
 )
 
+
+def build_parent_to_item_infos_map() -> dict[tuple[str, ...], list[dict]]:
+    """构建父级到子级条目的映射表"""
+    res: dict[tuple[str, ...], list[dict]] = {}
+    for item_info in MENU_ITEM_INFOS:
+        if item_info["parent"] not in res:
+            res[item_info["parent"]] = []
+        res[item_info["parent"]].append(item_info)
+    return res
+
+
+MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map()
+
 # ========================= 退出 ========================= #
 
 # 退出提示
