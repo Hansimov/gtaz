@@ -260,6 +260,8 @@ class MenuNavigatePlanner:
         :return: 前进动作列表
         """
         actions: list[tuple[str, int]] = []
+        if src_names == dst_names:
+            return []
         # 从公共前缀的下一级开始，逐级前进到目标
         for level in range(len(src_names) + 1, len(dst_names) + 1):
             # 确认进入下一级菜单
@@ -306,6 +308,8 @@ class MenuNavigatePlanner:
         :return: 导航路径动作列表
         """
         actions: list[tuple[str, int]] = []
+        if src_names == dst_names:
+            return []
         # 获取父级路径
         parent_names = src_names[:-1]
         # 获取该级的条目信息
@@ -393,12 +397,14 @@ class MenuNavigatePlanner:
             # 事实上等价于 len(dst_names) == common_len
             backward_actions = self._plan_backward(mid_names, dst_names)
             actions.extend(backward_actions)
-        # 目标恰好和中间位置平级，平移
-        elif len(dst_names) == mid_len:
-            forward_actions = self._plan_sibling(mid_names, dst_names)
-            actions.extend(forward_actions)
+
+        # 目标在平级或者更深层级，平移
+        if len(dst_names) >= mid_len:
+            sibling_actions = self._plan_sibling(mid_names, dst_names[:mid_len])
+            actions.extend(sibling_actions)
+
         # 目标为中间位置的更深层级，前进
-        else:
+        if len(dst_names) > mid_len:
             forward_actions = self._plan_forward(mid_names, dst_names)
             actions.extend(forward_actions)
 
@@ -446,7 +452,9 @@ class MenuNavigator:
     def execute_actions(self, actions: list[tuple[str, int]]):
         for action in actions:
             act, times = action
-            if act == Action.TOGGLE_MENU:
+            if not act or not times:
+                continue
+            elif act == Action.TOGGLE_MENU:
                 self.interactor.toggle_menu()
             elif act == Action.CONFIRM:
                 self.interactor.confirm()
@@ -465,11 +473,24 @@ class MenuNavigator:
             # 每次操作后等待菜单稳定
             self.interactor.wait_until_ready()
 
-    def go_to(self, dst_names: list[str]):
+    def _log_retry_go_to(self, names: list[str], retry: int, max_retries: int) -> None:
+        logger.warn(f"[{retry}/{max_retries}] 未导航到预期位置，当前路径: {names}")
+
+    def go_to(self, dst_names: list[str], max_retries: int = 3) -> list[str]:
         """导航到指定菜单项"""
-        actions = self.plan_actions(dst_names)
-        logger.mesg(f"导航动作: {actions}")
-        self.execute_actions(actions)
+        retry = 0
+        while retry < max_retries:
+            actions = self.plan_actions(dst_names)
+            logger.mesg(f"导航动作: {actions}")
+            self.execute_actions(actions)
+            names = self.locate_names()
+            if names == dst_names:
+                return names
+            else:
+                retry += 1
+                self._log_retry_go_to(names, retry, max_retries)
+                continue
+        return names
 
 
 def test_planner():
@@ -587,12 +608,11 @@ def test_menu_navigator():
     names = navigator.locate_names()
     logger.mesg(f"当前路径: {names}")
 
-    dst_names = ["在线", "差事", "进行差事", "已收藏的"]
+    dst_names = ["在线", "差事", "进行差事", "已收藏的", "夺取"]
     # dst_names = ["在线"]
     logger.mesg(f"导航到: {dst_names}")
     navigator.go_to(dst_names)
 
-    names = navigator.locate_names()
     logger.mesg(f"当前路径: {names}")
 
 
