@@ -21,7 +21,7 @@ ActionType = tuple[str, int]
 class MenuInfoProvider:
     """菜单信息提供器，根据模式返回对应的菜单信息"""
 
-    def __init__(self, netmode: str = "在线模式"):
+    def __init__(self, netmode: str = None):
         """初始化菜单信息提供器
 
         :param netmode: 模式名称，"在线模式" 或 "故事模式"
@@ -34,8 +34,7 @@ class MenuInfoProvider:
         if self._netmode == "故事模式":
             self.focus_infos = STORY_MENU_FOCUS_INFOS
             self.parent_to_item_infos = STORY_MENU_PARENT_TO_ITEM_INFOS
-        else:
-            # 默认使用在线模式
+        elif self._netmode == "在线模式":
             self.focus_infos = MENU_FOCUS_INFOS
             self.parent_to_item_infos = MENU_PARENT_TO_ITEM_INFOS
 
@@ -161,7 +160,7 @@ class Action:
 class MenuNavigatePlanner:
     """GTAV 菜单导航规划"""
 
-    def __init__(self, netmode: str = "在线模式"):
+    def __init__(self, netmode: str = None):
         """初始化导航规划器
 
         :param netmode: 模式名称，"在线模式" 或 "故事模式"
@@ -496,6 +495,33 @@ class MenuNavigator:
         self._update_netmode_from_result(result)
         return result
 
+    def ensure_menu_opened(self, max_retries: int = 5):
+        """确保菜单处于打开状态"""
+        retry = 0
+        while retry < max_retries:
+            retry += 1
+            result = self.locate()
+            if is_score_too_low(result.netmode):
+                # 菜单未打开，执行打开操作
+                # 对于故事模式，需要 toggle_menu 两次
+                self.interactor.toggle_menu()
+            else:
+                # 菜单已打开
+                break
+
+    def ensure_menu_closed(self, max_retries: int = 5):
+        """确保菜单处于关闭状态"""
+        retry = 0
+        while retry < max_retries:
+            retry += 1
+            result = self.locate()
+            if not is_score_too_low(result.netmode):
+                # 菜单未关闭，执行关闭操作
+                self.interactor.cancel(4)
+            else:
+                # 菜单已关闭
+                break
+
     def locate_names(self) -> list[str]:
         """获取当前菜单项名称列表"""
         locate_result = self.locate()
@@ -503,23 +529,10 @@ class MenuNavigator:
 
     def plan_actions(self, dst_names: list[str]) -> list[ActionType]:
         """规划导航到指定菜单项的动作"""
+        self.ensure_menu_opened()
         src_names = self.locate_names()
         actions = self.planner.plan_from_source(src_names, dst_names)
         return actions
-
-    def ensure_menu_opened(self):
-        """确保菜单处于打开状态"""
-        result = self.locate()
-        if is_score_too_low(result.header):
-            # 菜单未打开，执行打开操作
-            self.interactor.toggle_menu()
-
-    def ensure_menu_closed(self):
-        """确保菜单处于关闭状态"""
-        result = self.locate()
-        if is_score_high(result.header):
-            # 菜单已打开，执行关闭操作
-            self.interactor.toggle_menu()
 
     def execute_actions(self, actions: list[ActionType]):
         """执行导航动作列表
@@ -554,7 +567,7 @@ class MenuNavigator:
     def _log_retry_go_to(self, names: list[str], retry: int, max_retries: int) -> None:
         logger.warn(f"[{retry}/{max_retries}] 未导航到预期位置，当前路径: {names}")
 
-    def go_to(self, dst_names: list[str], max_retries: int = 3) -> list[str]:
+    def go_to(self, dst_names: list[str], max_retries: int = 5) -> list[str]:
         """导航到指定菜单项
 
         :param dst_names: 目标菜单项名称列表
@@ -694,7 +707,9 @@ def test_menu_navigator():
 
     # dst_names = ["在线", "差事"]
     # dst_names = ["在线", "差事", "进行差事", "已收藏的", "夺取"]
-    dst_names = ["在线", "进入GTA在线模式"]
+    # dst_names = ["在线", "进入GTA在线模式"]
+    dst_names = ["在线", "进入GTA在线模式", "凭邀请加入的战局"]
+    # dst_names = ["游戏", "退至主菜单"]
     logger.mesg(f"导航到: {dst_names}")
     names = navigator.go_to(dst_names)
     logger.mesg(f"当前路径: {names}")

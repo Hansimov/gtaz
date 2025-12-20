@@ -21,12 +21,12 @@ class MenuInteractor:
         """等待以确保操作生效"""
         sleep_ms(duration_ms)
 
-    def wait_except_first_time(self, duration_ms: int = 100, i: int = 0):
+    def wait_except_first_time(self, duration_ms: int = 200, i: int = 0):
         """等待以确保操作生效，首次操作不等待"""
         if i > 0:
             sleep_ms(duration_ms)
 
-    def _actions_loop(self, times: int, duration_ms: int = 100):
+    def _actions_loop(self, times: int, duration_ms: int = 200):
         """在多次循环操作前等待（首次不等待）"""
         for i in range(times):
             self.wait_except_first_time(duration_ms, i)
@@ -67,10 +67,12 @@ class MenuInteractor:
     def select(self, times: int = 1) -> None:
         """选择（A 键）"""
         self.click_button(Button.A, times)
+        self.wait_until_ready(300)
 
     def back(self, times: int = 1) -> None:
         """返回（B 键）"""
         self.click_button(Button.B, times)
+        self.wait_until_ready(300)
 
     # =============== 菜单项选择 ================ #
     def nav_up(self, times: int = 1) -> None:

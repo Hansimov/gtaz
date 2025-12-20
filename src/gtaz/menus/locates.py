@@ -607,7 +607,7 @@ class MenuLocator:
                 self.current_mode = mode_name
                 if mode_name == "故事模式":
                     self._load_story_templates()
-                else:
+                elif mode_name == "在线模式":
                     self._load_online_templates()
         return best_match
 
