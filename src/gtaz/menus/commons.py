@@ -394,10 +394,16 @@ MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map(MENU_ITEM_INFOS)
 
 # 退出提示
 EXIT_INFOS = [
-    {"name": "游戏", "img": "exit_游戏.jpg"},
-    {"name": "故事模式", "img": "exit_故事模式.jpg"},
-    {"name": "主菜单", "img": "exit_主菜单.jpg"},
-    {"name": "战局", "img": "exit_战局.jpg"},
+    {"name": "退出GrandTheftAutoV", "img": "exit_退出GrandTheftAutoV.jpg"},
+    {
+        "name": "退出在线模式并进入故事模式",
+        "img": "exit_退出在线模式并进入故事模式.jpg",
+    },
+    {
+        "name": "退出在线模式并返回主菜单",
+        "img": "exit_退出在线模式并返回主菜单.jpg",
+    },
+    {"name": "退出此战局", "img": "exit_退出此战局.jpg"},
     {"name": "快速加入", "img": "exit_快速加入.jpg"},
 ]
 
@@ -578,9 +584,9 @@ STORY_MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map(STORY_MENU_ITEM
 
 # 故事模式 - 退出提示
 STORY_EXIT_INFOS = [
-    {"name": "游戏", "img": "故事_exit_游戏.jpg"},
-    {"name": "战局", "img": "故事_exit_战局.jpg"},
-    {"name": "主菜单", "img": "故事_exit_主菜单.jpg"},
+    {"name": "退出游戏", "img": "故事_exit_退出游戏.jpg"},
+    {"name": "退出GrandTheftAutoV", "img": "故事_exit_退出GrandTheftAutoV.jpg"},
+    {"name": "返回主菜单", "img": "故事_exit_返回主菜单.jpg"},
 ]
 
 # ========================= 工具函数 ========================= #
