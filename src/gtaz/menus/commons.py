@@ -573,6 +573,16 @@ STORY_MENU_ITEM_INFOS = (
 # 故事模式 - 父级到子级条目的映射表
 STORY_MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map(STORY_MENU_ITEM_INFOS)
 
+
+# =================== 故事模式 - 退出 =================== #
+
+# 故事模式 - 退出提示
+STORY_EXIT_INFOS = [
+    {"name": "游戏", "img": "故事_exit_游戏.jpg"},
+    {"name": "战局", "img": "故事_exit_战局.jpg"},
+    {"name": "主菜单", "img": "故事_exit_主菜单.jpg"},
+]
+
 # ========================= 工具函数 ========================= #
 
 

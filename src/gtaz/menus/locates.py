@@ -16,6 +16,7 @@ from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
 from .commons import MENU_LIST_INFOS, MENU_ITEM_INFOS
 from .commons import STORY_MENU_HEADER_INFOS, STORY_MENU_FOCUS_INFOS
 from .commons import STORY_MENU_LIST_INFOS, STORY_MENU_ITEM_INFOS
+from .commons import EXIT_INFOS, STORY_EXIT_INFOS
 from .commons import REF_WIDTH, REF_HEIGHT, MAX_LIST_SIZE
 from .commons import key_note, val_mesg, is_names_start_with
 
@@ -62,7 +63,7 @@ def crop_img(img_np: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
     return img_np[y1:y2, x1:x2]
 
 
-FeatureType = Literal["raw", "netmode", "header", "focus", "list", "item"]
+FeatureType = Literal["raw", "netmode", "header", "focus", "list", "item", "exit"]
 
 
 @dataclass
@@ -152,7 +153,7 @@ class MergedMatchResult:
 class FeatureExtractorConfig:
     """特征提取器配置"""
 
-    mode: FeatureType = "text_map"
+    mode: FeatureType = "raw"
     blur_ksize: int = 3
     adaptive_block_size: int = 31
     adaptive_c: int = 7
@@ -173,6 +174,7 @@ class ImageFeatureExtractor:
             "focus": self.extract_raw,
             "list": self.extract_text_map,
             "item": self.extract_raw,
+            "exit": self.extract_raw,
         }
 
     def get_hash(self) -> int:
@@ -302,6 +304,47 @@ class ImageFeatureExtractor:
         return bg_mean - text_mean
 
 
+def build_template_info(info: dict) -> TemplateInfo:
+    """从配置字典加载单个模板信息。
+
+    :param info: 模板配置字典
+    :return: TemplateInfo 实例
+    """
+    img_path = MENU_IMGS_DIR / info["img"]
+    template_img = cv2_read(img_path)
+    return TemplateInfo(
+        name=info["name"],
+        names=info.get("names", None),
+        parent=info.get("parent", None),
+        img=template_img,
+        img_path=str(img_path),
+        level=info.get("level", -1),
+        index=info.get("index", -1),
+        total=info.get("total", -1),
+    )
+
+
+def should_update_best_match(
+    match_result: MatchResult, best_match: MatchResult
+) -> bool:
+    """判断是否应该更新最佳匹配结果。
+
+    :param match_result: 当前匹配结果
+    :param best_match: 当前最佳匹配结果
+    :return: 是否应该更新
+    """
+    return best_match is None or match_result.score > best_match.score
+
+
+def is_bad_match_result(match_result: MatchResult) -> bool:
+    """判断匹配结果是否无效。
+
+    :param match_result: 匹配结果
+    :return: 是否无效
+    """
+    return match_result is None or match_result.score == 0.0
+
+
 class MenuMatcher:
     """菜单匹配器"""
 
@@ -335,6 +378,7 @@ class MenuMatcher:
         )
         self.list_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="list"))
         self.item_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="item"))
+        self.exit_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="exit"))
         # 缓存模板的特征图
         self._feature_cache: dict[tuple, np.ndarray] = {}
 
@@ -486,12 +530,8 @@ class MenuMatcher:
 
 
 class MenuLocator:
-    def __init__(self, threshold: float = 0.65):
-        """初始化菜单定位器。
-
-        :param threshold: 匹配阈值，范围 [0, 1]
-        """
-        self.threshold = threshold
+    def __init__(self):
+        """初始化菜单定位器。"""
         self.matcher = MenuMatcher()
         # 当前模式："在线模式" 或 "故事模式"，默认为 None 表示未确定
         self.current_mode: str = None
@@ -503,31 +543,10 @@ class MenuLocator:
         self.list_templates: list[TemplateInfo] = []
         self.item_templates: list[TemplateInfo] = []
 
-    @staticmethod
-    def _build_template_info(info: dict) -> TemplateInfo:
-        """从配置字典加载单个模板信息。
-
-        :param info: 模板配置字典
-        :param kwargs: 额外的字段（如 index 或 total）
-        :return: TemplateInfo 实例
-        """
-        img_path = MENU_IMGS_DIR / info["img"]
-        template_img = cv2_read(img_path)
-        return TemplateInfo(
-            name=info["name"],
-            names=info.get("names", None),
-            parent=info.get("parent", None),
-            img=template_img,
-            img_path=str(img_path),
-            level=info["level"],
-            index=info.get("index", -1),
-            total=info.get("total", -1),
-        )
-
     def _load_netmode_templates(self) -> None:
         """加载在线模式和故事模式的模板"""
         self.netmode_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in NETMODE_INFOS
+            build_template_info(info) for info in NETMODE_INFOS
         ]
 
     def _load_story_templates(self) -> None:
@@ -535,21 +554,21 @@ class MenuLocator:
         # 加载标题模板
         used_header_names = ["地图", "游戏", "在线", "设置"]
         self.header_templates: list[TemplateInfo] = [
-            self._build_template_info(info)
+            build_template_info(info)
             for info in STORY_MENU_HEADER_INFOS
             if info["name"] in used_header_names
         ]
         # 加载焦点模板
         self.focus_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in STORY_MENU_FOCUS_INFOS
+            build_template_info(info) for info in STORY_MENU_FOCUS_INFOS
         ]
         # 加载列表模板
         self.list_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in STORY_MENU_LIST_INFOS
+            build_template_info(info) for info in STORY_MENU_LIST_INFOS
         ]
         # 加载条目模板
         self.item_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in STORY_MENU_ITEM_INFOS
+            build_template_info(info) for info in STORY_MENU_ITEM_INFOS
         ]
 
     def _load_online_templates(self) -> None:
@@ -557,32 +576,22 @@ class MenuLocator:
         # 加载标题模板
         used_header_names = ["地图", "在线", "设置"]
         self.header_templates: list[TemplateInfo] = [
-            self._build_template_info(info)
+            build_template_info(info)
             for info in MENU_HEADER_INFOS
             if info["name"] in used_header_names
         ]
         # 加载焦点模板
         self.focus_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in MENU_FOCUS_INFOS
+            build_template_info(info) for info in MENU_FOCUS_INFOS
         ]
         # 加载列表模板
         self.list_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in MENU_LIST_INFOS
+            build_template_info(info) for info in MENU_LIST_INFOS
         ]
         # 加载条目模板
         self.item_templates: list[TemplateInfo] = [
-            self._build_template_info(info) for info in MENU_ITEM_INFOS
+            build_template_info(info) for info in MENU_ITEM_INFOS
         ]
-
-    @staticmethod
-    def _should_update_best_match(
-        match_result: MatchResult, best_match: MatchResult
-    ) -> bool:
-        return best_match is None or match_result.score > best_match.score
-
-    @staticmethod
-    def _is_bad_match_result(match_result: MatchResult) -> bool:
-        return match_result is None or match_result.score == 0.0
 
     def match_mode(self, img_np: np.ndarray) -> MatchResult:
         """匹配在线/故事模式菜单。
@@ -597,10 +606,10 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 img_np, template_info, self.matcher.netmode_extractor
             )
-            if self._should_update_best_match(match_result, best_match):
+            if should_update_best_match(match_result, best_match):
                 best_match = match_result
         # 根据匹配结果加载对应的模板
-        if best_match and not self._is_bad_match_result(best_match):
+        if best_match and not is_bad_match_result(best_match):
             mode_name = best_match.name
             # 只有当模式发生变化或首次匹配时才重新加载模板
             if self.current_mode != mode_name:
@@ -631,7 +640,7 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 img_np, template_info, self.matcher.header_extractor
             )
-            if self._should_update_best_match(match_result, best_match):
+            if should_update_best_match(match_result, best_match):
                 best_match = match_result
         return best_match
 
@@ -684,7 +693,7 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 cropped_img, template_info, self.matcher.focus_extractor
             )
-            if self._should_update_best_match(match_result, best_match):
+            if should_update_best_match(match_result, best_match):
                 best_match = match_result
         final_match = self._align_focus_result(best_match, header_result)
         return final_match
@@ -752,10 +761,10 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 cropped_img, template_info, self.matcher.list_extractor
             )
-            if self._should_update_best_match(match_result, best_match):
+            if should_update_best_match(match_result, best_match):
                 best_match = match_result
         # 无效匹配
-        if self._is_bad_match_result(best_match):
+        if is_bad_match_result(best_match):
             return FailedMatchResult("未知列表")
         # 将局部坐标转换为全局坐标
         final_match = self._align_result(best_match, list_x1, list_y1)
@@ -807,10 +816,10 @@ class MenuLocator:
             match_result = self.matcher.match_template(
                 cropped_img, template_info, self.matcher.item_extractor
             )
-            if self._should_update_best_match(match_result, best_match):
+            if should_update_best_match(match_result, best_match):
                 best_match = match_result
         # 无效匹配
-        if self._is_bad_match_result(best_match):
+        if is_bad_match_result(best_match):
             return FailedMatchResult("未知条目")
         # 将局部坐标转换为全局坐标
         final_match = self._align_result(best_match, list_x1, list_y1)
@@ -825,6 +834,63 @@ def is_score_too_low(result: MatchResult, threshold: float = None) -> bool:
 def is_score_high(result: MatchResult, threshold: float = None) -> bool:
     """判断匹配结果的分数是否高于阈值"""
     return result.score >= (threshold or HIGH_THRESHOLD)
+
+
+class ExitLocator:
+    """退出提示定位器"""
+
+    def __init__(self):
+        """初始化退出提示定位器。"""
+        self.matcher = MenuMatcher()
+        # 当前模式："在线模式" 或 "故事模式"，默认为 None 表示未确定
+        self.current_mode: str = None
+        # 退出提示模板
+        self.exit_templates: list[TemplateInfo] = []
+
+    def _load_story_exit_templates(self) -> None:
+        """故事模式：加载退出提示模板"""
+        self.exit_templates: list[TemplateInfo] = [
+            build_template_info(info) for info in STORY_EXIT_INFOS
+        ]
+
+    def _load_online_exit_templates(self) -> None:
+        """在线模式：加载退出提示模板"""
+        self.exit_templates: list[TemplateInfo] = [
+            build_template_info(info) for info in EXIT_INFOS
+        ]
+
+    def set_mode(self, mode: str) -> None:
+        """设置当前模式并加载对应的退出提示模板。
+
+        :param mode: 模式名称，"在线模式" 或 "故事模式"
+        """
+        if self.current_mode != mode:
+            self.current_mode = mode
+            if mode == "故事模式":
+                self._load_story_exit_templates()
+            elif mode == "在线模式":
+                self._load_online_exit_templates()
+
+    def match_exit(self, img_np: np.ndarray) -> MatchResult:
+        """匹配退出提示对话框。
+
+        :param img_np: 输入图像数组
+
+        :return: 匹配结果 MatchResult，包含退出类型名称和置信度
+        """
+        # 如果尚未加载模板，尝试加载在线模式模板
+        if not self.exit_templates:
+            self._load_online_exit_templates()
+
+        self.matcher.set_img_size(img_np)
+        best_match = None
+        for template_info in self.exit_templates:
+            match_result = self.matcher.match_template(
+                img_np, template_info, self.matcher.exit_extractor
+            )
+            if should_update_best_match(match_result, best_match):
+                best_match = match_result
+        return best_match
 
 
 class MenuLocatorRunner:
