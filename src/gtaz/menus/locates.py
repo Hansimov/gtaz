@@ -842,34 +842,13 @@ class ExitLocator:
     def __init__(self):
         """初始化退出提示定位器。"""
         self.matcher = MenuMatcher()
-        # 当前模式："在线模式" 或 "故事模式"，默认为 None 表示未确定
-        self.current_mode: str = None
-        # 退出提示模板
-        self.exit_templates: list[TemplateInfo] = []
+        self._load_exit_templates()
 
-    def _load_story_exit_templates(self) -> None:
-        """故事模式：加载退出提示模板"""
+    def _load_exit_templates(self) -> None:
+        """加载退出提示模板"""
         self.exit_templates: list[TemplateInfo] = [
-            build_template_info(info) for info in STORY_EXIT_INFOS
+            build_template_info(info) for info in EXIT_INFOS + STORY_EXIT_INFOS
         ]
-
-    def _load_online_exit_templates(self) -> None:
-        """在线模式：加载退出提示模板"""
-        self.exit_templates: list[TemplateInfo] = [
-            build_template_info(info) for info in EXIT_INFOS
-        ]
-
-    def set_mode(self, mode: str) -> None:
-        """设置当前模式并加载对应的退出提示模板。
-
-        :param mode: 模式名称，"在线模式" 或 "故事模式"
-        """
-        if self.current_mode != mode:
-            self.current_mode = mode
-            if mode == "故事模式":
-                self._load_story_exit_templates()
-            elif mode == "在线模式":
-                self._load_online_exit_templates()
 
     def match_exit(self, img_np: np.ndarray) -> MatchResult:
         """匹配退出提示对话框。
@@ -879,9 +858,6 @@ class ExitLocator:
         :return: 匹配结果 MatchResult，包含退出类型名称和置信度
         """
         # 如果尚未加载模板，尝试加载在线模式模板
-        if not self.exit_templates:
-            self._load_online_exit_templates()
-
         self.matcher.set_img_size(img_np)
         best_match = None
         for template_info in self.exit_templates:
@@ -1102,7 +1078,7 @@ class MenuLocatorRunner:
             self.locate_and_visualize(str(img_path))
         logger.okay(f"批量处理完成！共处理图像: {len(img_paths)}")
 
-    def run(self):
+    def test(self):
         """运行所有测试"""
         logger.note("=" * 50)
         logger.note("菜单定位测试")
@@ -1111,7 +1087,8 @@ class MenuLocatorRunner:
         cache_menus = Path(__file__).parents[1] / "cache" / "menus"
         # img_dir = cache_menus / "2025-12-14_23-01-58"
         # img_dir = cache_menus / "2025-12-15_08-22-57"
-        img_dir = cache_menus / "2025-12-17_09-50-09"
+        # img_dir = cache_menus / "2025-12-17_09-50-09"
+        img_dir = cache_menus / "2025-12-21_07-01-42"
 
         # imgs = list(img_dir.glob("*.jpg"))
         # img = imgs[0]
@@ -1120,12 +1097,69 @@ class MenuLocatorRunner:
         self.multi_locate_and_visualize(img_dir)
 
 
-def run_menu_locator():
+class ExitLocatorRunner(MenuLocatorRunner):
+    """退出提示定位器运行器"""
+
+    def __init__(self):
+        """初始化退出提示定位器运行器。"""
+        self.locator = ExitLocator()
+
+    def locate(self, img_np: np.ndarray, verbose: bool = True) -> MatchResult:
+        """匹配退出提示，返回匹配结果。
+
+        :param img_np: 输入图像数组
+        :param verbose: 是否输出详细日志
+        :return: 退出提示匹配结果
+        """
+        exit_result = self.locator.match_exit(img_np)
+        if verbose:
+            self._log_result_line(exit_result, name_type="退出")
+        return exit_result
+
+    def locate_and_visualize(self, img_path: PathType) -> np.ndarray:
+        """可视化退出提示匹配结果。
+
+        :param img_path: 输入图像路径
+        :return: 绘制后的图像数组
+        """
+        # 读取图像
+        img_path = Path(img_path)
+        img_np = cv2_read(img_path)
+        # 匹配
+        exit_result = self.locate(img_np)
+        # 可视化
+        img_np = self._plot_result_on_image(img_np, exit_result, color=(255, 165, 0))
+        # 保存可视化结果和匹配信息
+        save_path = self._get_result_path(img_path)
+        self._save_result_image(img_np, save_path)
+        json_path = save_path.with_suffix(".json")
+        self._save_result_json(exit_result, json_path)
+        return img_np
+
+    def test(self):
+        """运行退出提示定位测试"""
+        logger.note("=" * 50)
+        logger.note("退出提示定位测试")
+        logger.note("=" * 50)
+
+        cache_menus = Path(__file__).parents[1] / "cache" / "menus"
+        img_dir = cache_menus / "2025-12-21_07-01-42"
+
+        self.multi_locate_and_visualize(img_dir)
+
+
+def test_menu_locator():
     runner = MenuLocatorRunner()
-    runner.run()
+    runner.test()
+
+
+def test_exit_locator():
+    runner = ExitLocatorRunner()
+    runner.test()
 
 
 if __name__ == "__main__":
-    run_menu_locator()
+    test_menu_locator()
+    # test_exit_locator()
 
     # python -m gtaz.menus.locates
