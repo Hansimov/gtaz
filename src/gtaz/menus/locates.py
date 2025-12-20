@@ -11,9 +11,11 @@ from pathlib import Path
 from tclogger import PathType, TCLogger, dict_to_str, logstr, strf_path
 from typing import Literal, Union
 
-from .commons import MENU_IMGS_DIR
+from .commons import MENU_IMGS_DIR, NETMODE_INFOS
 from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
 from .commons import MENU_LIST_INFOS, MENU_ITEM_INFOS
+from .commons import STORY_MENU_HEADER_INFOS, STORY_MENU_FOCUS_INFOS
+from .commons import STORY_MENU_LIST_INFOS, STORY_MENU_ITEM_INFOS
 from .commons import REF_WIDTH, REF_HEIGHT, MAX_LIST_SIZE
 from .commons import key_note, val_mesg, is_names_start_with
 
@@ -60,7 +62,7 @@ def crop_img(img_np: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
     return img_np[y1:y2, x1:x2]
 
 
-FeatureType = Literal["raw", "header", "focus", "list", "item"]
+FeatureType = Literal["raw", "netmode", "header", "focus", "list", "item"]
 
 
 @dataclass
@@ -115,6 +117,7 @@ class FailedMatchResult(MatchResult):
 class MergedMatchResult:
     """合并的模板匹配结果"""
 
+    netmode: MatchResult = None
     header: MatchResult = None
     focus: MatchResult = None
     list: MatchResult = None
@@ -122,6 +125,8 @@ class MergedMatchResult:
 
     def __post_init__(self):
         """初始化默认值"""
+        if self.netmode is None:
+            self.netmode = FailedMatchResult("默认模式")
         if self.header is None:
             self.header = FailedMatchResult("默认标题")
         if self.focus is None:
@@ -134,7 +139,7 @@ class MergedMatchResult:
     def to_dict(self) -> dict:
         """转换为字典"""
         res_dict = {}
-        for key in ["header", "focus", "list", "item"]:
+        for key in ["netmode", "header", "focus", "list", "item"]:
             result = getattr(self, key)
             if result is None:
                 res_dict[key] = None
@@ -163,6 +168,7 @@ class ImageFeatureExtractor:
         self.config = config or FeatureExtractorConfig()
         self.extractors = {
             "raw": self.extract_raw,
+            "netmode": self.extract_text_map,
             "header": self.extract_text_map,
             "focus": self.extract_raw,
             "list": self.extract_text_map,
@@ -318,6 +324,9 @@ class MenuMatcher:
         self.img_width: int = ref_width
         self.img_height: int = ref_height
         # 创建特征提取器，不同元素使用不同的配置
+        self.netmode_extractor = ImageFeatureExtractor(
+            FeatureExtractorConfig(mode="netmode")
+        )
         self.header_extractor = ImageFeatureExtractor(
             FeatureExtractorConfig(mode="header")
         )
@@ -484,7 +493,15 @@ class MenuLocator:
         """
         self.threshold = threshold
         self.matcher = MenuMatcher()
-        self._load_templates()
+        # 当前模式："在线模式" 或 "故事模式"，默认为 None 表示未确定
+        self.current_mode: str = None
+        # 加载网络模式模板（在线/故事）
+        self._load_netmode_templates()
+        # 暂不加载具体菜单模板，等待 match_mode 确定模式后再加载
+        self.header_templates: list[TemplateInfo] = []
+        self.focus_templates: list[TemplateInfo] = []
+        self.list_templates: list[TemplateInfo] = []
+        self.item_templates: list[TemplateInfo] = []
 
     @staticmethod
     def _build_template_info(info: dict) -> TemplateInfo:
@@ -507,8 +524,36 @@ class MenuLocator:
             total=info.get("total", -1),
         )
 
-    def _load_templates(self) -> None:
-        """加载所有模板图像。"""
+    def _load_netmode_templates(self) -> None:
+        """加载在线模式和故事模式的模板"""
+        self.netmode_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in NETMODE_INFOS
+        ]
+
+    def _load_story_templates(self) -> None:
+        """故事模式：加载菜单模板"""
+        # 加载标题模板
+        used_header_names = ["地图", "游戏", "在线", "设置"]
+        self.header_templates: list[TemplateInfo] = [
+            self._build_template_info(info)
+            for info in STORY_MENU_HEADER_INFOS
+            if info["name"] in used_header_names
+        ]
+        # 加载焦点模板
+        self.focus_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in STORY_MENU_FOCUS_INFOS
+        ]
+        # 加载列表模板
+        self.list_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in STORY_MENU_LIST_INFOS
+        ]
+        # 加载条目模板
+        self.item_templates: list[TemplateInfo] = [
+            self._build_template_info(info) for info in STORY_MENU_ITEM_INFOS
+        ]
+
+    def _load_online_templates(self) -> None:
+        """在线模式：加载菜单模板"""
         # 加载标题模板
         used_header_names = ["地图", "在线", "设置"]
         self.header_templates: list[TemplateInfo] = [
@@ -538,6 +583,33 @@ class MenuLocator:
     @staticmethod
     def _is_bad_match_result(match_result: MatchResult) -> bool:
         return match_result is None or match_result.score == 0.0
+
+    def match_mode(self, img_np: np.ndarray) -> MatchResult:
+        """匹配在线/故事模式菜单。
+
+        :param img_np: 输入图像数组
+
+        :return: 匹配结果 MatchResult，包含模式名称和置信度
+        """
+        self.matcher.set_img_size(img_np)
+        best_match = None
+        for template_info in self.netmode_templates:
+            match_result = self.matcher.match_template(
+                img_np, template_info, self.matcher.netmode_extractor
+            )
+            if self._should_update_best_match(match_result, best_match):
+                best_match = match_result
+        # 根据匹配结果加载对应的模板
+        if best_match and not self._is_bad_match_result(best_match):
+            mode_name = best_match.name
+            # 只有当模式发生变化或首次匹配时才重新加载模板
+            if self.current_mode != mode_name:
+                self.current_mode = mode_name
+                if mode_name == "故事模式":
+                    self._load_story_templates()
+                else:
+                    self._load_online_templates()
+        return best_match
 
     def match_header(self, img_np: np.ndarray) -> MatchResult:
         """匹配菜单，返回最匹配的菜单标题区域。
@@ -870,20 +942,29 @@ class MenuLocatorRunner:
 
     def locate(self, img_np: np.ndarray, verbose: bool = True) -> MergedMatchResult:
         """匹配所有菜单元素，返回合并的匹配结果。"""
+        # 匹配网络模式（在线/故事）
+        mode_result = self.locator.match_mode(img_np)
+        if verbose:
+            self._log_result_line(mode_result, name_type="模式")
+        # 模式匹配分数过低，提前返回
+        if is_score_too_low(mode_result):
+            return MergedMatchResult(netmode=mode_result)
         # 匹配标题
         header_result = self.locator.match_header(img_np)
         if verbose:
             self._log_result_line(header_result, name_type="标题")
         # 标题匹配分数过低，提前返回
         if is_score_too_low(header_result):
-            return MergedMatchResult(header=header_result)
+            return MergedMatchResult(netmode=mode_result, header=header_result)
         # 匹配焦点
         focus_result = self.locator.match_focus(img_np, header_result=header_result)
         if verbose:
             self._log_result_line(focus_result, name_type="焦点")
         # 焦点匹配分数过低，提前返回
         if is_score_too_low(focus_result):
-            return MergedMatchResult(header=header_result, focus=focus_result)
+            return MergedMatchResult(
+                netmode=mode_result, header=header_result, focus=focus_result
+            )
         # 匹配列表
         list_result = self.locator.match_list(
             img_np, header_result=header_result, focus_result=focus_result
@@ -901,7 +982,11 @@ class MenuLocatorRunner:
             self._log_result_line(item_result, name_type="条目")
         # 合并结果
         merged_result = MergedMatchResult(
-            header=header_result, focus=focus_result, list=list_result, item=item_result
+            netmode=mode_result,
+            header=header_result,
+            focus=focus_result,
+            list=list_result,
+            item=item_result,
         )
         return merged_result
 
@@ -915,11 +1000,13 @@ class MenuLocatorRunner:
         img_np = cv2_read(img_path)
         # 匹配
         merged_result = self.locate(img_np)
+        mode_result = merged_result.netmode
         header_result = merged_result.header
         focus_result = merged_result.focus
         list_result = merged_result.list
         item_result = merged_result.item
         # 可视化
+        img_np = self._plot_result_on_image(img_np, mode_result, color=(255, 255, 0))
         img_np = self._plot_result_on_image(img_np, header_result, color=(0, 255, 0))
         img_np = self._plot_result_on_image(img_np, focus_result, color=(255, 0, 0))
         img_np = self._plot_result_on_image(img_np, list_result, color=(0, 128, 128))

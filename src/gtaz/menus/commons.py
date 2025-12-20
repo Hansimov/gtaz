@@ -36,6 +36,13 @@ def add_names(list_infos: list[dict], parent: tuple) -> list[dict]:
     return list_infos
 
 
+# ======================= 在线和故事模式 ======================= #
+
+NETMODE_INFOS = [
+    {"name": "在线模式", "img": "title_GrandTheftAuto在线模式.jpg", "level": 0},
+    {"name": "故事模式", "img": "title_GrandTheftAutoV.jpg", "level": 0},
+]
+
 # ======================== 标题和焦点 ========================= #
 
 # 菜单标题
