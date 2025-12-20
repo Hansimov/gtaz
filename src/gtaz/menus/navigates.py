@@ -6,12 +6,89 @@ from typing import Union
 
 from .locates import MatchResult, MergedMatchResult
 from .commons import MENU_FOCUS_INFOS, MENU_PARENT_TO_ITEM_INFOS
+from .commons import STORY_MENU_FOCUS_INFOS, STORY_MENU_PARENT_TO_ITEM_INFOS
 from .commons import is_names_start_with
 from .interacts import MenuInteractor
 from .locates import MenuLocatorRunner, is_score_too_low, is_score_high
 from ..screens import ScreenCapturer
 
 logger = TCLogger(name="GTAVMenuNavigator", use_prefix=True, use_prefix_ms=True)
+
+ItemType = Union[str, int]
+ActionType = tuple[str, int]
+
+
+class MenuInfoProvider:
+    """菜单信息提供器，根据模式返回对应的菜单信息"""
+
+    def __init__(self, netmode: str = "在线模式"):
+        """初始化菜单信息提供器
+
+        :param netmode: 模式名称，"在线模式" 或 "故事模式"
+        """
+        self._netmode = netmode
+        self._update_infos()
+
+    def _update_infos(self):
+        """根据当前模式更新菜单信息"""
+        if self._netmode == "故事模式":
+            self.focus_infos = STORY_MENU_FOCUS_INFOS
+            self.parent_to_item_infos = STORY_MENU_PARENT_TO_ITEM_INFOS
+        else:
+            # 默认使用在线模式
+            self.focus_infos = MENU_FOCUS_INFOS
+            self.parent_to_item_infos = MENU_PARENT_TO_ITEM_INFOS
+
+    @property
+    def netmode(self) -> str:
+        """获取当前模式"""
+        return self._netmode
+
+    @netmode.setter
+    def netmode(self, value: str):
+        """设置模式并更新菜单信息
+
+        :param value: 模式名称，"在线模式" 或 "故事模式"
+        """
+        if self._netmode != value:
+            self._netmode = value
+            self._update_infos()
+
+    def unify_tab(self, tab: ItemType) -> tuple[int, str]:
+        """统一标签页表示形式
+
+        :param tab: 标签页名称或索引
+
+        :return: (标签页索引, 标签页名称)
+        """
+        tabs_name_idxs = {info["name"]: info["index"] for info in self.focus_infos}
+        tabs_idx_names = {info["index"]: info["name"] for info in self.focus_infos}
+        if isinstance(tab, int):
+            tab_idx = tab
+            tab_name = tabs_idx_names.get(tab_idx)
+        else:
+            tab_name = tab
+            tab_idx = tabs_name_idxs.get(tab_name)
+        return tab_idx, tab_name
+
+    @staticmethod
+    def unify_item(item: ItemType, item_infos: list[dict]) -> tuple[int, str]:
+        """统一菜单项表示形式
+
+        :param item: 菜单项名称或索引
+        :param item_infos: 该级菜单项信息列表
+
+        :return: (菜单项索引, 菜单项名称)
+        """
+        item_idx_names = {info["index"]: info["name"] for info in item_infos}
+        item_name_idxs = {info["name"]: info["index"] for info in item_infos}
+        if isinstance(item, int):
+            item_idx = item
+            item_name = item_idx_names.get(item_idx)
+        else:
+            item_name = item
+            item_idx = item_name_idxs.get(item_name)
+        return item_idx, item_name
 
 
 class LocateNamesConverter:
@@ -81,54 +158,32 @@ class Action:
     TAB_RIGHT = "tab_right"
 
 
-TABS_NUM = len(MENU_FOCUS_INFOS)
-TABS_NAME_IDXS = {info["name"]: info["index"] for info in MENU_FOCUS_INFOS}
-TABS_IDX_NAMES = {info["index"]: info["name"] for info in MENU_FOCUS_INFOS}
-
-ItemType = Union[str, int]
-
-
-def unify_tab(tab: ItemType) -> tuple[int, str]:
-    """统一标签页表示形式
-
-    :param tab: 标签页名称或索引
-
-    :return: (标签页索引, 标签页名称)
-    """
-    if isinstance(tab, int):
-        tab_idx = tab
-        tab_name = TABS_IDX_NAMES.get(tab_idx)
-    else:
-        tab_name = tab
-        tab_idx = TABS_NAME_IDXS.get(tab_name)
-    return tab_idx, tab_name
-
-
-def unify_item(item: ItemType, item_infos: list[dict]) -> tuple[int, str]:
-    """统一菜单项表示形式
-
-    :param item: 菜单项名称或索引
-    :param item_infos: 该级菜单项信息列表
-
-    :return: (菜单项索引, 菜单项名称)
-    """
-    item_idx_names = {info["index"]: info["name"] for info in item_infos}
-    item_name_idxs = {info["name"]: info["index"] for info in item_infos}
-    if isinstance(item, int):
-        item_idx = item
-        item_name = item_idx_names.get(item_idx)
-    else:
-        item_name = item
-        item_idx = item_name_idxs.get(item_name)
-    return item_idx, item_name
-
-
 class MenuNavigatePlanner:
     """GTAV 菜单导航规划"""
 
-    def _calc_tab_switch_actions(
-        self, src_tab: Union[int, str], dst_tab: Union[int, str]
-    ) -> tuple[str, int]:
+    def __init__(self, netmode: str = "在线模式"):
+        """初始化导航规划器
+
+        :param netmode: 模式名称，"在线模式" 或 "故事模式"
+        """
+        self.info_provider = MenuInfoProvider(netmode)
+
+    @property
+    def netmode(self) -> str:
+        """获取当前模式"""
+        return self.info_provider.netmode
+
+    @netmode.setter
+    def netmode(self, value: str):
+        """设置模式
+
+        :param value: 模式名称，"在线模式" 或 "故事模式"
+        """
+        self.info_provider.netmode = value
+
+    def _calc_tab_switch_action(
+        self, src_tab: ItemType, dst_tab: ItemType
+    ) -> ActionType:
         """计算标签页切换的动作
 
         :param src_tab: 当前标签页名称
@@ -136,27 +191,28 @@ class MenuNavigatePlanner:
 
         :return: 动作，格式为 (action, times) 元组
         """
-        src_tab_idx, _ = unify_tab(src_tab)
-        dst_tab_idx, _ = unify_tab(dst_tab)
+        src_tab_idx, _ = self.info_provider.unify_tab(src_tab)
+        dst_tab_idx, _ = self.info_provider.unify_tab(dst_tab)
+
         if src_tab_idx is None or dst_tab_idx is None:
             logger.warn(f"无法识别标签输入: {src_tab} 或 {dst_tab}")
             return None
         # 当前标签页即目标标签页
         if src_tab_idx == dst_tab_idx:
             return (None, 0)
-        # 向右移动次数
-        right_moves = (dst_tab_idx - src_tab_idx) % TABS_NUM
-        # 向左移动次数
-        left_moves = (src_tab_idx - dst_tab_idx) % TABS_NUM
+        # 计算移动次数
+        tabs_num = len(self.info_provider.focus_infos)
+        right_moves = (dst_tab_idx - src_tab_idx) % tabs_num
+        left_moves = (src_tab_idx - dst_tab_idx) % tabs_num
         if right_moves <= left_moves:
             actions = (Action.TAB_RIGHT, right_moves)
         else:
             actions = (Action.TAB_LEFT, left_moves)
         return actions
 
-    def _calc_item_nav_actions(
+    def _calc_item_nav_action(
         self, src_item: ItemType, dst_item: ItemType, item_infos: list[dict]
-    ) -> tuple[str, int]:
+    ) -> ActionType:
         """
         计算菜单项导航的动作
 
@@ -165,8 +221,8 @@ class MenuNavigatePlanner:
         :param item_infos: 该级菜单项信息列表
         :return: 动作，格式为 (action, times) 元组
         """
-        src_item_idx, _ = unify_item(src_item, item_infos)
-        dst_item_idx, _ = unify_item(dst_item, item_infos)
+        src_item_idx, _ = self.info_provider.unify_item(src_item, item_infos)
+        dst_item_idx, _ = self.info_provider.unify_item(dst_item, item_infos)
         items_num = len(item_infos)
         if src_item_idx is None or dst_item_idx is None:
             logger.warn(f"无法识别菜单项输入: {src_item} 或 {dst_item}")
@@ -174,9 +230,8 @@ class MenuNavigatePlanner:
         # 当前菜单项即目标菜单项
         if src_item_idx == dst_item_idx:
             return (None, 0)
-        # 向下移动次数
+        # 计算移动次数
         down_moves = (dst_item_idx - src_item_idx) % items_num
-        # 向上移动次数
         up_moves = (src_item_idx - dst_item_idx) % items_num
         if down_moves <= up_moves:
             actions = (Action.NAV_DOWN, down_moves)
@@ -184,7 +239,7 @@ class MenuNavigatePlanner:
             actions = (Action.NAV_UP, up_moves)
         return actions
 
-    def sum_actions_times(self, actions: list[tuple[str, int]]) -> int:
+    def sum_actions_times(self, actions: list[ActionType]) -> int:
         """计算动作列表中所有动作的总次数"""
         total = 0
         for action, times in actions:
@@ -217,7 +272,7 @@ class MenuNavigatePlanner:
 
     def _plan_backward(
         self, src_names: list[str], dst_names: list[str]
-    ) -> list[tuple[str, int]]:
+    ) -> list[ActionType]:
         """规划回退到目标路径
 
         :param src_names: 当前菜单项名称列表
@@ -225,7 +280,7 @@ class MenuNavigatePlanner:
 
         :return: 回退动作列表
         """
-        actions: list[tuple[str, int]] = []
+        actions: list[ActionType] = []
         # 回退到 common_len 层级
         cancel_times = len(src_names) - len(dst_names)
         if cancel_times > 0:
@@ -234,7 +289,7 @@ class MenuNavigatePlanner:
 
     def _plan_backward_to_sibling(
         self, src_names: list[str], dst_names: list[str]
-    ) -> list[tuple[str, int]]:
+    ) -> list[ActionType]:
         """规划回退到平级位置
 
         :param src_names: 当前菜单项名称列表
@@ -242,7 +297,7 @@ class MenuNavigatePlanner:
 
         :return: 回退动作列表
         """
-        actions: list[tuple[str, int]] = []
+        actions: list[ActionType] = []
         # 回退到 common_len + 1 层级，也即平级位置
         cancel_times = len(src_names) - len(dst_names) - 1
         if cancel_times > 0:
@@ -251,7 +306,7 @@ class MenuNavigatePlanner:
 
     def _plan_forward(
         self, src_names: list[str], dst_names: list[str]
-    ) -> list[tuple[str, int]]:
+    ) -> list[ActionType]:
         """规划从公共前缀位置前进到目标位置
 
         :param src_names: 公共前缀名称列表
@@ -259,7 +314,7 @@ class MenuNavigatePlanner:
 
         :return: 前进动作列表
         """
-        actions: list[tuple[str, int]] = []
+        actions: list[ActionType] = []
         if src_names == dst_names:
             return []
         # 从公共前缀的下一级开始，逐级前进到目标
@@ -268,13 +323,15 @@ class MenuNavigatePlanner:
             actions.append((Action.CONFIRM, 1))
             # 获取当前层级的父级路径和映射信息
             parent_names = dst_names[: level - 1]
-            item_infos = MENU_PARENT_TO_ITEM_INFOS.get(tuple(parent_names))
+            item_infos = self.info_provider.parent_to_item_infos.get(
+                tuple(parent_names)
+            )
             if item_infos is None:
                 self._log_error_parent_names(parent_names)
                 break
             # 导航到目标条目
             dst_name = dst_names[level - 1]
-            nav_action = self._calc_item_nav_actions(0, dst_name, item_infos=item_infos)
+            nav_action = self._calc_item_nav_action(0, dst_name, item_infos=item_infos)
             actions.append(nav_action)
         return actions
 
@@ -299,7 +356,7 @@ class MenuNavigatePlanner:
 
     def _plan_sibling(
         self, src_names: list[str], dst_names: list[str]
-    ) -> list[tuple[str, int]]:
+    ) -> list[ActionType]:
         """规划平级切换的导航路径
 
         :param src_names: 当前菜单项名称列表
@@ -307,13 +364,13 @@ class MenuNavigatePlanner:
 
         :return: 导航路径动作列表
         """
-        actions: list[tuple[str, int]] = []
+        actions: list[ActionType] = []
         if src_names == dst_names:
             return []
         # 获取父级路径
         parent_names = src_names[:-1]
         # 获取该级的条目信息
-        item_infos = MENU_PARENT_TO_ITEM_INFOS.get(tuple(parent_names))
+        item_infos = self.info_provider.parent_to_item_infos.get(tuple(parent_names))
         if item_infos is None:
             logger.warn(f"无法获取菜单项信息: 父级菜单路径 {parent_names}")
             return actions
@@ -321,27 +378,27 @@ class MenuNavigatePlanner:
         src_item_name = src_names[-1]
         dst_item_name = dst_names[-1]
         # 计算从当前项到目标项的导航动作
-        nav_action = self._calc_item_nav_actions(
+        nav_action = self._calc_item_nav_action(
             src_item_name, dst_item_name, item_infos=item_infos
         )
         actions.append(nav_action)
         return actions
 
-    def plan_from_origin(self, dst_names: list[str]) -> list[tuple[str, int]]:
+    def plan_from_origin(self, dst_names: list[str]) -> list[ActionType]:
         """从头规划导航路径：从菜单关闭状态，到 names 对应位置
 
         :param dst_names: 目标菜单项名称列表
 
         :return: 导航路径动作列表，每个动作为 (action, times) 元组
         """
-        actions: list[tuple[str, int]] = []
+        actions: list[ActionType] = []
         if not dst_names:
             return []
         # 打开菜单
         actions.append((Action.TOGGLE_MENU, 1))
         # 切换到目标标签页
         dst_tab_name = dst_names[0]
-        tab_action = self._calc_tab_switch_actions(0, dst_tab_name)
+        tab_action = self._calc_tab_switch_action(0, dst_tab_name)
         actions.append(tab_action)
         # 前进到目标位置
         forward_actions = self._plan_forward([dst_tab_name], dst_names)
@@ -350,7 +407,7 @@ class MenuNavigatePlanner:
 
     def plan_from_source(
         self, src_names: list[str], dst_names: list[str]
-    ) -> list[tuple[str, int]]:
+    ) -> list[ActionType]:
         """规划导航路径: 从 src_names 到 dst_names
 
         :param src_names: 当前菜单项名称列表
@@ -368,7 +425,7 @@ class MenuNavigatePlanner:
         if src_names == dst_names:
             return []
 
-        actions: list[tuple[str, int]] = []
+        actions: list[ActionType] = []
 
         # 找到公共前缀
         common_len = self._calc_common_prefix_length(src_names, dst_names)
@@ -376,7 +433,7 @@ class MenuNavigatePlanner:
 
         # 特殊情况：跨标签页
         if common_len == 0:
-            tab_action = self._calc_tab_switch_actions(src_names[0], dst_names[0])
+            tab_action = self._calc_tab_switch_action(src_names[0], dst_names[0])
             actions.append(tab_action)
             # 从标签页切换后，前进到目标位置
             forward_actions = self._plan_forward([dst_names[0]], dst_names)
@@ -418,18 +475,33 @@ class MenuNavigator:
         self.capturer = ScreenCapturer()
         self.converter = LocateNamesConverter()
         self.planner = MenuNavigatePlanner()
+        self.netmode: str = None
+
+    def _update_netmode_from_result(self, result: MergedMatchResult) -> None:
+        """根据定位结果更新当前网络模式
+
+        :param result: 定位结果
+        """
+        if result and result.netmode and not is_score_too_low(result.netmode):
+            netmode_name = result.netmode.name
+            if self.netmode != netmode_name:
+                self.netmode = netmode_name
+                self.planner.netmode = netmode_name
+                logger.note(f"切换到模式: {netmode_name}")
 
     def locate(self) -> MergedMatchResult:
         """获取当前菜单定位结果"""
         frame_np = self.capturer.capture_frame().to_np()
-        return self.locator.locate(frame_np)
+        result = self.locator.locate(frame_np)
+        self._update_netmode_from_result(result)
+        return result
 
     def locate_names(self) -> list[str]:
         """获取当前菜单项名称列表"""
         locate_result = self.locate()
         return self.converter.to_names(locate_result)
 
-    def plan_actions(self, dst_names: list[str]) -> list[tuple[str, int]]:
+    def plan_actions(self, dst_names: list[str]) -> list[ActionType]:
         """规划导航到指定菜单项的动作"""
         src_names = self.locate_names()
         actions = self.planner.plan_from_source(src_names, dst_names)
@@ -449,8 +521,14 @@ class MenuNavigator:
             # 菜单已打开，执行关闭操作
             self.interactor.toggle_menu()
 
-    def execute_actions(self, actions: list[tuple[str, int]]):
+    def execute_actions(self, actions: list[ActionType]):
+        """执行导航动作列表
+
+        :param actions: 动作列表，每项为 (action, times) 元组
+        """
         for action in actions:
+            if not action:
+                continue
             act, times = action
             if not act or not times:
                 continue
@@ -477,11 +555,17 @@ class MenuNavigator:
         logger.warn(f"[{retry}/{max_retries}] 未导航到预期位置，当前路径: {names}")
 
     def go_to(self, dst_names: list[str], max_retries: int = 3) -> list[str]:
-        """导航到指定菜单项"""
+        """导航到指定菜单项
+
+        :param dst_names: 目标菜单项名称列表
+        :param max_retries: 最大重试次数
+
+        :return: 当前菜单项名称列表
+        """
         retry = 0
         while retry < max_retries:
             actions = self.plan_actions(dst_names)
-            logger.mesg(f"导航动作: {actions}")
+            logger.mesg(f"当前模式: {self.planner.netmode}, 导航动作: {actions}")
             self.execute_actions(actions)
             names = self.locate_names()
             if names == dst_names:
@@ -608,11 +692,11 @@ def test_menu_navigator():
     names = navigator.locate_names()
     logger.mesg(f"当前路径: {names}")
 
-    dst_names = ["在线", "差事", "进行差事", "已收藏的", "夺取"]
-    # dst_names = ["在线"]
+    # dst_names = ["在线", "差事"]
+    # dst_names = ["在线", "差事", "进行差事", "已收藏的", "夺取"]
+    dst_names = ["在线", "进入GTA在线模式"]
     logger.mesg(f"导航到: {dst_names}")
-    navigator.go_to(dst_names)
-
+    names = navigator.go_to(dst_names)
     logger.mesg(f"当前路径: {names}")
 
 
