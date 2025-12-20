@@ -177,7 +177,7 @@ ITEM_在线_INFOS = [
     {"name": "退至主菜单", "img": "item_在线_退至主菜单.jpg", "level": 2, "index": 16},
     {"name": "退出游戏", "img": "item_在线_退出游戏.jpg", "level": 2, "index": 17},
 ]
-iTEM_在线_INFOS = add_names(ITEM_在线_INFOS, ("在线",))
+ITEM_在线_INFOS = add_names(ITEM_在线_INFOS, ("在线",))
 
 # 三级条目: ["在线", "差事"]
 ITEM_在线_差事_INFOS = [
@@ -368,17 +368,20 @@ MENU_ITEM_INFOS = (
 )
 
 
-def build_parent_to_item_infos_map() -> dict[tuple[str, ...], list[dict]]:
+def build_parent_to_item_infos_map(
+    item_infos: list[dict],
+) -> dict[tuple[str, ...], list[dict]]:
     """构建父级到子级条目的映射表"""
     res: dict[tuple[str, ...], list[dict]] = {}
-    for item_info in MENU_ITEM_INFOS:
+    for item_info in item_infos:
         if item_info["parent"] not in res:
             res[item_info["parent"]] = []
         res[item_info["parent"]].append(item_info)
     return res
 
 
-MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map()
+# 父级到子级条目的映射表
+MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map(MENU_ITEM_INFOS)
 
 # ========================= 退出 ========================= #
 
@@ -390,6 +393,178 @@ EXIT_INFOS = [
     {"name": "战局", "img": "exit_战局.jpg"},
     {"name": "快速加入", "img": "exit_快速加入.jpg"},
 ]
+
+# =================== 故事模式 - 标题和焦点 =================== #
+
+# 故事模式 - 菜单标题
+STORY_MENU_HEADER_INFOS = [
+    {"name": "地图", "img": "故事_header_地图.jpg", "level": 1, "index": 0},
+    {"name": "简讯", "img": "故事_header_简讯.jpg", "level": 1, "index": 1},
+    {"name": "统计", "img": "故事_header_统计.jpg", "level": 1, "index": 2},
+    {"name": "设置", "img": "故事_header_设置.jpg", "level": 1, "index": 3},
+    {"name": "游戏", "img": "故事_header_游戏.jpg", "level": 1, "index": 4},
+    {"name": "在线", "img": "故事_header_在线.jpg", "level": 1, "index": 5},
+    {"name": "好友", "img": "故事_header_好友.jpg", "level": 1, "index": 6},
+    {"name": "相册", "img": "故事_header_相册.jpg", "level": 1, "index": 7},
+    {"name": "商店", "img": "故事_header_商店.jpg", "level": 1, "index": 8},
+    {
+        "name": "Rockstar编辑器",
+        "img": "故事_header_Rockstar编辑器.jpg",
+        "level": 1,
+        "index": 9,
+    },
+]
+
+# 故事模式 - 菜单焦点
+STORY_MENU_FOCUS_INFOS = [
+    {"name": "地图", "img": "故事_focus_地图.jpg", "level": 1, "index": 0},
+    {"name": "简讯", "img": "故事_focus_简讯.jpg", "level": 1, "index": 1},
+    {"name": "统计", "img": "故事_focus_统计.jpg", "level": 1, "index": 2},
+    {"name": "设置", "img": "故事_focus_设置.jpg", "level": 1, "index": 3},
+    {"name": "游戏", "img": "故事_focus_游戏.jpg", "level": 1, "index": 4},
+    {"name": "在线", "img": "故事_focus_在线.jpg", "level": 1, "index": 5},
+    {"name": "好友", "img": "故事_focus_好友.jpg", "level": 1, "index": 6},
+    {"name": "相册", "img": "故事_focus_相册.jpg", "level": 1, "index": 7},
+    {"name": "商店", "img": "故事_focus_商店.jpg", "level": 1, "index": 8},
+    {
+        "name": "Rockstar编辑器",
+        "img": "故事_focus_Rockstar编辑器.jpg",
+        "level": 1,
+        "index": 9,
+    },
+]
+STORY_MENU_FOCUS_INFOS = add_names(STORY_MENU_FOCUS_INFOS, ())
+
+
+# =================== 故事模式 - 列表 =================== #
+
+# 故事模式 - 一级列表
+STORY_LIST_MAIN_INFOS = [
+    {"name": "在线", "img": "故事_list_在线.jpg", "level": 1, "total": 5},
+    {"name": "游戏", "img": "故事_list_游戏.jpg", "level": 1, "total": 8},
+]
+STORY_LIST_MAIN_INFOS = add_names(STORY_LIST_MAIN_INFOS, ())
+
+# 故事模式 - 二级列表: ["在线"]
+STORY_LIST_在线_INFOS = [
+    {
+        "name": "进入GTA在线模式",
+        "img": "故事_list_在线_进入GTA在线模式.jpg",
+        "level": 2,
+        "total": 5,
+    },
+]
+STORY_LIST_在线_INFOS = add_names(STORY_LIST_在线_INFOS, ("在线",))
+
+# 故事模式 - 菜单列表合集
+STORY_MENU_LIST_INFOS = STORY_LIST_MAIN_INFOS + STORY_LIST_在线_INFOS
+
+# =================== 故事模式 - 条目 =================== #
+
+# 故事模式 - 二级条目: ["游戏"]
+STORY_ITEM_游戏_INFOS = [
+    {"name": "重玩任务", "img": "故事_item_游戏_重玩任务.jpg", "level": 2, "index": 0},
+    {
+        "name": "重玩陌生人和怪胎",
+        "img": "故事_item_游戏_重玩陌生人和怪胎.jpg",
+        "level": 2,
+        "index": 1,
+    },
+    {"name": "加载游戏", "img": "故事_item_游戏_加载游戏.jpg", "level": 2, "index": 2},
+    {"name": "新游戏", "img": "故事_item_游戏_新游戏.jpg", "level": 2, "index": 3},
+    {
+        "name": "下载游戏存档",
+        "img": "故事_item_游戏_下载游戏存档.jpg",
+        "level": 2,
+        "index": 4,
+    },
+    {
+        "name": "制作人员名单和法律声明",
+        "img": "故事_item_游戏_制作人员名单和法律声明.jpg",
+        "level": 2,
+        "index": 5,
+    },
+    {
+        "name": "退至主菜单",
+        "img": "故事_item_游戏_退至主菜单.jpg",
+        "level": 2,
+        "index": 6,
+    },
+    {"name": "退出游戏", "img": "故事_item_游戏_退出游戏.jpg", "level": 2, "index": 7},
+]
+STORY_ITEM_游戏_INFOS = add_names(STORY_ITEM_游戏_INFOS, ("游戏",))
+
+# 故事模式 - 二级条目: ["在线"]
+STORY_ITEM_在线_INFOS = [
+    {"name": "加入好友", "img": "故事_item_在线_加入好友.jpg", "level": 2, "index": 0},
+    {
+        "name": "加入帮会成员",
+        "img": "故事_item_在线_加入帮会成员.jpg",
+        "level": 2,
+        "index": 1,
+    },
+    {"name": "帮会", "img": "故事_item_在线_帮会.jpg", "level": 2, "index": 2},
+    {
+        "name": "Rockstar制作器",
+        "img": "故事_item_在线_Rockstar制作器.jpg",
+        "level": 2,
+        "index": 3,
+    },
+    {
+        "name": "进入GTA在线模式",
+        "img": "故事_item_在线_进入GTA在线模式.jpg",
+        "level": 2,
+        "index": 4,
+    },
+]
+STORY_ITEM_在线_INFOS = add_names(STORY_ITEM_在线_INFOS, ("在线",))
+
+# 故事模式 - 三级条目: ["在线", "进入GTA在线模式"]
+STORY_ITEM_在线_进入GTA在线模式_INFOS = [
+    {
+        "name": "进入",
+        "img": "故事_item_在线_进入GTA在线模式_进入.jpg",
+        "level": 2,
+        "index": 0,
+    },
+    {
+        "name": "凭邀请加入的战局",
+        "img": "故事_item_在线_进入GTA在线模式_凭邀请加入的战局.jpg",
+        "level": 2,
+        "index": 1,
+    },
+    {
+        "name": "帮会战局",
+        "img": "故事_item_在线_进入GTA在线模式_帮会战局.jpg",
+        "level": 2,
+        "index": 2,
+    },
+    {
+        "name": "非公开帮会战局",
+        "img": "故事_item_在线_进入GTA在线模式_非公开帮会战局.jpg",
+        "level": 2,
+        "index": 3,
+    },
+    {
+        "name": "非公开好友战局",
+        "img": "故事_item_在线_进入GTA在线模式_非公开好友战局.jpg",
+        "level": 2,
+        "index": 4,
+    },
+]
+STORY_ITEM_在线_进入GTA在线模式_INFOS = add_names(
+    STORY_ITEM_在线_进入GTA在线模式_INFOS, ("在线", "进入GTA在线模式")
+)
+
+# 故事模式 - 菜单条目合集
+STORY_MENU_ITEM_INFOS = (
+    STORY_ITEM_游戏_INFOS
+    + STORY_ITEM_在线_INFOS
+    + STORY_ITEM_在线_进入GTA在线模式_INFOS
+)
+
+# 故事模式 - 父级到子级条目的映射表
+STORY_MENU_PARENT_TO_ITEM_INFOS = build_parent_to_item_infos_map(STORY_MENU_ITEM_INFOS)
 
 # ========================= 工具函数 ========================= #
 
