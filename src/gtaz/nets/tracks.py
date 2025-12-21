@@ -16,6 +16,41 @@ pip install psutil scapy
 ```
 """
 
+"""
+样例输出：
+
+=== 网络统计 ===
+运行时长: 155.2秒
+总连接数: 27
+已建立连接: 14
+
+发送流量: ↑ 112.1KB (237 包)
+接收流量: ↓ 124.1KB (223 包)
+总流量: 236.1KB
+平均发送速率: 739.3B/s
+平均接收速率: 818.7B/s
+平均总速率: 1.5KB/s
+
+当前活跃连接: 6
+    -> :0 OUT UDP NONE ↑180.0B ↓180.0B (↑3p ↓3p)
+    -> :0 OUT UDP NONE ↑302.0B ↓238.0B (↑2p ↓2p)
+    <- ns3158736.ip-51-89-97.eu:61475 IN TCP ESTABLISHED ↑54.0B ↓334.0B (↑1p ↓1p)
+    -> :0 OUT UDP NONE ↑0.0B ↓0.0B (↑0p ↓0p)
+    -> 192.81.241.173:443 OUT TCP ESTABLISHED ↑1.4KB ↓961.0B (↑7p ↓6p)
+    -> 192.81.241.173:443 OUT TCP ESTABLISHED ↑1.4KB ↓1.0KB (↑7p ↓7p)
+
+历史总连接: 28 (合并后: 8)
+    -> 192.81.241.171:443 OUT TCP ESTABLISHED ↑89.7KB ↓9.4KB (↑76p ↓41p)
+    -> 192.81.241.100:443 OUT TCP SYN_SENT ↑7.6KB ↓88.7KB (↑61p ↓86p)
+    -> 104.255.106.70:443 OUT TCP ESTABLISHED ↑7.1KB ↓13.6KB (↑43p ↓37p)
+    -> 192.81.241.173:443 OUT TCP ESTABLISHED ↑3.0KB ↓2.8KB (↑18p ↓19p)
+    -> 192.81.241.174:443 OUT TCP SYN_SENT ↑2.2KB ↓4.3KB (↑15p ↓13p)
+    <- ns3158736.ip-51-89-97.eu:61475 IN TCP ESTABLISHED ↑2.1KB ↓4.9KB (↑19p ↓22p)
+    -> :0 OUT UDP NONE ↑482.0B ↓418.0B (↑5p ↓5p)
+    -> 192.81.241.170:443 OUT TCP ESTABLISHED ↑0.0B ↓0.0B (↑0p ↓0p)
+
+"""
+
 import time
 import socket
 import threading
@@ -164,6 +199,7 @@ class GTAVNetworkTracker:
         # 连接追踪
         self._known_connections: set[tuple] = set()
         self._connection_map: dict[tuple, NetworkConnection] = {}  # 用于流量统计
+        self._all_connections: list[NetworkConnection] = []  # 所有历史连接
         self._local_ports: set[int] = set()  # 用于数据包过滤
 
         # DNS 缓存
@@ -306,6 +342,7 @@ class GTAVNetworkTracker:
         """
         key = self._connection_key(conn)
         self._connection_map[key] = conn
+        self._all_connections.append(conn)  # 记录到历史连接
         self._local_ports.add(conn.local_port)
 
         # 尝试 DNS 解析
@@ -555,7 +592,7 @@ class GTAVNetworkTracker:
         total = NetworkConnection._format_bytes(
             self.stats["bytes_sent"] + self.stats["bytes_received"]
         )
-
+        print()
         logger.mesg(f"发送流量: ↑ {sent} ({self.stats['packets_sent']} 包)")
         logger.mesg(f"接收流量: ↓ {recv} ({self.stats['packets_received']} 包)")
         logger.mesg(f"总流量: {total}")
@@ -583,6 +620,38 @@ class GTAVNetworkTracker:
         if active_count > 0:
             logger.note(f"\n当前活跃连接: {active_count}")
             for conn in list(self._connection_map.values())[:10]:  # 只显示前10个
+                logger.mesg(
+                    f"  {conn} {conn.get_status_info()} {conn.get_traffic_info()}"
+                )
+
+        # 历史总连接（按上传流量倒序）
+        if self._all_connections:
+            # 合并同一 IP 和端口的连接
+            merged_connections: dict[tuple, NetworkConnection] = {}
+            for conn in self._all_connections:
+                # 使用 (remote_addr, remote_port) 作为合并键
+                merge_key = (conn.remote_addr, conn.remote_port)
+                if merge_key in merged_connections:
+                    # 合并流量统计
+                    existing = merged_connections[merge_key]
+                    existing.bytes_sent += conn.bytes_sent
+                    existing.bytes_received += conn.bytes_received
+                    existing.packets_sent += conn.packets_sent
+                    existing.packets_received += conn.packets_received
+                    # 更新最后活跃时间
+                    if conn.last_active > existing.last_active:
+                        existing.last_active = conn.last_active
+                else:
+                    merged_connections[merge_key] = conn
+
+            logger.note(
+                f"\n历史总连接: {len(self._all_connections)} (合并后: {len(merged_connections)})"
+            )
+            # 按发送流量倒序排序
+            sorted_connections = sorted(
+                merged_connections.values(), key=lambda c: c.bytes_sent, reverse=True
+            )
+            for conn in sorted_connections[:20]:  # 显示前20个
                 logger.mesg(
                     f"  {conn} {conn.get_status_info()} {conn.get_traffic_info()}"
                 )
