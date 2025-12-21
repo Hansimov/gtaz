@@ -1,5 +1,8 @@
 """GTA 在线/故事 模式切换模块"""
 
+import argparse
+import sys
+
 from tclogger import TCLogger, logstr
 
 from ..menus.navigates import MenuNavigator
@@ -93,7 +96,7 @@ class NetmodeSwitcher:
         while retry < max_retries:
             retry += 1
             if retry > 1:
-                retry_str = f"[{retry} / {max_retries}] "
+                retry_str = f"[{retry}/{max_retries}] "
             else:
                 retry_str = ""
             logger.note(f"{retry_str}尝试导航到: {dst_names}")
@@ -181,22 +184,74 @@ class NetmodeSwitcher:
         return self._switch_mode(dst_names, mode_desc, max_retries)
 
 
-def test_netmode_switcher():
-    """测试模式切换器"""
-    logger.note("测试: GTAVNetmodeSwitcher...")
+def parse_args() -> argparse.Namespace:
+    """
+    解析命令行参数。
+
+    :return: 解析后的参数
+    """
+    parser = argparse.ArgumentParser(
+        description="GTA 在线/故事模式切换工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python -m gtaz.workers.mode_switch -o    # 故事模式 -> 在线模式
+  python -m gtaz.workers.mode_switch -s    # 在线模式 -> 故事模式
+  python -m gtaz.workers.mode_switch -i    # 新的邀请战局
+        """,
+    )
+
+    parser.add_argument(
+        "-o",
+        "--online",
+        action="store_true",
+        help="故事模式 -> 在线模式",
+    )
+    parser.add_argument(
+        "-s",
+        "--story",
+        action="store_true",
+        help="在线模式 -> 故事模式",
+    )
+    parser.add_argument(
+        "-i",
+        "--invite",
+        action="store_true",
+        help="新的邀请战局",
+    )
+    return parser.parse_args()
+
+
+def main():
+    """主函数，处理命令行参数"""
+    if len(sys.argv) == 1:
+        # 没有参数时显示帮助
+        sys.argv.append("-h")
+    args = parse_args()
+
     switcher = NetmodeSwitcher()
 
-    # 故事模式 -> 在线模式
-    # switcher.switch_story_to_online()
+    if args.online:
+        switcher.switch_story_to_online()
 
-    # 在线模式 -> 故事模式
-    # switcher.switch_online_to_story()
+    if args.story:
+        switcher.switch_online_to_story()
 
-    # 新的邀请战局
-    switcher.switch_to_new_invite_lobby()
+    if args.invite:
+        switcher.switch_to_new_invite_lobby()
 
 
 if __name__ == "__main__":
-    test_netmode_switcher()
+    main()
 
+    # 显示帮助信息
     # python -m gtaz.workers.mode_switch
+
+    # 故事模式 -> 在线模式
+    # python -m gtaz.workers.mode_switch -o
+
+    # 在线模式 -> 故事模式
+    # python -m gtaz.workers.mode_switch -s
+
+    # 新的邀请战局
+    # python -m gtaz.workers.mode_switch -i
