@@ -231,7 +231,9 @@ class MenuNavigatePlanner:
         # 计算移动次数
         down_moves = (dst_item_idx - src_item_idx) % items_num
         up_moves = (src_item_idx - dst_item_idx) % items_num
-        if down_moves <= up_moves:
+        if down_moves - 4 <= up_moves:
+            # 向下移动不容易卡住，因此多留点余地
+            # 例如在故事模式，当向上移动越过位置0时，理应跳到最底部的菜单项，但经常会卡住
             actions = (Action.NAV_DOWN, down_moves)
         else:
             actions = (Action.NAV_UP, up_moves)

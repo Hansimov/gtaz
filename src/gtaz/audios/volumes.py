@@ -30,8 +30,9 @@ logger = TCLogger(name="VolumeMonitor", use_prefix=True, use_prefix_ms=True)
 GTAV_PROCESS_NAME = "GTA5_Enhanced.exe"
 # 默认音频输出设备名称
 GTAV_AUDIO_DEVICE_NAME = "CABLE Input"
-# 音量字符（6个高度）
+# 音量字符
 VOLUME_CHARS = "▁▂▃▅▆▇"
+# 音量量化位数
 VOLUME_BITS = len(VOLUME_CHARS)
 # 采样间隔（毫秒）
 SAMPLE_INTERVAL_MS = 200

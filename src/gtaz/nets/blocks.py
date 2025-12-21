@@ -48,7 +48,7 @@ def run_command(
 # GTAV 增强版进程名
 GTAV_PROCESS_NAME = "GTA5_Enhanced.exe"
 # 防火墙规则名称
-GTAV_FIREWALL_RULE_NAME = "GTAV_Block_Outbound"
+GTAV_FIREWALL_RULE_NAME = "GTAV_Blocker"
 
 
 class GTAVFirewallBlocker:
