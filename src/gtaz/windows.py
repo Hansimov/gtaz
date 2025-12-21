@@ -13,7 +13,7 @@ from typing import Optional
 from tclogger import TCLogger
 
 
-logger = TCLogger(name="GTAVWindowLocator", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="WindowLocator", use_prefix=True, use_prefix_ms=True)
 
 
 # GTAV 增强版进程名
@@ -76,7 +76,7 @@ class GTAVWindowLocator:
         """
         hwnd = self.user32.FindWindowW(self.window_class_name, self.window_title)
         if hwnd:
-            logger.okay(f"找到 GTAV 窗口: HWND={hwnd}")
+            logger.okay(f"已找到 GTAV 窗口: HWND={hwnd}")
             return hwnd
         else:
             logger.warn(

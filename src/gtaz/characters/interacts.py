@@ -8,7 +8,7 @@ from ..gamepads import Button, JoystickDirection, TriggerPressure
 from ..gamepads import sleep_ms
 
 
-logger = TCLogger(name="GTAVCharacterInteractor", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="CharacterInteractor", use_prefix=True, use_prefix_ms=True)
 
 
 class CharacterInteractor:

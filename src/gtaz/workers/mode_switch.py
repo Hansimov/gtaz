@@ -7,7 +7,7 @@ from ..menus.locates import ExitLocatorRunner, is_score_too_low
 from ..screens import ScreenCapturer
 
 
-logger = TCLogger(name="GTAVNetmodeSwitcher", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="NetmodeSwitcher", use_prefix=True, use_prefix_ms=True)
 
 
 class NetmodeSwitcher:

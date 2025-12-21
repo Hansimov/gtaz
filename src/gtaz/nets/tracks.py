@@ -43,7 +43,7 @@ except ImportError:
     HAS_SCAPY = False
 
 
-logger = TCLogger(name="GTAVNetTracker", use_prefix=True)
+logger = TCLogger(name="NetTracker", use_prefix=True)
 
 
 # 默认进程名

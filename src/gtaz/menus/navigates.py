@@ -11,7 +11,7 @@ from .interacts import MenuInteractor
 from .locates import MenuLocatorRunner, is_score_too_low, is_score_high
 from ..screens import ScreenCapturer
 
-logger = TCLogger(name="GTAVMenuNavigator", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="MenuNavigator", use_prefix=True, use_prefix_ms=True)
 
 ItemType = Union[str, int]
 ActionType = tuple[str, int]

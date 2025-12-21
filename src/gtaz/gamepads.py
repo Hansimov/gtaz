@@ -13,7 +13,7 @@ from tclogger import TCLogger
 from typing import Union
 
 
-logger = TCLogger(name="GTAVGamepad", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="Gamepad", use_prefix=True, use_prefix_ms=True)
 
 
 class Button(enum.IntFlag):
@@ -86,8 +86,9 @@ def sleep_ms(ms: int):
 class GamepadSimulator:
     """模拟手柄操作"""
 
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
         self.pad = None
+        self.verbose = verbose
         self._init_gamepad()
 
     # ================== 手柄初始化 =================== #
@@ -97,13 +98,13 @@ class GamepadSimulator:
         self._create_gamepad()
         self._reset_gamepad()
         self._wake_gamepad()
-        logger.okay("手柄初始化完成")
+        logger.okay("手柄初始化完成", verbose=self.verbose)
 
     def _create_gamepad(self):
         """创建手柄设备"""
         try:
             self.pad = vg.VX360Gamepad()
-            logger.okay("手柄设备已创建")
+            logger.okay("手柄设备已创建", verbose=self.verbose)
         except Exception as e:
             logger.warn(f"手柄初始化失败: {e}")
             logger.note("请确保已安装 ViGEmBus 驱动，且没有其他程序正在使用")
@@ -120,10 +121,10 @@ class GamepadSimulator:
         """重置手柄状态"""
         if self.pad:
             try:
-                logger.mesg("正在重置手柄状态...")
+                logger.mesg("正在重置手柄状态...", verbose=self.verbose)
                 self.pad.reset()
                 self.pad.update()
-                logger.mesg("手柄状态已重置")
+                logger.mesg("手柄状态已重置", verbose=self.verbose)
             except Exception as e:
                 logger.warn(f"重置手柄失败: {e}")
 

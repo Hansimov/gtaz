@@ -7,7 +7,7 @@ from tclogger import TCLogger
 from ..gamepads import GamepadSimulator, Button, sleep_ms
 
 
-logger = TCLogger(name="GTAVMenuInteractor", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="MenuInteractor", use_prefix=True, use_prefix_ms=True)
 
 
 class MenuInteractor:
