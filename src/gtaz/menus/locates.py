@@ -21,7 +21,7 @@ from .commons import REF_WIDTH, REF_HEIGHT, MAX_LIST_SIZE
 from .commons import key_note, val_mesg, is_names_start_with
 
 
-logger = TCLogger(name="GTAMenuLocator", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="GTAVMenuLocator", use_prefix=True, use_prefix_ms=True)
 
 
 MATCH_THRESHOLD = 0.5

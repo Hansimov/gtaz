@@ -1,7 +1,6 @@
 """GTAV 菜单导航模块"""
 
-from dataclasses import dataclass
-from tclogger import TCLogger
+from tclogger import TCLogger, logstr
 from typing import Union
 
 from .locates import MatchResult, MergedMatchResult
@@ -468,13 +467,14 @@ class MenuNavigatePlanner:
 
 
 class MenuNavigator:
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
         self.interactor = MenuInteractor()
         self.locator_runner = MenuLocatorRunner()
         self.capturer = ScreenCapturer()
         self.converter = LocateNamesConverter()
         self.planner = MenuNavigatePlanner()
         self.netmode: str = None
+        self.verbose = verbose
 
     def _update_netmode_from_result(self, result: MergedMatchResult) -> None:
         """根据定位结果更新当前网络模式
@@ -486,12 +486,12 @@ class MenuNavigator:
             if self.netmode != netmode_name:
                 self.netmode = netmode_name
                 self.planner.netmode = netmode_name
-                logger.note(f"切换到模式: {netmode_name}")
+                logger.mesg(f"导航模式切换到: [{netmode_name}]")
 
     def locate(self) -> MergedMatchResult:
         """获取当前菜单定位结果"""
-        frame_np = self.capturer.capture_frame().to_np()
-        result = self.locator_runner.locate(frame_np)
+        frame_np = self.capturer.capture_frame(verbose=self.verbose).to_np()
+        result = self.locator_runner.locate(frame_np, verbose=self.verbose)
         self._update_netmode_from_result(result)
         return result
 
@@ -578,7 +578,9 @@ class MenuNavigator:
         retry = 0
         while retry < max_retries:
             actions = self.plan_actions(dst_names)
-            logger.mesg(f"当前模式: {self.planner.netmode}, 导航动作: {actions}")
+            logger.mesg(f"当前模式: [{self.planner.netmode}]")
+            if self.verbose:
+                logger.mesg(f"导航动作: {logstr.file(actions)}")
             self.execute_actions(actions)
             names = self.locate_names()
             if names == dst_names:

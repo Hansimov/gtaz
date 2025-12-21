@@ -13,7 +13,7 @@ from typing import Optional
 from tclogger import TCLogger
 
 
-logger = TCLogger(name="GTAVWindowLocator", use_prefix=True)
+logger = TCLogger(name="GTAVWindowLocator", use_prefix=True, use_prefix_ms=True)
 
 
 # GTAV 增强版进程名

@@ -7,7 +7,7 @@ from ..menus.locates import ExitLocatorRunner, is_score_too_low
 from ..screens import ScreenCapturer
 
 
-logger = TCLogger(name="NetmodeSwitcher", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(name="GTAVNetmodeSwitcher", use_prefix=True, use_prefix_ms=True)
 
 
 class NetmodeSwitcher:
@@ -31,13 +31,13 @@ class NetmodeSwitcher:
         # 确保菜单打开
         self.navigator.ensure_menu_opened()
         # 截取屏幕
-        frame_np = self.capturer.capture_frame().to_np()
+        frame_np = self.capturer.capture_frame(verbose=False).to_np()
         # 使用 navigator 的 locator 来匹配模式
         result = self.navigator.locator_runner.locator.match_mode(frame_np)
         # 判断匹配结果
         if not is_score_too_low(result):
             mode_name = result.name
-            logger.mesg(f"当前模式: {mode_name}")
+            logger.mesg(f"当前模式: [{mode_name}]")
             return mode_name
         else:
             logger.warn("无法识别当前模式")
@@ -57,12 +57,12 @@ class NetmodeSwitcher:
             # 等待退出提示出现
             self.interactor.wait_until_ready(500)
             # 截取屏幕
-            frame_np = self.capturer.capture_frame().to_np()
+            frame_np = self.capturer.capture_frame(verbose=False).to_np()
             # 定位退出提示
             exit_result = self.exit_runner.locate(frame_np, verbose=True)
             # 判断是否匹配到退出提示
             if not is_score_too_low(exit_result):
-                logger.okay(f"定位到退出提示: {exit_result.name}")
+                logger.okay(f"已定位到退出提示: {exit_result.name}")
                 # 确认退出
                 self.interactor.confirm()
                 logger.okay("已确认退出")
@@ -92,7 +92,11 @@ class NetmodeSwitcher:
         retry = 0
         while retry < max_retries:
             retry += 1
-            logger.mesg(f"[{retry}/{max_retries}] 尝试导航到: {dst_names}")
+            if retry > 1:
+                retry_str = f"[{retry} / {max_retries}] "
+            else:
+                retry_str = ""
+            logger.note(f"{retry_str}尝试导航到: {dst_names}")
             # 导航到目标菜单项
             current_names = self.navigator.go_to(dst_names)
             # 检查是否导航到目标位置
@@ -103,7 +107,7 @@ class NetmodeSwitcher:
                 logger.mesg("已确认选择，等待退出提示...")
                 # 定位退出提示并确认
                 if self.exit_and_confirm():
-                    logger.okay("模式切换成功")
+                    logger.okay("已完成切换")
                     return True
                 # 如果定位退出提示失败，继续重试整个流程
             else:
@@ -179,7 +183,7 @@ class NetmodeSwitcher:
 
 def test_netmode_switcher():
     """测试模式切换器"""
-    logger.note("测试: NetmodeSwitcher...")
+    logger.note("测试: GTAVNetmodeSwitcher...")
     switcher = NetmodeSwitcher()
 
     # 故事模式 -> 在线模式
@@ -189,7 +193,7 @@ def test_netmode_switcher():
     # switcher.switch_online_to_story()
 
     # 新的邀请战局
-    # switcher.switch_to_new_invite_lobby()
+    switcher.switch_to_new_invite_lobby()
 
 
 if __name__ == "__main__":
