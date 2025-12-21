@@ -1,6 +1,6 @@
 """GTA 在线/故事 模式切换模块"""
 
-from tclogger import TCLogger
+from tclogger import TCLogger, logstr
 
 from ..menus.navigates import MenuNavigator
 from ..menus.locates import ExitLocatorRunner, is_score_too_low
@@ -16,10 +16,32 @@ class NetmodeSwitcher:
     def __init__(self):
         """初始化模式切换器"""
         self.navigator = MenuNavigator()
-        self.exit_locator = ExitLocatorRunner()
         self.capturer = ScreenCapturer()
         # 使用 navigator 中的 interactor，避免创建新的手柄（会不生效）
         self.interactor = self.navigator.interactor
+        # 使用 navigator 中的 locator
+        self.locator = self.navigator.locator_runner.locator
+        self.exit_runner = ExitLocatorRunner()
+
+    def get_netmode(self) -> str:
+        """获取当前模式
+
+        :return: 当前模式名称，"在线模式" 或 "故事模式"，如果无法识别则返回 None
+        """
+        # 确保菜单打开
+        self.navigator.ensure_menu_opened()
+        # 截取屏幕
+        frame_np = self.capturer.capture_frame().to_np()
+        # 使用 navigator 的 locator 来匹配模式
+        result = self.navigator.locator_runner.locator.match_mode(frame_np)
+        # 判断匹配结果
+        if not is_score_too_low(result):
+            mode_name = result.name
+            logger.mesg(f"当前模式: {mode_name}")
+            return mode_name
+        else:
+            logger.warn("无法识别当前模式")
+            return None
 
     def exit_and_confirm(self, max_retries: int = 10) -> bool:
         """定位退出提示并确认
@@ -37,7 +59,7 @@ class NetmodeSwitcher:
             # 截取屏幕
             frame_np = self.capturer.capture_frame().to_np()
             # 定位退出提示
-            exit_result = self.exit_locator.locate(frame_np, verbose=True)
+            exit_result = self.exit_runner.locate(frame_np, verbose=True)
             # 判断是否匹配到退出提示
             if not is_score_too_low(exit_result):
                 logger.okay(f"定位到退出提示: {exit_result.name}")
@@ -90,12 +112,25 @@ class NetmodeSwitcher:
         logger.fail("模式切换失败")
         return False
 
+    def _log_okay_mode(self, mode_name: str) -> None:
+        """记录当前模式
+
+        :param mode_name: 当前模式名称
+        """
+        logger.note(f"当前已是{logstr.okay(mode_name)}，无需切换")
+
     def switch_story_to_online(self, max_retries: int = 5) -> bool:
         """故事模式切换到在线模式
 
         :param max_retries: 最大重试次数
         :return: 是否成功切换模式
         """
+        # 检查当前模式
+        mode = self.get_netmode()
+        if mode == "在线模式":
+            self._log_okay_mode(mode)
+            return True
+
         dst_names = ["在线", "进入GTA在线模式", "凭邀请加入的战局"]
         return self._switch_mode(dst_names, "故事模式 -> 在线模式", max_retries)
 
@@ -105,6 +140,12 @@ class NetmodeSwitcher:
         :param max_retries: 最大重试次数
         :return: 是否成功切换模式
         """
+        # 检查当前模式
+        mode = self.get_netmode()
+        if mode == "故事模式":
+            self._log_okay_mode(mode)
+            return True
+
         dst_names = ["在线", "退至故事模式"]
         return self._switch_mode(dst_names, "在线模式 -> 故事模式", max_retries)
 
@@ -118,7 +159,7 @@ def test_netmode_switcher():
     switcher.switch_story_to_online()
 
     # 测试在线模式切换到故事模式
-    switcher.switch_online_to_story()
+    # switcher.switch_online_to_story()
 
 
 if __name__ == "__main__":

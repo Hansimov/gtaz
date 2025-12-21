@@ -470,7 +470,7 @@ class MenuNavigatePlanner:
 class MenuNavigator:
     def __init__(self):
         self.interactor = MenuInteractor()
-        self.locator = MenuLocatorRunner()
+        self.locator_runner = MenuLocatorRunner()
         self.capturer = ScreenCapturer()
         self.converter = LocateNamesConverter()
         self.planner = MenuNavigatePlanner()
@@ -491,7 +491,7 @@ class MenuNavigator:
     def locate(self) -> MergedMatchResult:
         """获取当前菜单定位结果"""
         frame_np = self.capturer.capture_frame().to_np()
-        result = self.locator.locate(frame_np)
+        result = self.locator_runner.locate(frame_np)
         self._update_netmode_from_result(result)
         return result
 
