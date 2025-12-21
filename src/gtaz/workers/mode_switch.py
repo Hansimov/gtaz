@@ -149,17 +149,47 @@ class NetmodeSwitcher:
         dst_names = ["在线", "退至故事模式"]
         return self._switch_mode(dst_names, "在线模式 -> 故事模式", max_retries)
 
+    def switch_to_new_invite_lobby(self, max_retries: int = 5) -> bool:
+        """切换到新的邀请战局
+
+        根据当前模式自动选择对应的菜单路径：
+        - 故事模式: 在线 -> 进入GTA在线模式 -> 凭邀请加入的战局
+        - 在线模式: 在线 -> 寻找新战局 -> 仅限邀请的战局
+
+        :param max_retries: 最大重试次数
+        :return: 是否成功切换到新的邀请战局
+        """
+        # 获取当前模式
+        mode = self.get_netmode()
+        if not mode:
+            logger.fail("无法识别当前模式，切换失败")
+            return False
+
+        # 根据模式设置目标路径和描述
+        if mode == "故事模式":
+            dst_names = ["在线", "进入GTA在线模式", "凭邀请加入的战局"]
+            mode_desc = "切换到新的邀请战局（从故事模式）"
+        else:  # mode == "在线模式"
+            dst_names = ["在线", "寻找新战局", "仅限邀请的战局"]
+            mode_desc = "切换到新的邀请战局（从在线模式）"
+
+        # 执行切换
+        return self._switch_mode(dst_names, mode_desc, max_retries)
+
 
 def test_netmode_switcher():
     """测试模式切换器"""
     logger.note("测试: NetmodeSwitcher...")
     switcher = NetmodeSwitcher()
 
-    # 测试故事模式切换到在线模式
-    switcher.switch_story_to_online()
+    # 故事模式 -> 在线模式
+    # switcher.switch_story_to_online()
 
-    # 测试在线模式切换到故事模式
+    # 在线模式 -> 故事模式
     # switcher.switch_online_to_story()
+
+    # 新的邀请战局
+    # switcher.switch_to_new_invite_lobby()
 
 
 if __name__ == "__main__":
