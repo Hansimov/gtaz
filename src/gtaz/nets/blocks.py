@@ -32,7 +32,7 @@ def run_command(
             cmd_str,
             capture_output=capture_output,
             text=True,
-            encoding="utf-8",
+            encoding="gbk",
             errors="ignore",
             shell=True,
         )
@@ -112,16 +112,14 @@ class GTAVFirewallBlocker:
         cmd_str = f"netsh advfirewall firewall {cmd_args}"
         success, stdout, stderr = run_command(cmd_str, show_cmd=True)
         if success:
-            logger.okay(f"{desc}成功")
-            if stdout:
-                logger.note(f"命令输出:")
-                logger.mesg(stdout)
+            logger.note(f"更新防火墙规则成功")
+            logger.mesg(f"最新状态: {desc}")
             return True
         else:
-            logger.fail(f"{desc}失败")
+            logger.warn(f"未能{desc}防火墙规则")
             if stderr:
                 logger.warn(f"错误信息:")
-                logger.mesg(stderr)
+                logger.warn(stderr)
             return False
 
     @property
@@ -159,12 +157,12 @@ class GTAVFirewallBlocker:
             if "Enabled:" in line or "已启用:" in line:
                 enabled = "Yes" in line or "是" in line
                 if enabled:
-                    status_str = logstr.okay("已启用")
+                    status_str = logstr.okay("启用")
                 else:
-                    status_str = logstr.warn("已禁用")
-                logger.mesg(f"防火墙规则{status_str}: {self.rule_str}")
+                    status_str = logstr.warn("禁用")
+                logger.mesg(f"当前状态: {status_str}")
                 return enabled
-        logger.warn(f"无法确定规则启用状态")
+        logger.warn(f"无法确定规则启用状态: {rule_str}")
         return None
 
     def add_rule(self, path: Optional[str] = None) -> bool:
@@ -179,7 +177,7 @@ class GTAVFirewallBlocker:
         logger.note("=" * 50)
         # 检查规则是否已存在
         if self.rule_exists():
-            logger.mesg(f"防火墙规则已存在，无需添加")
+            # logger.mesg(f"防火墙规则已存在，无需添加")
             return True
         # 获取程序路径
         path = path or self.process_path
@@ -188,7 +186,7 @@ class GTAVFirewallBlocker:
             return False
         # 添加阻断出站流量的规则
         cmd_args = f'add rule name={self.rule_name} dir=out action=block program="{path}" enable=yes'
-        return self._run_netsh_command(cmd_args, "添加防火墙规则")
+        return self._run_netsh_command(cmd_args, logstr.okay("已添加"))
 
     def delete_rule(self) -> bool:
         """
@@ -201,10 +199,10 @@ class GTAVFirewallBlocker:
         logger.note("=" * 50)
         # 检查规则是否存在
         if not self.rule_exists():
-            logger.mesg(f"防火墙规则不存在，无需删除")
+            # logger.mesg(f"防火墙规则不存在，无需删除")
             return True
         cmd_args = f"delete rule name={self.rule_name}"
-        return self._run_netsh_command(cmd_args, "删除防火墙规则")
+        return self._run_netsh_command(cmd_args, logstr.warn("已删除"))
 
     def enable_rule(self) -> bool:
         """
@@ -221,10 +219,10 @@ class GTAVFirewallBlocker:
             return False
         # 检查规则是否已启用
         if self.is_rule_enabled():
-            logger.mesg(f"防火墙规则已启用，无需重复操作")
+            # logger.mesg(f"防火墙规则已启用，无需重复操作")
             return True
         cmd_args = f"set rule name={self.rule_name} new enable=yes"
-        return self._run_netsh_command(cmd_args, "启用防火墙规则")
+        return self._run_netsh_command(cmd_args, logstr.okay("已启用"))
 
     def disable_rule(self) -> bool:
         """
@@ -242,10 +240,10 @@ class GTAVFirewallBlocker:
         # 检查规则是否已禁用
         enabled = self.is_rule_enabled()
         if enabled is False:
-            logger.mesg(f"防火墙规则已禁用，无需重复操作")
+            # logger.mesg(f"防火墙规则已禁用，无需重复操作")
             return True
         cmd_args = f"set rule name={self.rule_name} new enable=no"
-        return self._run_netsh_command(cmd_args, "禁用防火墙规则")
+        return self._run_netsh_command(cmd_args, logstr.warn("已禁用"))
 
     def get_rule_info(self) -> Optional[str]:
         """
@@ -373,6 +371,7 @@ def main():
         blocker.add_rule(path=args.path)
 
     if args.enable:
+        # blocker.add_rule(path=args.path)
         blocker.enable_rule()
 
     if args.disable:
