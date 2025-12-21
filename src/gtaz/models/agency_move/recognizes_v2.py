@@ -26,7 +26,7 @@ from timm.data.transforms_factory import create_transform
 
 logger = TCLogger("FloorRecognizerV2", use_prefix=True, use_prefix_ms=True)
 
-MODULE_DIR = Path(__file__).parent
+MODULE_DIR = Path(__file__).parents[3]
 IMAGES_DIR = MODULE_DIR / "images"
 CACHE_DIR = MODULE_DIR / "cache"
 
@@ -606,8 +606,8 @@ if __name__ == "__main__":
         test_accuracy()
         test_speed()
 
-    # python -m gtaz.recognizes_v2           # 训练+测试+速度
-    # python -m gtaz.recognizes_v2 train     # 仅训练
-    # python -m gtaz.recognizes_v2 test      # 仅测试
-    # python -m gtaz.recognizes_v2 cv        # 交叉验证
-    # python -m gtaz.recognizes_v2 speed     # 速度测试
+    # python -m gtaz.models.agency_move.recognizes_v2           # 训练+测试+速度
+    # python -m gtaz.models.agency_move.recognizes_v2 train     # 仅训练
+    # python -m gtaz.models.agency_move.recognizes_v2 test      # 仅测试
+    # python -m gtaz.models.agency_move.recognizes_v2 cv        # 交叉验证
+    # python -m gtaz.models.agency_move.recognizes_v2 speed     # 速度测试

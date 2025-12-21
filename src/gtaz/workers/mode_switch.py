@@ -4,7 +4,7 @@ from tclogger import TCLogger, logstr
 
 from ..menus.navigates import MenuNavigator
 from ..menus.locates import ExitLocatorRunner, is_score_too_low
-from ..screens import ScreenCapturer
+from ..visions.screens import ScreenCapturer
 
 
 logger = TCLogger(name="NetmodeSwitcher", use_prefix=True, use_prefix_ms=True)

@@ -325,4 +325,4 @@ def test_gamepad_simulator():
 if __name__ == "__main__":
     test_gamepad_simulator()
 
-    # python -m gtaz.gamepads
+    # python -m gtaz.devices.gamepads

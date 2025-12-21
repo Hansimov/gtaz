@@ -66,9 +66,9 @@ from tclogger import TCLogger, logstr, Runtimer
 from torchvision import transforms
 
 # 本地模块导入
-from ..windows import GTAVWindowLocator
-from ..gamepads import GamepadSimulator, JoystickDirection
-from ..segments import calc_minimap_crop_region
+from ...devices.gamepads import GamepadSimulator, JoystickDirection
+from ...visions.windows import GTAVWindowLocator
+from ...visions.segments import calc_minimap_crop_region
 
 # 尝试导入推理模块
 try:
@@ -918,16 +918,16 @@ if __name__ == "__main__":
     # 使用示例:
 
     # Case: 使用默认参数运行（自动选择最佳后端）
-    # python -m gtaz.agency_move.realtime
+    # python -m gtaz.models.agency_move.realtime
 
     # Case: 指定帧率和阈值
-    # python -m gtaz.agency_move.realtime -f 15 -t 0.4
+    # python -m gtaz.models.agency_move.realtime -f 15 -t 0.4
 
     # Case: 指定 TensorRT 模型
-    # python -m gtaz.agency_move.realtime -m path/to/model.engine
+    # python -m gtaz.models.agency_move.realtime -m path/to/model.engine
 
     # Case: 指定 ONNX 模型
-    # python -m gtaz.agency_move.realtime -m path/to/model.onnx
+    # python -m gtaz.models.agency_move.realtime -m path/to/model.onnx
 
     # Case: 指定 PyTorch 模型
-    # python -m gtaz.agency_move.realtime -m path/to/model.pth
+    # python -m gtaz.models.agency_move.realtime -m path/to/model.pth

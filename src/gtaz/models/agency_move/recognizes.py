@@ -13,7 +13,7 @@ import pickle
 
 logger = TCLogger("FloorRecognizer")
 
-MODULE_DIR = Path(__file__).parent.parent
+MODULE_DIR = Path(__file__).parents[3]
 IMAGES_DIR = MODULE_DIR / "images"
 CACHE_DIR = MODULE_DIR / "cache"
 
@@ -424,7 +424,9 @@ def test_speed():
         recognizer.recognize_file(f)
     elapsed = time.time() - start
 
-    logger.okay(f"平均: {elapsed/len(test_files)*1000:.1f} ms/张 ({len(test_files)} 张)")
+    logger.okay(
+        f"平均: {elapsed/len(test_files)*1000:.1f} ms/张 ({len(test_files)} 张)"
+    )
 
 
 if __name__ == "__main__":
@@ -432,5 +434,4 @@ if __name__ == "__main__":
     test_accuracy()  # 训练集自测（可能过拟合）
     test_cross_validation()  # 留一法交叉验证 - 测试真实泛化能力
 
-    # python -m gtaz.recognizes
-    # del gtaz\cache\floor_features.pkl 2>nul && python -m gtaz.recognizes
+    # python -m gtaz.models.agency_move.recognizes

@@ -4,7 +4,7 @@ from time import sleep
 
 from tclogger import TCLogger
 
-from ..gamepads import GamepadSimulator, Button, sleep_ms
+from ..devices.gamepads import GamepadSimulator, Button, sleep_ms
 
 
 logger = TCLogger(name="MenuInteractor", use_prefix=True, use_prefix_ms=True)

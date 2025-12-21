@@ -286,4 +286,4 @@ def test_gtav_window_locator():
 if __name__ == "__main__":
     test_gtav_window_locator()
 
-    # python -m gtaz.windows
+    # python -m gtaz.visions.windows

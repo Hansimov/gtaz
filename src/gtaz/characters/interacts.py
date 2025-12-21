@@ -3,9 +3,9 @@
 from tclogger import TCLogger
 from time import sleep
 
-from ..gamepads import GamepadSimulator
-from ..gamepads import Button, JoystickDirection, TriggerPressure
-from ..gamepads import sleep_ms
+from ..devices.gamepads import GamepadSimulator
+from ..devices.gamepads import Button, JoystickDirection, TriggerPressure
+from ..devices.gamepads import sleep_ms
 
 
 logger = TCLogger(name="CharacterInteractor", use_prefix=True, use_prefix_ms=True)

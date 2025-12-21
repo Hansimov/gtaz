@@ -9,7 +9,7 @@ from .commons import STORY_MENU_FOCUS_INFOS, STORY_MENU_PARENT_TO_ITEM_INFOS
 from .commons import is_names_start_with
 from .interacts import MenuInteractor
 from .locates import MenuLocatorRunner, is_score_too_low, is_score_high
-from ..screens import ScreenCapturer
+from ..visions.screens import ScreenCapturer
 
 logger = TCLogger(name="MenuNavigator", use_prefix=True, use_prefix_ms=True)
 

@@ -280,4 +280,4 @@ def test_minimap_cropper():
 if __name__ == "__main__":
     test_minimap_cropper()
 
-    # python -m gtaz.segments
+    # python -m gtaz.visions.segments

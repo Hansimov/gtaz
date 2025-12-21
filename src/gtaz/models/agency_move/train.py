@@ -49,7 +49,7 @@ NUM_KEYS = 4
 # ===== 配置类 ===== #
 
 # src/gtaz
-SRC_DIR = Path(__file__).parent.parent
+SRC_DIR = Path(__file__).parents[3]
 DATA_DIR = SRC_DIR / "cache/agency_move"
 CKPT_DIR = SRC_DIR / "checkpoints/agency_move"
 

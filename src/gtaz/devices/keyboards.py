@@ -483,4 +483,4 @@ def test_keyboard_action_detector():
 if __name__ == "__main__":
     test_keyboard_action_detector()
 
-    # python -m gtaz.keyboard_actions
+    # python -m gtaz.devices.keyboards

@@ -1667,27 +1667,26 @@ if __name__ == "__main__":
 
     # 使用示例:
     # Case: 导出：PyTorch -> ONNX -> TensorRT
-    # python -m gtaz.agency_move.inference -m export
-    # python -m gtaz.agency_move.inference -m export -w
-    # python -m gtaz.agency_move.inference -m export -w -p path/to/model.pth
-    # python -m gtaz.agency_move.inference -m export -w --no-fp16
+    # python -m gtaz.models.agency_move.inference -m export
+    # python -m gtaz.models.agency_move.inference -m export -w
+    # python -m gtaz.models.agency_move.inference -m export -w -p path/to/model.pth
+    # python -m gtaz.models.agency_move.inference -m export -w --no-fp16
 
     # Case: 推理：使用最新的 best 模型，默认 PyTorch 引擎
-    # python -m gtaz.agency_move.inference -m infer
-    # python -m gtaz.agency_move.inference -m infer --backend onnx
-    # python -m gtaz.agency_move.inference -m infer --backend torch,onnx,tensorrt
+    # python -m gtaz.models.agency_move.inference -m infer
+    # python -m gtaz.models.agency_move.inference -m infer --backend onnx
+    # python -m gtaz.models.agency_move.inference -m infer --backend torch,onnx,tensorrt
 
     # Case: 性能测试
-    # python -m gtaz.agency_move.inference -m benchmark
-    # python -m gtaz.agency_move.inference -m benchmark --iterations 200 --batch-size 4
+    # python -m gtaz.models.agency_move.inference -m benchmark
+    # python -m gtaz.models.agency_move.inference -m benchmark --iterations 200 --batch-size 4
 
     # Case: 验证
-    # python -m gtaz.agency_move.inference -m validate
-
+    # python -m gtaz.models.agency_move.inference -m validate
     # Case: 全链路：导出 + 推理 + 验证 + 性能测试
-    # python -m gtaz.agency_move.inference -m all
+    # python -m gtaz.models.agency_move.inference -m all
 
     # Case: 多模式 (逗号分隔，优先级: export > infer > validate > benchmark)
-    # python -m gtaz.agency_move.inference -m export,infer
-    # python -m gtaz.agency_move.inference -m infer,validate,benchmark
-    # python -m gtaz.agency_move.inference -m export,infer,validate,benchmark
+    # python -m gtaz.models.agency_move.inference -m export,infer
+    # python -m gtaz.models.agency_move.inference -m infer,validate,benchmark
+    # python -m gtaz.models.agency_move.inference -m export,infer,validate,benchmark

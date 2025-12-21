@@ -13,9 +13,9 @@ from pathlib import Path
 from PIL import Image
 from tclogger import PathType, TCLogger, TCLogbar, logstr
 
+from ..devices.keyboards import KeyboardActionDetector, KeyboardActionInfo
+from ..devices.keyboards import TriggerType, KEY_UP, KEY_DOWN, KEY_HOLD
 from .windows import GTAVWindowLocator
-from .keyboard_actions import KeyboardActionDetector, KeyboardActionInfo
-from .keyboard_actions import TriggerType, KEY_UP, KEY_DOWN, KEY_HOLD
 from .segments import calc_minimap_crop_region
 
 
@@ -1191,25 +1191,25 @@ if __name__ == "__main__":
     main()
 
     # Case: 截取单张
-    # python -m gtaz.screens -s
+    # python -m gtaz.visions.screens -s
 
     # Case: 单帧截取，按下特定键截取（单帧模式下，触发类型默认 KEY_DOWN：按下截图一次，不重复截取）
-    # python -m gtaz.screens -s -k k
+    # python -m gtaz.visions.screens -s -k k
 
     # Case: 连续截取，设置FPS和时长
-    # python -m gtaz.screens -f 10 -d 60
+    # python -m gtaz.visions.screens -f 10 -d 60
 
     # Case: 键盘触发模式（连续模式下，触发类型默认 KEY_HOLD：按住则持续截图）
-    # python -m gtaz.screens -i -f 10 -d 60
+    # python -m gtaz.visions.screens -i -f 10 -d 60
 
     # Case: 键盘触发 + 仅小地图
-    # python -m gtaz.screens -i -m -f 10 -d 30
+    # python -m gtaz.visions.screens -i -m -f 10 -d 30
 
     # Case: 热键启停 + 键盘触发 + 单帧
-    # python -m gtaz.screens -g -i -s
+    # python -m gtaz.visions.screens -g -i -s
 
     # Case: 热键启停 + 键盘触发 + 仅小地图 + FPS + 持续截图
-    # python -m gtaz.screens -g -i -m -f 10 -d 0
+    # python -m gtaz.visions.screens -g -i -m -f 10 -d 0
 
     # Case: 键盘触发 + 单帧 + 指定按键 + 保存目录
-    # python -m gtaz.screens -i -s -k k -o "gtaz/cache/menus"
+    # python -m gtaz.visions.screens -i -s -k k -o "gtaz/cache/menus"
