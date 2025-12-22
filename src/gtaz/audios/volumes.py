@@ -547,6 +547,19 @@ class VolumeRecorder:
         volumes = self.get_window_volumes()
         return min(volumes) if volumes else None
 
+    def get_window_kth_lowest(self, k: int) -> Optional[int]:
+        """
+        获取当前时间窗口内第K低的音量。
+
+        :param k: K值（1表示最小值，2表示第二小，以此类推）
+        :返回: 第K低的音量，如果窗口数据量小于K则返回 None
+        """
+        volumes = self.get_window_volumes()
+        if not volumes or len(volumes) < k:
+            return None
+        sorted_volumes = sorted(volumes)
+        return sorted_volumes[k - 1]  # 索引从0开始，所以k-1
+
     def get_history_min(self) -> Optional[int]:
         """
         获取历史最小音量（所有记录过的数据）。

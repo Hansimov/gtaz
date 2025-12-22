@@ -12,16 +12,18 @@ from gtaz.audios.volumes import VolumeRecorder, SAMPLE_INTERVAL_MS
 logger = TCLogger(name="SignalDetector", use_prefix=True, use_prefix_ms=True)
 
 
-# 阈值比例（相对于历史最小音量）
+# 阈值比例（相对于窗口最小音量）
 GATE_RATIO = 1.8
 # 阈值绝对值（触发检测的最小音量）
 GATE_VALUE = 10
 # 持续时间（毫秒）
-DURATION_MS = 500
-# 历史窗口（毫秒）
-HISTORY_WINDOW_MS = 5000
+DURATION_MS = 800
+# 窗口时长（毫秒）
+WINDOW_MS = 5000
 # 检测冷却时间（毫秒）
-COOLDOWN_MS = 1000
+COOLDOWN_MS = 2000
+# 窗口内第K低音量（用于避免极端低值造成的抖动）
+LOWEST_K = 5
 
 
 class SignalDetector:
@@ -32,10 +34,12 @@ class SignalDetector:
 
     算法逻辑：
     1. 获取窗口内的音量数组
-    2. 找到数组中最低音量的最新索引（如果有多个最小值，取最后一个）
-    3. 计算该索引之后超过阈值（min_volume * gate_ratio 且 >= gate_value）的样本数
+    2. 找到数组中第K低音量的最新索引（如果窗口数据量小于K，则跳过检测）
+    3. 计算该索引之后超过阈值（kth_lowest_volume * gate_ratio 且 >= gate_value）的样本数
     4. 如果超阈值样本数 >= duration_ms / sample_interval_ms，则视为检测到
-    5. 检测成功后进入冷却期，并重置窗口最小值索引，避免重复检测
+    5. 检测成功后进入冷却期，并重置窗口基准音量索引，避免重复检测
+
+    注：使用第K低音量而非最低音量，可以避免极少数极低音量造成的抖动，提高检测稳定性。
     """
 
     def __init__(
@@ -44,28 +48,31 @@ class SignalDetector:
         gate_ratio: float = GATE_RATIO,
         gate_value: int = GATE_VALUE,
         duration_ms: float = DURATION_MS,
-        history_window_ms: int = HISTORY_WINDOW_MS,
+        window_ms: int = WINDOW_MS,
         detection_callback: Optional[Callable[[dict], Any]] = None,
         cooldown_ms: float = COOLDOWN_MS,
+        lowest_k: int = LOWEST_K,
     ):
         """
         初始化信号检测器。
 
         :param recorder: 音量记录器实例
-        :param gate_ratio: 阈倿比例（相对于历史最小音量），默认 1.8 倍
+        :param gate_ratio: 阈值比例（相对于第K低音量），默认 1.8 倍
         :param gate_value: 阈值绝对值（触发检测的最小音量），默认 10
-        :param duration_ms: 音量突增需要持续的时间（毫秒），默认 800ms
-        :param history_window_ms: 历史窗口长度（毫秒），默认 5000ms
+        :param duration_ms: 音量突增需要持续的时间（毫秒），默认 500ms
+        :param window_ms: 窗口时长（毫秒），默认 5000ms
         :param detection_callback: 检测到信号时的回调函数，接收检测信息字典
-        :param cooldown_ms: 检测冷却时间（毫秒），默认 1000ms
+        :param cooldown_ms: 检测冷却时间（毫秒），默认 2000ms
+        :param lowest_k: 使用窗口内第K低的音量作为基准（避免极端低值抖动），默认 5
         """
         self.recorder = recorder
         self.gate_ratio = gate_ratio
         self.gate_value = gate_value
         self.duration_ms = duration_ms
-        self.history_window_ms = history_window_ms
+        self.window_ms = window_ms
         self.detection_callback = detection_callback
         self.cooldown_ms = cooldown_ms
+        self.lowest_k = lowest_k
 
         # 检测器运行状态
         self._is_running = False
@@ -73,29 +80,29 @@ class SignalDetector:
         self._detection_count = 0
         # 上次检测时间戳（用于冷却）
         self._last_detection_time: Optional[float] = None
-        # 上次检测时的最小值时间戳（用于重置窗口）
-        self._last_min_timestamp: Optional[float] = None
+        # 上次检测时的基准音量时间戳（用于重置窗口）
+        self._last_base_timestamp: Optional[float] = None
         # 采样间隔（从 monitor 获取）
         self._sample_interval_ms = self.recorder.monitor.sample_interval_ms
 
     def _get_history_min_volume(self) -> Optional[int]:
         """
-        获取历史最小音量。
+        获取历史最小音量（已废弃，保留用于兼容）。
 
         :返回: 最小音量，如果没有历史数据则返回 None
         """
         return self.recorder.get_history_min()
 
-    def _calculate_gate_volume(self, min_volume: Optional[int]) -> Optional[float]:
+    def _calculate_gate_volume(self, base_volume: Optional[int]) -> Optional[float]:
         """
-        根据历史最小音量计算阈值音量。
+        根据基准音量（第K低音量）计算阈值音量。
 
-        :param min_volume: 历史最小音量
+        :param base_volume: 基准音量（第K低音量）
         :return: 阈值音量，如果无法计算则返回 None
         """
-        if min_volume is None:
+        if base_volume is None:
             return None
-        return min_volume * self.gate_ratio
+        return base_volume * self.gate_ratio
 
     def _is_in_cooldown(self, current_time: float) -> bool:
         """
@@ -126,38 +133,44 @@ class SignalDetector:
         if not window_data:
             return False
 
-        # 过滤掉已经使用过的数据（时间戳 <= _last_min_timestamp）
-        if self._last_min_timestamp is not None:
+        # 过滤掉已经使用过的数据（时间戳 <= _last_base_timestamp）
+        if self._last_base_timestamp is not None:
             window_data = [
-                (ts, vol) for ts, vol in window_data if ts > self._last_min_timestamp
+                (ts, vol) for ts, vol in window_data if ts > self._last_base_timestamp
             ]
             if not window_data:
                 return False
 
-        # 获取窗口最小音量和阈值
+        # 检查窗口数据量是否足够
+        if len(window_data) < self.lowest_k:
+            # 数据量不足K个，跳过检测
+            return False
+
+        # 获取窗口内第K低的音量和阈值
         volumes = [vol for _, vol in window_data]
-        min_volume = min(volumes)
-        gate_volume = self._calculate_gate_volume(min_volume)
+        sorted_volumes = sorted(volumes)
+        kth_lowest_volume = sorted_volumes[self.lowest_k - 1]  # 第K低（索引从0开始）
+        gate_volume = self._calculate_gate_volume(kth_lowest_volume)
         if gate_volume is None:
             return False
 
-        # 找到最低音量的最新索引（如果有多个，取最后一个）
-        min_index = -1
-        min_timestamp = None
+        # 找到第K低音量的最新索引（如果有多个相同值，取最后一个）
+        base_index = -1
+        base_timestamp = None
         for i in range(len(window_data) - 1, -1, -1):
-            if window_data[i][1] == min_volume:
-                min_index = i
-                min_timestamp = window_data[i][0]
+            if window_data[i][1] == kth_lowest_volume:
+                base_index = i
+                base_timestamp = window_data[i][0]
                 break
 
-        if min_index == -1 or min_index >= len(window_data) - 1:
-            # 没有找到最小值，或最小值是最后一个，无法检测
+        if base_index == -1 or base_index >= len(window_data) - 1:
+            # 没有找到基准值，或基准值是最后一个，无法检测
             return False
 
-        # 计算最小值索引之后超过阈值的样本数
+        # 计算基准值索引之后超过阈值的样本数
         # 阈值条件：1) >= gate_volume，2) >= gate_value
         above_gate_count = 0
-        for i in range(min_index + 1, len(window_data)):
+        for i in range(base_index + 1, len(window_data)):
             vol = window_data[i][1]
             if vol >= gate_volume and vol >= self.gate_value:
                 above_gate_count += 1
@@ -168,7 +181,11 @@ class SignalDetector:
         # 判断是否满足条件
         if above_gate_count >= required_samples:
             self._on_detection(
-                timestamp, min_volume, gate_volume, above_gate_count, min_timestamp
+                timestamp,
+                kth_lowest_volume,
+                gate_volume,
+                above_gate_count,
+                base_timestamp,
             )
             return True
 
@@ -177,23 +194,23 @@ class SignalDetector:
     def _on_detection(
         self,
         timestamp: float,
-        min_volume: int,
+        base_volume: int,
         gate_volume: float,
         above_gate_count: int,
-        min_timestamp: float,
+        base_timestamp: float,
     ):
         """
         检测到信号时的处理。
 
         :param timestamp: 检测时间戳（秒）
-        :param min_volume: 窗口内最小音量
+        :param base_volume: 窗口内基准音量（第K低音量）
         :param gate_volume: 阈值音量
         :param above_gate_count: 超阈值样本数
-        :param min_timestamp: 最小值的时间戳
+        :param base_timestamp: 基准值的时间戳
         """
         self._detection_count += 1
         self._last_detection_time = timestamp  # 记录检测时间，用于冷却
-        self._last_min_timestamp = min_timestamp  # 记录最小值时间戳，用于重置窗口
+        self._last_base_timestamp = base_timestamp  # 记录基准值时间戳，用于重置窗口
 
         # 获取窗口统计信息
         window_stats = self.recorder.get_window_stats()
@@ -201,11 +218,12 @@ class SignalDetector:
         detection_info = {
             "detection_count": self._detection_count,
             "timestamp": timestamp,
-            "min_volume": min_volume,
+            "base_volume": base_volume,
             "gate_volume": gate_volume,
             "gate_ratio": self.gate_ratio,
             "gate_value": self.gate_value,
             "duration_ms": self.duration_ms,
+            "lowest_k": self.lowest_k,
             "above_gate_count": above_gate_count,
             "window_stats": window_stats,
         }
@@ -234,21 +252,19 @@ class SignalDetector:
         time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
         ms = int((timestamp % 1) * 1000)
 
+        window_stats = detection_info["window_stats"]
+        window_min, window_avg, window_max = window_stats
         info_dict = {
             "检测时间": f"{time_str}.{ms:03d}",
-            "窗口内最小音量": detection_info["min_volume"],
-            "阈值音量": f"{detection_info['gate_volume']:.1f} ({detection_info['gate_ratio']}x, min={detection_info['gate_value']})",
-            "持续时间": f"{detection_info['duration_ms']}ms",
+            "基准音量".format(detection_info["lowest_k"]): detection_info[
+                "base_volume"
+            ],
+            "阈值音量": f"{detection_info['gate_volume']:.1f}",
             "超阈值样本数": detection_info["above_gate_count"],
+            "窗口内最小音量": window_min,
+            "窗口内平均音量": f"{window_avg:.1f}",
+            "窗口内最大音量": window_max,
         }
-        window_stats = detection_info["window_stats"]
-        if window_stats[0] is not None:
-            window_avg = (
-                f"{window_stats[1]:.1f}" if window_stats[1] is not None else "None"
-            )
-            info_dict["窗口统计"] = (
-                f"min={window_stats[0]}, avg={window_avg}, max={window_stats[2]}"
-            )
         logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
         # 恢复显示之前的音量字符
@@ -271,8 +287,9 @@ class SignalDetector:
             "阈值比例": f"{self.gate_ratio}x",
             "阈值绝对值": self.gate_value,
             "持续时间": f"{self.duration_ms}ms",
-            "历史窗口": f"{self.history_window_ms}ms",
+            "窗口时长": f"{self.window_ms}ms",
             "冷却时间": f"{self.cooldown_ms}ms",
+            "基准音量": f"第{self.lowest_k}低",
         }
         logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
@@ -288,7 +305,7 @@ class SignalDetector:
         logger.note(f"总检测次数: {self._detection_count}")
         # 重置冷却时间和窗口时间戳
         self._last_detection_time = None
-        self._last_min_timestamp = None
+        self._last_base_timestamp = None
 
     @property
     def is_running(self) -> bool:
@@ -312,8 +329,9 @@ class SignalDetector:
             f"gate_ratio={self.gate_ratio}, "
             f"gate_value={self.gate_value}, "
             f"duration_ms={self.duration_ms}, "
-            f"history_window_ms={self.history_window_ms}, "
+            f"window_ms={self.window_ms}, "
             f"cooldown_ms={self.cooldown_ms}, "
+            f"lowest_k={self.lowest_k}, "
             f"is_running={self._is_running}, "
             f"detection_count={self._detection_count}, "
             f"min_volume={min_volume}, "
@@ -323,8 +341,8 @@ class SignalDetector:
 
 def test_signal_detector():
     """测试信号检测器。"""
-    # 创建音量记录器（会自动创建 monitor，5 秒历史窗口）
-    recorder = VolumeRecorder(window_duration_ms=HISTORY_WINDOW_MS)
+    # 创建音量记录器（会自动创建 monitor，5 秒窗口）
+    recorder = VolumeRecorder(window_duration_ms=WINDOW_MS)
     logger.note(f"音量记录器信息: {recorder}")
 
     # 创建信号检测器
