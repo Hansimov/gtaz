@@ -190,6 +190,7 @@ class VolumeMonitor:
         self.volume_gain = volume_gain
         self._audio_session = None
         self._is_running = False
+        self._line_buffer = []  # 用于存储当前行的音量字符
 
     def find_audio_session(self):
         """
@@ -305,11 +306,16 @@ class VolumeMonitor:
         :param sample_count: 当前采样计数
         """
         if self._is_first_in_group(sample_count):
+            # 新的一组开始，清空 buffer
+            self._line_buffer = []
             logger.mesg(volume_char, end="")
         elif self._is_last_in_group(sample_count):
             logger.mesg(volume_char, use_prefix=False, end="")
         else:
             logger.mesg(volume_char, use_prefix=False, end="")
+
+        # 将字符添加到 buffer
+        self._line_buffer.append(volume_char)
 
     @staticmethod
     def _log_group_stats(volumes: list[int]):
@@ -327,6 +333,15 @@ class VolumeMonitor:
             logger.note(f" [{vol_line}]", use_prefix=False)
         else:
             logger.note("", use_prefix=False)  # 只换行
+
+    def log_line_buffer(self):
+        """
+        输出当前缓存的音量字符。
+        用于在检测日志输出后恢复显示。
+        """
+        if self._line_buffer:
+            buffer_str = "".join(self._line_buffer)
+            logger.mesg(buffer_str, end="")
 
     def _log_monitor_start(self):
         """输出监控开始的信息。"""
@@ -489,9 +504,17 @@ class VolumeRecorder:
         """
         获取当前时间窗口内的所有音量数据。
 
-        :return: 音量列表
+        :返回: 音量列表
         """
         return [vol for _, vol in self._volumes]
+
+    def get_window_volumes_with_timestamps(self) -> list[tuple[float, int]]:
+        """
+        获取当前时间窗口内的所有音量数据（带时间戳）。
+
+        :返回: (timestamp, volume) 元组列表
+        """
+        return list(self._volumes)
 
     def get_window_stats(self) -> tuple[Optional[int], Optional[float], Optional[int]]:
         """
@@ -519,10 +542,18 @@ class VolumeRecorder:
         """
         获取当前时间窗口内的最小音量。
 
-        :return: 最小音量，窗口为空则返回 None
+        :返回: 最小音量，窗口为空则返回 None
         """
         volumes = self.get_window_volumes()
         return min(volumes) if volumes else None
+
+    def get_history_min(self) -> Optional[int]:
+        """
+        获取历史最小音量（所有记录过的数据）。
+
+        :返回: 历史最小音量，如果没有历史数据则返回 None
+        """
+        return self._history_min
 
     def get_window_size(self) -> int:
         """
