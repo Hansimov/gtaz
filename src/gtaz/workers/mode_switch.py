@@ -115,6 +115,9 @@ class NetmodeSwitcher:
                 # 如果定位退出提示失败，继续重试整个流程
             else:
                 logger.warn(f"未导航到目标位置，当前位置: {current_names}，重试...")
+                # 关闭菜单并重新打开
+                self.navigator.ensure_menu_closed()
+                self.navigator.ensure_menu_opened()
 
         logger.fail("模式切换失败")
         return False
