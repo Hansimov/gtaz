@@ -4,7 +4,7 @@ import time
 import threading
 from collections import deque
 from typing import Optional, Callable, Any
-from tclogger import TCLogger, logstr
+from tclogger import TCLogger, logstr, dict_to_lines
 
 from gtaz.audios.volumes import VolumeRecorder, SAMPLE_INTERVAL_MS
 
@@ -228,31 +228,28 @@ class SignalDetector:
         """
         print()
         logger.note("=" * 50)
-        logger.note(f"检测到音量突增信号 #{detection_info['detection_count']}")
+        logger.okay(f"检测到音量突增信号 #{detection_info['detection_count']}")
         logger.note("=" * 50)
         timestamp = detection_info["timestamp"]
         time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
         ms = int((timestamp % 1) * 1000)
-        logger.note(f"检测时间: {time_str}.{ms:03d}")
-        logger.note(f"窗口内最小音量: {detection_info['min_volume']}")
-        logger.note(
-            f"阈值音量: {detection_info['gate_volume']:.1f} "
-            f"({detection_info['gate_ratio']}x, min={detection_info['gate_value']})"
-        )
-        logger.note(f"持续时间: {detection_info['duration_ms']}ms")
-        logger.note(f"超阈值样本数: {detection_info['above_gate_count']}")
 
+        info_dict = {
+            "检测时间": f"{time_str}.{ms:03d}",
+            "窗口内最小音量": detection_info["min_volume"],
+            "阈值音量": f"{detection_info['gate_volume']:.1f} ({detection_info['gate_ratio']}x, min={detection_info['gate_value']})",
+            "持续时间": f"{detection_info['duration_ms']}ms",
+            "超阈值样本数": detection_info["above_gate_count"],
+        }
         window_stats = detection_info["window_stats"]
         if window_stats[0] is not None:
             window_avg = (
                 f"{window_stats[1]:.1f}" if window_stats[1] is not None else "None"
             )
-            logger.note(
-                f"窗口统计: "
-                f"min={window_stats[0]}, "
-                f"avg={window_avg}, "
-                f"max={window_stats[2]}"
+            info_dict["窗口统计"] = (
+                f"min={window_stats[0]}, avg={window_avg}, max={window_stats[2]}"
             )
+        logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
         # 恢复显示之前的音量字符
         self.recorder.monitor.log_line_buffer()
@@ -270,11 +267,14 @@ class SignalDetector:
         self._detection_count = 0
         self._last_min_timestamp = None
         logger.okay("检测器已启动")
-        logger.note(f"阈值比例: {self.gate_ratio}x")
-        logger.note(f"阈值绝对值: {self.gate_value}")
-        logger.note(f"持续时间: {self.duration_ms}ms")
-        logger.note(f"历史窗口: {self.history_window_ms}ms")
-        logger.note(f"冷却时间: {self.cooldown_ms}ms")
+        info_dict = {
+            "阈值比例": f"{self.gate_ratio}x",
+            "阈值绝对值": self.gate_value,
+            "持续时间": f"{self.duration_ms}ms",
+            "历史窗口": f"{self.history_window_ms}ms",
+            "冷却时间": f"{self.cooldown_ms}ms",
+        }
+        logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
     def stop(self):
         """

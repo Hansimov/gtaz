@@ -18,7 +18,7 @@ from collections import deque
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
 from typing import Optional
-from tclogger import TCLogger, logstr
+from tclogger import TCLogger, logstr, dict_to_lines
 
 
 # 抑制 pycaw 的 COMError 警告
@@ -345,12 +345,12 @@ class VolumeMonitor:
 
     def _log_monitor_start(self):
         """输出监控开始的信息。"""
-        logger.note(f"开始监控 GTAV 音量 (采样间隔: {self.sample_interval_ms}ms)")
-        logger.note(
-            f"每组 {self.samples_per_group} 个样本 "
-            f"({self.samples_per_group * self.sample_interval_ms / 1000:.1f} 秒)"
-        )
-        logger.note(f"音量增益: {self.volume_gain} (幂函数指数)")
+        info_dict = {
+            "开始监控 GTAV 音量 (采样间隔)": f"{self.sample_interval_ms}ms",
+            "每组样本数": f"{self.samples_per_group} 个 ({self.samples_per_group * self.sample_interval_ms / 1000:.1f} 秒)",
+            "音量增益": f"{self.volume_gain} (幂函数指数)",
+        }
+        logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
     def start(self):
         """
@@ -700,14 +700,13 @@ def test_volume_recorder():
     history_stats = recorder.get_history_stats()
     window_avg = f"{window_stats[1]:.1f}" if window_stats[1] is not None else "None"
     history_avg = f"{history_stats[1]:.1f}" if history_stats[1] is not None else "None"
-    logger.note(
-        f"窗口统计 (最近 5 秒): min={window_stats[0]}, avg={window_avg}, max={window_stats[2]}"
-    )
-    logger.note(
-        f"历史统计 (全部数据): min={history_stats[0]}, avg={history_avg}, max={history_stats[2]}"
-    )
-    logger.note(f"窗口数据点数量: {recorder.get_window_size()}")
-    logger.note(f"记录器信息: {recorder}")
+    info_dict = {
+        "窗口统计 (最近 5 秒)": f"min={window_stats[0]}, avg={window_avg}, max={window_stats[2]}",
+        "历史统计 (全部数据)": f"min={history_stats[0]}, avg={history_avg}, max={history_stats[2]}",
+        "窗口数据点数量": recorder.get_window_size(),
+        "记录器信息": recorder,
+    }
+    logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
 
 if __name__ == "__main__":
