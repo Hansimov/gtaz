@@ -6,7 +6,7 @@ from collections import deque
 from typing import Optional, Callable, Any
 from tclogger import TCLogger, logstr, dict_to_lines
 
-from gtaz.audios.volumes import VolumeRecorder, SAMPLE_INTERVAL_MS
+from gtaz.audios.volumes import VolumeRecorder
 
 
 logger = TCLogger(name="SignalDetector", use_prefix=True, use_prefix_ms=True)
@@ -44,7 +44,7 @@ class SignalDetector:
 
     def __init__(
         self,
-        recorder: VolumeRecorder,
+        recorder: Optional[VolumeRecorder] = None,
         gate_ratio: float = GATE_RATIO,
         gate_value: int = GATE_VALUE,
         duration_ms: float = DURATION_MS,
@@ -56,7 +56,7 @@ class SignalDetector:
         """
         初始化信号检测器。
 
-        :param recorder: 音量记录器实例
+        :param recorder: 音量记录器实例，如果为 None 则创建默认实例
         :param gate_ratio: 阈值比例（相对于第K低音量），默认 1.8 倍
         :param gate_value: 阈值绝对值（触发检测的最小音量），默认 10
         :param duration_ms: 音量突增需要持续的时间（毫秒），默认 500ms
@@ -65,6 +65,10 @@ class SignalDetector:
         :param cooldown_ms: 检测冷却时间（毫秒），默认 2000ms
         :param lowest_k: 使用窗口内第K低的音量作为基准（避免极端低值抖动），默认 5
         """
+        # 如果未传入 recorder，则创建默认实例
+        if recorder is None:
+            recorder = VolumeRecorder(window_duration_ms=window_ms)
+
         self.recorder = recorder
         self.gate_ratio = gate_ratio
         self.gate_value = gate_value
@@ -116,9 +120,9 @@ class SignalDetector:
         elapsed_ms = (current_time - self._last_detection_time) * 1000
         return elapsed_ms < self.cooldown_ms
 
-    def detect(self, volume: int, timestamp: float) -> bool:
+    def _detect(self, volume: int, timestamp: float) -> bool:
         """
-        检测给定音量是否触发信号。
+        检测给定音量是否触发信号（内部方法）。
 
         :param volume: 当前音量（0-100）
         :param timestamp: 时间戳（秒）
@@ -191,6 +195,25 @@ class SignalDetector:
 
         return False
 
+    def detect(self) -> bool:
+        """
+        检测当前音量是否触发信号。
+
+        自动从 recorder.monitor 获取当前音量和时间戳，
+        并自动记录到 recorder 中，然后调用 _detect 进行检测。
+
+        :return: 是否检测到信号
+        """
+        # 获取当前音量
+        volume_percent = self.recorder.monitor.get_volume_percent()
+        current_time = time.time()
+        if volume_percent is None:
+            return False
+        # 记录音量
+        self.recorder.record(volume_percent, current_time)
+        # 调用内部检测方法
+        return self._detect(volume_percent, current_time)
+
     def _on_detection(
         self,
         timestamp: float,
@@ -252,18 +275,15 @@ class SignalDetector:
         time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
         ms = int((timestamp % 1) * 1000)
 
-        window_stats = detection_info["window_stats"]
-        window_min, window_avg, window_max = window_stats
+        v_min, v_avg, v_max = detection_info["window_stats"]
+        ss = logstr.note("/")
+        volume_str = f"{v_min}{ss}{v_avg:.1f}{ss}{v_max}"
         info_dict = {
-            "检测时间": f"{time_str}.{ms:03d}",
-            "基准音量".format(detection_info["lowest_k"]): detection_info[
-                "base_volume"
-            ],
-            "阈值音量": f"{detection_info['gate_volume']:.1f}",
-            "超阈值样本数": detection_info["above_gate_count"],
-            "窗口内最小音量": window_min,
-            "窗口内平均音量": f"{window_avg:.1f}",
-            "窗口内最大音量": window_max,
+            "触发时间": f"{time_str}.{ms:03d}",
+            "基准音量": detection_info["base_volume"],
+            # "阈值音量": f"{detection_info['gate_volume']:.1f}",
+            # "超阈值样本数": detection_info["above_gate_count"],
+            "窗口音量范围": volume_str,
         }
         logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
@@ -306,6 +326,98 @@ class SignalDetector:
         # 重置冷却时间和窗口时间戳
         self._last_detection_time = None
         self._last_base_timestamp = None
+
+    def _log_volume_sample(
+        self, sample_count: int, group_volumes: list[int]
+    ) -> tuple[int, list[int], Optional[int]]:
+        """
+        记录并输出单个音量样本的日志。
+
+        :param sample_count: 当前采样计数
+        :param group_volumes: 当前组的音量列表
+        :return: (更新后的 sample_count, 更新后的 group_volumes, volume_percent 或 None)
+        """
+        # 检测信号（内部会自动获取音量和记录）
+        if self.is_running:
+            detected = self.detect()
+            if detected:
+                return sample_count, group_volumes, None  # 返回 None 表示检测到信号
+            # 获取最新记录的音量用于日志显示
+            volume_data = self.recorder.get_window_volumes_with_timestamps()
+            if volume_data:
+                volume_percent = volume_data[-1][1]
+            else:
+                # 无法获取音量，跳过日志输出
+                self.recorder.monitor.sleep_interval()
+                return sample_count, group_volumes, -1  # 返回 -1 表示跳过
+        else:
+            # 检测器未运行，直接获取音量
+            volume_percent = self.recorder.monitor.get_volume_percent()
+            if volume_percent is None:
+                self.recorder.monitor.sleep_interval()
+                return sample_count, group_volumes, -1  # 返回 -1 表示跳过
+        # 输出日志
+        group_volumes.append(volume_percent)
+        volume_char = self.recorder.monitor.get_volume_char(volume_percent)
+        self.recorder.monitor._log_volume_char(volume_char, sample_count)
+        if self.recorder.monitor._is_last_in_group(sample_count):
+            self.recorder.monitor._log_group_stats(group_volumes)
+            group_volumes = []
+        sample_count += 1
+        self.recorder.monitor.sleep_interval()
+
+        return sample_count, group_volumes, volume_percent
+
+    def stop_after_detect(self, count: int = 1, interval: float = 0) -> int:
+        """
+        持续检测音量信号，检测到指定次数后等待并退出。
+
+        自动启动检测器，循环调用 detect() 方法并输出音量日志，
+        检测到 count 次信号后等待 interval 秒，然后停止检测器并退出。
+
+        :param count: 检测到多少次信号后退出，默认 1 次
+        :param interval: 检测到 count 次信号后等待多少秒再退出，默认 0 秒（立即退出）
+        :return: 实际检测到的次数
+        """
+        # 启动检测器
+        if not self._is_running:
+            self.start()
+        logger.note(f"开始检测音量信号，检测到 {count} 次后等待 {interval} 秒退出...")
+        sample_count = 0
+        group_volumes = []
+        detected_count = 0
+        try:
+            while detected_count < count:
+                # 记录并输出音量样本日志
+                sample_count, group_volumes, result = self._log_volume_sample(
+                    sample_count, group_volumes
+                )
+                # 检查结果
+                if result is None:
+                    # 检测到信号
+                    detected_count += 1
+                    print()
+                    logger.note(f"已触发信号次数: {detected_count}/{count}")
+                    self.recorder.monitor.log_line_buffer()
+                    if detected_count >= count:
+                        break
+                elif result == -1:
+                    # 跳过此次采样
+                    continue
+        except KeyboardInterrupt:
+            logger.note("检测被用户中断")
+        finally:
+            # 输出最后一组统计
+            if sample_count % self.recorder.monitor.samples_per_group != 0:
+                self.recorder.monitor._log_group_stats(group_volumes)
+            # 等待指定时间
+            if interval > 0 and detected_count >= count:
+                logger.note(f"等待 {interval} 秒...")
+                time.sleep(interval)
+            # 停止检测器
+            self.stop()
+
+        return detected_count
 
     @property
     def is_running(self) -> bool:
@@ -370,19 +482,29 @@ def test_signal_detector():
         group_volumes = []
 
         while True:
-            volume_percent = recorder.monitor.get_volume_percent()
-            current_time = time.time()
-
-            if volume_percent is None:
-                logger.warn("无法获取音量，跳过此次采样")
-                recorder.monitor.sleep_interval()
-                continue
-
-            # 记录音量
-            recorder.record(volume_percent, current_time)
-            # 检测信号
+            # 检测信号（内部会自动获取音量和记录）
             if detector.is_running:
-                detector.detect(volume_percent, current_time)
+                detected = detector.detect()
+                if not detected:
+                    # 如果返回 False 可能是因为无法获取音量
+                    volume_percent = recorder.monitor.get_volume_percent()
+                    if volume_percent is None:
+                        logger.warn("无法获取音量，跳过此次采样")
+                        recorder.monitor.sleep_interval()
+                        continue
+                else:
+                    # 检测成功，获取最新记录的音量用于日志显示
+                    volume_data = recorder.get_window_volumes_with_timestamps()
+                    if volume_data:
+                        volume_percent = volume_data[-1][1]
+                    else:
+                        volume_percent = 0
+            else:
+                volume_percent = recorder.monitor.get_volume_percent()
+                if volume_percent is None:
+                    logger.warn("无法获取音量，跳过此次采样")
+                    recorder.monitor.sleep_interval()
+                    continue
 
             # 输出日志
             group_volumes.append(volume_percent)
@@ -404,7 +526,36 @@ def test_signal_detector():
         detector.stop()
 
 
+def test_stop_after_detect():
+    """测试 stop_after_detect 方法。"""
+    # 创建信号检测器（会自动创建 recorder）
+    detector = SignalDetector(
+        gate_ratio=GATE_RATIO,
+        duration_ms=DURATION_MS,
+    )
+    logger.note(f"信号检测器信息: {detector}")
+    logger.note(f"音量记录器信息: {detector.recorder}")
+
+    # 可选：检查游戏是否运行
+    detector.recorder.monitor.find_audio_session()
+    logger.note(f"音量监控器信息: {detector.recorder.monitor}")
+
+    # 使用 stop_after_detect 方法
+    logger.note("=" * 50)
+    logger.note("测试 stop_after_detect 方法")
+    logger.note("=" * 50)
+    logger.note("按 Ctrl+C 可以中断检测")
+
+    # 检测到 1 次信号后立即退出
+    detected_count = detector.stop_after_detect(count=2, interval=0)
+
+    logger.note("=" * 50)
+    logger.okay(f"检测完成，共检测到 {detected_count} 次信号")
+    logger.note("=" * 50)
+
+
 if __name__ == "__main__":
-    test_signal_detector()
+    # test_signal_detector()
+    test_stop_after_detect()
 
     # python -m gtaz.audios.detects
