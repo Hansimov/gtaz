@@ -14,6 +14,7 @@ pip install pycaw
 
 import time
 import warnings
+from collections import deque
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
 from typing import Optional
@@ -35,9 +36,9 @@ VOLUME_CHARS = "▁▂▃▅▆▇"
 # 音量量化位数
 VOLUME_BITS = len(VOLUME_CHARS)
 # 采样间隔（毫秒）
-SAMPLE_INTERVAL_MS = 200
+SAMPLE_INTERVAL_MS = 100
 # 每组输出的样本数
-SAMPLES_PER_GROUP = 50
+SAMPLES_PER_GROUP = 25
 # 默认音量增益系数（幂函数的指数，<1 增强低音量区分度）
 VOLUME_GAIN = 0.5
 
@@ -156,7 +157,7 @@ class VolumeMonitor:
     """
     GTAV 音量监控类。
 
-    使用 AudioDeviceSession 进行音量监控，支持音量增益。
+    使用 AudioDeviceSession 进行音量监控，支持音量增益和实时数据回调。
     """
 
     def __init__(
@@ -176,12 +177,19 @@ class VolumeMonitor:
         :param samples_per_group: 每组输出的样本数
         :param volume_gain: 音量增益系数（幂函数指数，<1 增强低音量区分度）
         """
+        # 如果未传入 device_session，自动创建默认实例
+        if device_session is None:
+            device_session = AudioDeviceSession(device_name=GTAV_AUDIO_DEVICE_NAME)
+            if not device_session.setup():
+                logger.warn("无法设置音频设备，VolumeMonitor 可能无法正常工作")
+
         self.device_session = device_session
         self.process_name = process_name
         self.sample_interval_ms = sample_interval_ms
         self.samples_per_group = samples_per_group
         self.volume_gain = volume_gain
         self._audio_session = None
+        self._is_running = False
 
     def find_audio_session(self):
         """
@@ -250,6 +258,18 @@ class VolumeMonitor:
         """按采样间隔睡眠。"""
         sleep_ms(self.sample_interval_ms)
 
+    @staticmethod
+    def _calculate_stats(volumes: list[int]) -> tuple[int, float, int]:
+        """
+        计算音量统计信息。
+
+        :param volumes: 音量数据列表
+        :return: (min, avg, max)
+        """
+        if not volumes:
+            return 0, 0.0, 0
+        return min(volumes), sum(volumes) / len(volumes), max(volumes)
+
     def _is_first_in_group(self, sample_count: int) -> bool:
         """
         判断是否是组内第一个。
@@ -277,18 +297,6 @@ class VolumeMonitor:
         # 将 0-100 映射到 0-(VOLUME_BITS-1) 的索引
         index = min(VOLUME_BITS - 1, int(volume_percent / 100 * VOLUME_BITS))
         return VOLUME_CHARS[index]
-
-    @staticmethod
-    def _calculate_stats(volumes: list[int]) -> tuple[int, float, int]:
-        """
-        计算音量统计信息。
-
-        :param volumes: 音量数据列表
-        :return: (min, avg, max)
-        """
-        if not volumes:
-            return 0, 0.0, 0
-        return min(volumes), sum(volumes) / len(volumes), max(volumes)
 
     def _log_volume_char(self, volume_char: str, sample_count: int):
         """
@@ -329,22 +337,25 @@ class VolumeMonitor:
         )
         logger.note(f"音量增益: {self.volume_gain} (幂函数指数)")
 
-    def monitor_volume(self, duration_seconds: Optional[float] = None):
+    def start(self):
         """
-        监控音量并输出到日志。
-        :param duration_seconds: 监控持续时间（秒），None 表示持续监控
+        开始监控音量并输出到日志。
         """
         if not self.device_session or not self.device_session.meter:
             logger.fail("无法开始监控: 音频设备会话未设置")
             return
+
+        if self._is_running:
+            logger.warn("监控器已在运行中")
+            return
+
+        self._is_running = True
         self._log_monitor_start()
-        start_time = time.time()
         sample_count = 0
         group_volumes = []
+
         try:
-            while True:
-                if duration_seconds and (time.time() - start_time) >= duration_seconds:
-                    break
+            while self._is_running:
                 volume_percent = self.get_volume_percent()
                 if volume_percent is None:
                     logger.warn("无法获取音量，跳过此次采样")
@@ -364,6 +375,23 @@ class VolumeMonitor:
             logger.note("监控已停止")
         except Exception as e:
             logger.warn(f"监控过程中出错: {e}")
+        finally:
+            self._is_running = False
+
+    def stop(self):
+        """
+        停止监控。
+        """
+        if not self._is_running:
+            logger.warn("监控器未在运行")
+            return
+        self._is_running = False
+        logger.okay("监控器已停止")
+
+    @property
+    def is_running(self) -> bool:
+        """获取监控器运行状态。"""
+        return self._is_running
 
     def refresh(self):
         """刷新音频会话缓存。"""
@@ -386,8 +414,219 @@ class VolumeMonitor:
         )
 
 
-def test_gtav_volume_monitor():
-    """测试 GTAV 音量监控器。"""
+class VolumeRecorder:
+    """
+    音量记录器类。
+
+    负责记录音量数据，维护时间窗口内的音量历史，并提供统计功能。
+    可以持有 VolumeMonitor 实例并自动记录其监控到的音量数据。
+    """
+
+    def __init__(
+        self,
+        monitor: Optional["VolumeMonitor"] = None,
+        window_duration_ms: int = 5000,
+    ):
+        """
+        初始化音量记录器。
+
+        :param monitor: VolumeMonitor 实例，如果为 None 则创建默认实例
+        :param window_duration_ms: 时间窗口长度（毫秒），默认 5000ms
+        """
+        self.window_duration_ms = window_duration_ms
+        # 使用 deque 存储 (timestamp, volume) 元组
+        self._volumes: deque[tuple[float, int]] = deque()
+        # 历史统计（全局）
+        self._history_min: Optional[int] = None
+        self._history_max: Optional[int] = None
+        self._history_sum: int = 0
+        self._history_count: int = 0
+        # 记录状态标志
+        self._is_recording = False
+
+        # 设置 monitor 实例
+        if monitor is None:
+            # 创建默认的 monitor 实例（会自动创建 device_session）
+            self.monitor = VolumeMonitor(volume_gain=VOLUME_GAIN)
+        else:
+            self.monitor = monitor
+
+    def record(self, volume: int, timestamp: Optional[float] = None):
+        """
+        记录一个音量数据点。
+
+        :param volume: 音量百分比（0-100）
+        :param timestamp: 时间戳（秒），如果为 None 则使用当前时间
+        """
+        if timestamp is None:
+            timestamp = time.time()
+
+        # 添加新数据点
+        self._volumes.append((timestamp, volume))
+
+        # 更新历史统计
+        if self._history_min is None or volume < self._history_min:
+            self._history_min = volume
+        if self._history_max is None or volume > self._history_max:
+            self._history_max = volume
+        self._history_sum += volume
+        self._history_count += 1
+
+        # 清理过期数据
+        self._cleanup_old_data(timestamp)
+
+    def _cleanup_old_data(self, current_time: float):
+        """
+        清理超出时间窗口的旧数据。
+
+        :param current_time: 当前时间戳（秒）
+        """
+        window_start = current_time - self.window_duration_ms / 1000
+        while self._volumes and self._volumes[0][0] < window_start:
+            self._volumes.popleft()
+
+    def get_window_volumes(self) -> list[int]:
+        """
+        获取当前时间窗口内的所有音量数据。
+
+        :return: 音量列表
+        """
+        return [vol for _, vol in self._volumes]
+
+    def get_window_stats(self) -> tuple[Optional[int], Optional[float], Optional[int]]:
+        """
+        获取当前时间窗口内的音量统计。
+
+        :return: (min, avg, max)，如果窗口为空则返回 (None, None, None)
+        """
+        volumes = self.get_window_volumes()
+        if not volumes:
+            return None, None, None
+        return min(volumes), sum(volumes) / len(volumes), max(volumes)
+
+    def get_history_stats(self) -> tuple[Optional[int], Optional[float], Optional[int]]:
+        """
+        获取历史音量统计（所有记录过的数据）。
+
+        :return: (min, avg, max)，如果没有历史数据则返回 (None, None, None)
+        """
+        if self._history_count == 0:
+            return None, None, None
+        history_avg = self._history_sum / self._history_count
+        return self._history_min, history_avg, self._history_max
+
+    def get_window_min(self) -> Optional[int]:
+        """
+        获取当前时间窗口内的最小音量。
+
+        :return: 最小音量，窗口为空则返回 None
+        """
+        volumes = self.get_window_volumes()
+        return min(volumes) if volumes else None
+
+    def get_window_size(self) -> int:
+        """
+        获取当前时间窗口内的数据点数量。
+
+        :return: 数据点数量
+        """
+        return len(self._volumes)
+
+    def clear(self):
+        """清空所有记录数据。"""
+        self._volumes.clear()
+        self._history_min = None
+        self._history_max = None
+        self._history_sum = 0
+        self._history_count = 0
+
+    def start(self, log_output: bool = True):
+        """
+        开始监控音量并记录数据。
+
+        :param log_output: 是否输出日志（包含音量字符和统计信息）
+        """
+        if not self.monitor.device_session or not self.monitor.device_session.meter:
+            logger.fail("无法开始监控: 音频设备会话未设置")
+            return
+
+        if self._is_recording:
+            logger.warn("记录器已在运行中")
+            return
+
+        self._is_recording = True
+
+        if log_output:
+            self.monitor._log_monitor_start()
+
+        sample_count = 0
+        group_volumes = []
+
+        try:
+            while self._is_recording:
+                volume_percent = self.monitor.get_volume_percent()
+                current_time = time.time()
+
+                if volume_percent is None:
+                    if log_output:
+                        logger.warn("无法获取音量，跳过此次采样")
+                    self.monitor.sleep_interval()
+                    continue
+
+                # 记录音量数据
+                self.record(volume_percent, current_time)
+
+                if log_output:
+                    group_volumes.append(volume_percent)
+                    volume_char = self.monitor.get_volume_char(volume_percent)
+                    self.monitor._log_volume_char(volume_char, sample_count)
+                    if self.monitor._is_last_in_group(sample_count):
+                        self.monitor._log_group_stats(group_volumes)
+                        group_volumes = []
+
+                sample_count += 1
+                self.monitor.sleep_interval()
+
+        except KeyboardInterrupt:
+            if log_output and sample_count % self.monitor.samples_per_group != 0:
+                self.monitor._log_group_stats(group_volumes)
+            logger.note("记录已停止")
+        except Exception as e:
+            logger.warn(f"记录过程中出错: {e}")
+        finally:
+            self._is_recording = False
+
+    def stop(self):
+        """
+        停止记录。
+        """
+        if not self._is_recording:
+            logger.warn("记录器未在运行")
+            return
+        self._is_recording = False
+        logger.okay("记录器已停止")
+
+    @property
+    def is_recording(self) -> bool:
+        """获取记录器运行状态。"""
+        return self._is_recording
+
+    def __repr__(self) -> str:
+        window_stats = self.get_window_stats()
+        history_stats = self.get_history_stats()
+        has_monitor = self.monitor is not None
+        return (
+            f"VolumeRecorder("
+            f"window_duration={self.window_duration_ms}ms, "
+            f"window_size={self.get_window_size()}, "
+            f"window_stats={window_stats}, "
+            f"history_stats={history_stats}, "
+            f"has_monitor={has_monitor})"
+        )
+
+
+def test_volume_monitor():
+    """测试音量监控器"""
     # 创建音频设备会话
     device_session = AudioDeviceSession(device_name=GTAV_AUDIO_DEVICE_NAME)
     # 设置音频设备
@@ -405,10 +644,46 @@ def test_gtav_volume_monitor():
         logger.note(f"当前音量: {volume}%")
         logger.note(f"音量字符: {monitor.get_volume_char(volume)}")
     # 开始持续监控
-    monitor.monitor_volume()
+    monitor.start()
+
+
+def test_volume_recorder():
+    """测试音量记录器"""
+    # 创建音量记录器（自动创建默认 monitor）
+    recorder = VolumeRecorder(window_duration_ms=5000)
+    logger.note(f"音量记录器信息: {recorder}")
+
+    # 可选：检查游戏是否运行
+    recorder.monitor.find_audio_session()
+    logger.note(f"音量监控器信息: {recorder.monitor}")
+
+    # 监控（持续运行，按 Ctrl+C 停止）
+    logger.note("开始监控...")
+    recorder.start()
+
+    # 输出统计信息
+    logger.note("=" * 50)
+    logger.note("音量统计信息")
+    logger.note("=" * 50)
+    window_stats = recorder.get_window_stats()
+    history_stats = recorder.get_history_stats()
+    window_avg = f"{window_stats[1]:.1f}" if window_stats[1] is not None else "None"
+    history_avg = f"{history_stats[1]:.1f}" if history_stats[1] is not None else "None"
+    logger.note(
+        f"窗口统计 (最近 5 秒): min={window_stats[0]}, avg={window_avg}, max={window_stats[2]}"
+    )
+    logger.note(
+        f"历史统计 (全部数据): min={history_stats[0]}, avg={history_avg}, max={history_stats[2]}"
+    )
+    logger.note(f"窗口数据点数量: {recorder.get_window_size()}")
+    logger.note(f"记录器信息: {recorder}")
 
 
 if __name__ == "__main__":
-    test_gtav_volume_monitor()
+    # 测试音量监控器
+    # test_volume_monitor()
+
+    # 测试音量记录器
+    test_volume_recorder()
 
     # python -m gtaz.audios.volumes
