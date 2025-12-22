@@ -406,6 +406,7 @@ class SignalDetector:
                     # 跳过此次采样
                     continue
         except KeyboardInterrupt:
+            print()
             logger.note("检测被用户中断")
         finally:
             # 输出最后一组统计
