@@ -35,8 +35,8 @@ class NetmodeSwitcher:
         self.navigator.ensure_menu_opened()
         # 截取屏幕
         frame_np = self.capturer.capture_frame(verbose=False).to_np()
-        # 使用 navigator 的 locator 来匹配模式
-        result = self.navigator.locator_runner.locator.match_mode(frame_np)
+        # 匹配模式
+        result = self.locator.match_mode(frame_np)
         # 判断匹配结果
         if not is_score_too_low(result):
             mode_name = result.name

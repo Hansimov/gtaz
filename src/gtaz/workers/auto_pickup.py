@@ -21,7 +21,7 @@ SECS_AT_STORY = 5
 # 确认断网提示前的等待时间（秒）
 SECS_BEFORE_CONFIRM_BLOCK = 5
 # 检测到信号后的等待时间（秒）
-SECS_AT_ONLINE = 10
+SECS_AT_ONLINE = 20
 # 等待音频信号稳定时间（秒）
 SECS_BEFORE_DETECT = 2
 # 线上模式确认次数
@@ -67,6 +67,7 @@ class AutoPickuper:
 
     def _sleep_at_online(self):
         """在线模式等待操作"""
+        logger.note(f"等待 {self.secs_at_online} 秒，确保货物全部到达...")
         time.sleep(self.secs_at_online)
 
     def _sleep_after_disable_rule(self):
@@ -77,12 +78,12 @@ class AutoPickuper:
         """等待音频信号稳定"""
         time.sleep(self.secs_before_detect)
 
-    def switch_to_online(self) -> bool:
-        """切换到在线模式
+    def switch_to_invite(self) -> bool:
+        """切换到在线模式（邀请战局）
 
         流程：
         - 禁用防火墙规则
-        - 切换到在线模式
+        - 切换到在线模式（邀请战局）
         - 等待音频信号稳定再开启检测
         - 启动音量信号检测，检测到 1 次后立即退出
         - 启用防火墙规则
@@ -95,13 +96,13 @@ class AutoPickuper:
         self.blocker.disable_rule()
         self._sleep_after_disable_rule()
         # 切换到在线模式
-        self.switcher.switch_story_to_online()
+        self.switcher.switch_to_new_invite_lobby()
         # 等待音频信号稳定再开启检测
         self._sleep_before_detect()
-        # 启动音量信号检测，检测到 2 次后立即退出
-        self.detector.stop_after_detect(count=2, interval=0)
+        # 启动音量信号检测，并退出
+        self.detector.stop_after_detect(count=1, interval=3)
         # 启用防火墙规则
-        self.blocker.enable_rule()
+        # self.blocker.enable_rule()
         # 确认断网提示
         self._confirm_at_online()
         # 等待货物全部到达
@@ -144,8 +145,8 @@ class AutoPickuper:
             logger.note("=" * 50)
             logger.hint(f"[{logstr.file(i+1)}/{loop_count}] 循环开始")
             logger.note("=" * 50)
-            # 切换到在线模式
-            self.switch_to_online()
+            # 切换到在线模式（邀请战局）
+            self.switch_to_invite()
             # 切换到故事模式
             self.switch_to_story()
         logger.okay("所有循环完成")
@@ -172,7 +173,7 @@ def parse_args() -> argparse.Namespace:
         epilog="""
 示例:
   python -m gtaz.workers.auto_pickup -s          # 切换到故事模式
-  python -m gtaz.workers.auto_pickup -o          # 切换到在线模式
+  python -m gtaz.workers.auto_pickup -i          # 切换到在线模式（邀请战局）
   python -m gtaz.workers.auto_pickup -l          # 循环切换（默认10次）
   python -m gtaz.workers.auto_pickup -l -c 5     # 循环切换5次
         """,
@@ -185,10 +186,10 @@ def parse_args() -> argparse.Namespace:
         help="切换到故事模式",
     )
     parser.add_argument(
-        "-o",
-        "--online",
+        "-i",
+        "--invite",
         action="store_true",
-        help="切换到在线模式",
+        help="切换到在线模式（邀请战局）",
     )
     parser.add_argument(
         "-l",
@@ -217,8 +218,8 @@ def main():
     if args.story:
         pickuper.switch_to_story()
 
-    if args.online:
-        pickuper.switch_to_online()
+    if args.invite:
+        pickuper.switch_to_invite()
 
     if args.loop:
         pickuper.switch_loop(loop_count=args.count)
@@ -233,8 +234,8 @@ if __name__ == "__main__":
     # 切换到故事模式
     # python -m gtaz.workers.auto_pickup -s
 
-    # 切换到在线模式
-    # python -m gtaz.workers.auto_pickup -o
+    # 切换到在线模式（邀请战局）
+    # python -m gtaz.workers.auto_pickup -i
 
     # 循环切换（默认10次）
     # python -m gtaz.workers.auto_pickup -l
