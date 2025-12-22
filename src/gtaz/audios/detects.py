@@ -67,9 +67,10 @@ class SignalDetector:
         """
         # 如果未传入 recorder，则创建默认实例
         if recorder is None:
-            recorder = VolumeRecorder(window_duration_ms=window_ms)
+            recorder = VolumeRecorder(window_ms=window_ms)
 
         self.recorder = recorder
+        self.monitor = recorder.monitor
         self.gate_ratio = gate_ratio
         self.gate_value = gate_value
         self.duration_ms = duration_ms
@@ -87,7 +88,7 @@ class SignalDetector:
         # 上次检测时的基准音量时间戳（用于重置窗口）
         self._last_base_timestamp: Optional[float] = None
         # 采样间隔（从 monitor 获取）
-        self._sample_interval_ms = self.recorder.monitor.sample_interval_ms
+        self._sample_interval_ms = self.monitor.sample_interval_ms
 
     def _get_history_min_volume(self) -> Optional[int]:
         """
@@ -205,7 +206,7 @@ class SignalDetector:
         :return: 是否检测到信号
         """
         # 获取当前音量
-        volume_percent = self.recorder.monitor.get_volume_percent()
+        volume_percent = self.monitor.get_volume_percent()
         current_time = time.time()
         if volume_percent is None:
             return False
@@ -288,7 +289,7 @@ class SignalDetector:
         logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
         # 恢复显示之前的音量字符
-        self.recorder.monitor.log_line_buffer()
+        self.monitor.log_line_buffer()
 
     def start(self):
         """
@@ -348,23 +349,23 @@ class SignalDetector:
                 volume_percent = volume_data[-1][1]
             else:
                 # 无法获取音量，跳过日志输出
-                self.recorder.monitor.sleep_interval()
+                self.monitor.sleep_interval()
                 return sample_count, group_volumes, -1  # 返回 -1 表示跳过
         else:
             # 检测器未运行，直接获取音量
-            volume_percent = self.recorder.monitor.get_volume_percent()
+            volume_percent = self.monitor.get_volume_percent()
             if volume_percent is None:
-                self.recorder.monitor.sleep_interval()
+                self.monitor.sleep_interval()
                 return sample_count, group_volumes, -1  # 返回 -1 表示跳过
         # 输出日志
         group_volumes.append(volume_percent)
-        volume_char = self.recorder.monitor.get_volume_char(volume_percent)
-        self.recorder.monitor._log_volume_char(volume_char, sample_count)
-        if self.recorder.monitor._is_last_in_group(sample_count):
-            self.recorder.monitor._log_group_stats(group_volumes)
+        volume_char = self.monitor.get_volume_char(volume_percent)
+        self.monitor._log_volume_char(volume_char, sample_count)
+        if self.monitor._is_last_in_group(sample_count):
+            self.monitor._log_group_stats(group_volumes)
             group_volumes = []
         sample_count += 1
-        self.recorder.monitor.sleep_interval()
+        self.monitor.sleep_interval()
 
         return sample_count, group_volumes, volume_percent
 
@@ -398,7 +399,7 @@ class SignalDetector:
                     detected_count += 1
                     print()
                     logger.note(f"已触发信号次数: {detected_count}/{count}")
-                    self.recorder.monitor.log_line_buffer()
+                    self.monitor.log_line_buffer()
                     if detected_count >= count:
                         break
                 elif result == -1:
@@ -408,8 +409,8 @@ class SignalDetector:
             logger.note("检测被用户中断")
         finally:
             # 输出最后一组统计
-            if sample_count % self.recorder.monitor.samples_per_group != 0:
-                self.recorder.monitor._log_group_stats(group_volumes)
+            if sample_count % self.monitor.samples_per_group != 0:
+                self.monitor._log_group_stats(group_volumes)
             # 等待指定时间
             if interval > 0 and detected_count >= count:
                 logger.note(f"等待 {interval} 秒...")
@@ -454,7 +455,7 @@ class SignalDetector:
 def test_signal_detector():
     """测试信号检测器。"""
     # 创建音量记录器（会自动创建 monitor，5 秒窗口）
-    recorder = VolumeRecorder(window_duration_ms=WINDOW_MS)
+    recorder = VolumeRecorder(window_ms=WINDOW_MS)
     logger.note(f"音量记录器信息: {recorder}")
 
     # 创建信号检测器

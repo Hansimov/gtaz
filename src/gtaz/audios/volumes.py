@@ -41,6 +41,8 @@ SAMPLE_INTERVAL_MS = 100
 SAMPLES_PER_GROUP = 25
 # 默认音量增益系数（幂函数的指数，<1 增强低音量区分度）
 VOLUME_GAIN = 0.5
+# 窗口时长（毫秒）
+WINDOW_MS = 5000
 
 
 def sleep_ms(milliseconds: int):
@@ -440,15 +442,15 @@ class VolumeRecorder:
     def __init__(
         self,
         monitor: Optional["VolumeMonitor"] = None,
-        window_duration_ms: int = 5000,
+        window_ms: int = WINDOW_MS,
     ):
         """
         初始化音量记录器。
 
         :param monitor: VolumeMonitor 实例，如果为 None 则创建默认实例
-        :param window_duration_ms: 时间窗口长度（毫秒），默认 5000ms
+        :param window_ms: 时间窗口长度（毫秒），默认 5000ms
         """
-        self.window_duration_ms = window_duration_ms
+        self.window_ms = window_ms
         # 使用 deque 存储 (timestamp, volume) 元组
         self._volumes: deque[tuple[float, int]] = deque()
         # 历史统计（全局）
@@ -496,7 +498,7 @@ class VolumeRecorder:
 
         :param current_time: 当前时间戳（秒）
         """
-        window_start = current_time - self.window_duration_ms / 1000
+        window_start = current_time - self.window_ms / 1000
         while self._volumes and self._volumes[0][0] < window_start:
             self._volumes.popleft()
 
@@ -661,7 +663,7 @@ class VolumeRecorder:
         has_monitor = self.monitor is not None
         return (
             f"VolumeRecorder("
-            f"window_duration={self.window_duration_ms}ms, "
+            f"window_ms={self.window_ms}ms, "
             f"window_size={self.get_window_size()}, "
             f"window_stats={window_stats}, "
             f"history_stats={history_stats}, "
@@ -694,7 +696,7 @@ def test_volume_monitor():
 def test_volume_recorder():
     """测试音量记录器"""
     # 创建音量记录器（自动创建默认 monitor）
-    recorder = VolumeRecorder(window_duration_ms=5000)
+    recorder = VolumeRecorder(window_ms=5000)
     logger.note(f"音量记录器信息: {recorder}")
 
     # 可选：检查游戏是否运行
