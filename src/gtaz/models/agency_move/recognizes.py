@@ -13,7 +13,7 @@ import pickle
 
 logger = TCLogger("FloorRecognizer")
 
-MODULE_DIR = Path(__file__).parents[3]
+MODULE_DIR = Path(__file__).parents[2]
 IMAGES_DIR = MODULE_DIR / "images"
 CACHE_DIR = MODULE_DIR / "cache"
 

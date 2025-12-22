@@ -23,7 +23,7 @@ logger = TCLogger(name="ScreenCapturer", use_prefix=True, use_prefix_ms=True)
 
 
 # 获取当前模块所在目录
-MODULE_DIR = Path(__file__).parent
+MODULE_DIR = Path(__file__).parents[1]
 # 缓存目录
 CACHE_DIR = MODULE_DIR / "cache"
 # 帧目录

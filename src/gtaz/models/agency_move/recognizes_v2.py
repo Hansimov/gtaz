@@ -26,7 +26,7 @@ from timm.data.transforms_factory import create_transform
 
 logger = TCLogger("FloorRecognizerV2", use_prefix=True, use_prefix_ms=True)
 
-MODULE_DIR = Path(__file__).parents[3]
+MODULE_DIR = Path(__file__).parents[2]
 IMAGES_DIR = MODULE_DIR / "images"
 CACHE_DIR = MODULE_DIR / "cache"
 
