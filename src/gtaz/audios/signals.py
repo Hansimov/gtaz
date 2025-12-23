@@ -374,16 +374,16 @@ class TemplateMatcher:
             # 使用 scipy.signal.resample_poly 更快
             mono_data = scipy_signal.resample(mono_data, num_samples)
 
-        # 归一化
-        mono_data = self._normalize(mono_data)
+        # 转换为 float32（不做归一化，NCC 本身就是归一化的）
+        mono_data = mono_data.astype(np.float32)
 
-        # 预计算模板的“能量”（实际上是方差 * n，用于 NCC 计算）
+        # 预计算模板的均值和“能量”（方差 * n，用于 NCC 计算）
         template_mean = np.mean(mono_data)
         template_centered = mono_data - template_mean
         template_energy = np.sum(template_centered**2)
 
         self._templates[template.name] = template
-        self._processed_templates[template.name] = mono_data.astype(np.float32)
+        self._processed_templates[template.name] = mono_data
         self._template_energies[template.name] = template_energy
         self._last_match_times[template.name] = 0
 
@@ -435,7 +435,7 @@ class TemplateMatcher:
         sample_rate: int,
     ) -> np.ndarray:
         """
-        预处理窗口数据（转单声道、重采样、归一化）。
+        预处理窗口数据（转单声道、重采样）。
 
         :param window_data: 原始窗口数据
         :param sample_rate: 原始采样率
@@ -454,9 +454,7 @@ class TemplateMatcher:
             # 使用 scipy.signal.resample
             window_mono = scipy_signal.resample(window_mono, num_samples)
 
-        # 归一化
-        window_mono = self._normalize(window_mono)
-
+        # 转换为 float32（不做归一化，NCC 本身就是归一化的）
         return window_mono.astype(np.float32)
 
     def _compute_correlation_fft(
@@ -481,71 +479,80 @@ class TemplateMatcher:
         if template_energy <= 0:
             return 0.0, 0
 
+        # 将模板零均值化
+        template_mean = np.mean(template)
+        template_zm = template - template_mean
+
         # 计算 FFT 长度（选择 2 的幂次以加速）
         fft_len = 1
         while fft_len < window_len + template_len - 1:
             fft_len *= 2
 
-        # FFT 互相关
+        # 预计算模板的 FFT（已零均值化）
+        template_zm_fft = rfft(template_zm[::-1], fft_len)
+
+        # 计算窗口的 FFT
         window_fft = rfft(window, fft_len)
-        template_fft = rfft(template[::-1], fft_len)  # 翻转模板
-        correlation = irfft(window_fft * template_fft, fft_len)
+
+        # 计算窗口与零均值模板的互相关
+        correlation = irfft(window_fft * template_zm_fft, fft_len)
 
         # 只取有效部分 (valid mode)
-        # 注意：FFT 卷积结果的前 template_len-1 个值是边界效应
-        # valid 模式的相关从位置 template_len-1 开始
         valid_start = template_len - 1
         valid_len = window_len - template_len + 1
         correlation = correlation[valid_start : valid_start + valid_len]
 
+        # 计算窗口局部均值并修正相关值
+        # 相关值需要减去 window_mean * sum(template_zm)，但 sum(template_zm) = 0
+        # 所以不需要修正！这是使用零均值模板的好处
+
         # 计算窗口局部能量（使用累积和优化）
         window_sq = window**2
-        cumsum = np.concatenate(([0], np.cumsum(window_sq)))
-        window_energy = cumsum[template_len:] - cumsum[:-template_len]
+        cumsum_sq = np.concatenate(([0], np.cumsum(window_sq)))
+        window_sq_sum = cumsum_sq[template_len:] - cumsum_sq[:-template_len]
 
-        # 计算窗口局部均值（用于计算方差）
+        # 计算窗口局部均值
         cumsum_val = np.concatenate(([0], np.cumsum(window)))
-        window_mean = (
-            cumsum_val[template_len:] - cumsum_val[:-template_len]
-        ) / template_len
-
-        # 计算模板均值
-        template_mean = np.mean(template)
-
-        # 修正相关值：减去均值的影响
-        # correlation = sum(window * template)
-        # 我们需要 sum((window - window_mean) * (template - template_mean))
-        # = sum(window * template) - template_mean * sum(window) - window_mean * sum(template) + n * window_mean * template_mean
-        # = correlation - template_mean * window_sum - window_mean * template_sum + n * window_mean * template_mean
-        template_sum = np.sum(template)
         window_sum = cumsum_val[template_len:] - cumsum_val[:-template_len]
+        window_mean = window_sum / template_len
 
-        corrected_correlation = (
-            correlation
-            - template_mean * window_sum
-            - window_mean * template_sum
-            + template_len * window_mean * template_mean
-        )
+        # 计算窗口局部方差能量: sum((x - mean)^2) = sum(x^2) - n * mean^2
+        window_std_energy = window_sq_sum - template_len * window_mean**2
 
-        # 计算窗口局部方差
-        # var = E[X^2] - E[X]^2 = window_energy/n - window_mean^2
-        window_variance = window_energy / template_len - window_mean**2
-        window_std_energy = window_variance * template_len  # 窗口的“能量”（方差 * n）
+        # 确保方差能量非负
+        window_std_energy = np.maximum(window_std_energy, 0.0)
 
-        # 避免除零
-        window_std_energy = np.maximum(window_std_energy, 1e-10)
+        # 修正相关值：减去窗口均值的影响
+        # corrected_correlation = sum(window * template_zm) - window_mean * sum(template_zm)
+        # 由于 sum(template_zm) = 0，所以 corrected_correlation = correlation
+        # 但实际上我们计算的是 sum(window * template_zm)，而不是 sum((window - window_mean) * template_zm)
+        # 需要修正：sum((window - window_mean) * template_zm) = sum(window * template_zm) - window_mean * sum(template_zm)
+        #                                                     = correlation - window_mean * 0 = correlation
+        # 所以这里不需要修正！
 
-        # 归一化相关系数 (NCC)
-        # NCC = corrected_correlation / sqrt(window_std_energy * template_energy)
-        normalized = corrected_correlation / np.sqrt(
-            window_std_energy * template_energy
-        )
+        # 计算归一化系数
+        denominator = np.sqrt(window_std_energy * template_energy)
+
+        # 设置最小能量阈值：窗口能量至少是模板能量的一定比例
+        # 这可以过滤掉低能量（静音）区域的假匹配
+        min_energy_ratio = 0.1  # 提高到 10%
+        min_window_energy = min_energy_ratio * template_energy
+
+        # 创建有效性掩码
+        valid_mask = window_std_energy >= min_window_energy
+
+        # 安全计算 NCC
+        safe_denominator = np.where(denominator > 0, denominator, 1.0)
+        normalized = np.where(valid_mask, correlation / safe_denominator, -np.inf)
 
         # 找到最大值及其位置
         max_idx = np.argmax(normalized)
         max_score = float(normalized[max_idx])
 
-        # 限制分数在 [0, 1] 范围内
+        if not np.isfinite(max_score):
+            return 0.0, 0
+
+        # 限制分数范围并过滤负相关
         max_score = min(max(max_score, 0.0), 1.0)
 
         return max_score, int(max_idx)
