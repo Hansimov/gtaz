@@ -257,6 +257,18 @@ class AudioFeatures:
     centered_data: Optional[np.ndarray] = None
     """零均值化后的数据（可选，用于优化）"""
 
+    # 新增特征
+    spectrogram: Optional[np.ndarray] = None
+    """频谱图 (频率bins, 时间帧)"""
+    mel_spectrogram: Optional[np.ndarray] = None
+    """梅尔频谱图"""
+    energy_envelope: Optional[np.ndarray] = None
+    """能量包络"""
+    zero_crossing_rate: float = 0.0
+    """零交叉率"""
+    spectral_centroid: Optional[np.ndarray] = None
+    """频谱质心"""
+
     @property
     def samples(self) -> int:
         """获取采样点数。"""
@@ -287,6 +299,10 @@ class FeaturesExtractor:
     - 数据类型转换
     - 能量计算
     - 零均值化
+    - 频谱特征（STFT、梅尔频谱）
+    - 能量包络
+    - 零交叉率
+    - 频谱质心
     """
 
     def __init__(self, target_sample_rate: int = REALTIME_SAMPLE_RATE):
@@ -296,6 +312,11 @@ class FeaturesExtractor:
         :param target_sample_rate: 目标采样率
         """
         self.target_sample_rate = target_sample_rate
+
+        # STFT 参数（优化：减小窗口和增加hop以提升速度）
+        self.n_fft = 256  # FFT 窗口大小（从512降至256）
+        self.hop_length = 256  # 帧移（从128增至256，减少帧数）
+        self.n_mels = 20  # 梅尔滤波器数量（从40降至20）
 
     @staticmethod
     def to_mono(data: np.ndarray) -> np.ndarray:
@@ -376,11 +397,131 @@ class FeaturesExtractor:
             return float(np.sum(data_centered**2))
         return float(np.sum(data**2))
 
+    @staticmethod
+    def compute_zero_crossing_rate(data: np.ndarray) -> float:
+        """
+        计算零交叉率。
+
+        :param data: 音频数据
+
+        :return: 零交叉率（0-1）
+        """
+        if len(data) < 2:
+            return 0.0
+        zero_crossings = np.sum(np.abs(np.diff(np.sign(data)))) / 2
+        return float(zero_crossings / (len(data) - 1))
+
+    def compute_energy_envelope(
+        self, data: np.ndarray, frame_length: int = None
+    ) -> np.ndarray:
+        """
+        计算能量包络。
+
+        :param data: 音频数据
+        :param frame_length: 帧长度，默认使用 hop_length
+
+        :return: 能量包络数组
+        """
+        if frame_length is None:
+            frame_length = self.hop_length
+
+        # 计算每帧的 RMS 能量
+        num_frames = (len(data) - frame_length) // frame_length + 1
+        envelope = np.zeros(num_frames)
+
+        for i in range(num_frames):
+            start = i * frame_length
+            end = start + frame_length
+            frame = data[start:end]
+            envelope[i] = np.sqrt(np.mean(frame**2))
+
+        return envelope
+
+    def compute_spectrogram(self, data: np.ndarray) -> np.ndarray:
+        """
+        计算频谱图（STFT）- 向量化优化版本。
+
+        :param data: 音频数据
+
+        :return: 频谱图幅度 (频率bins, 时间帧)
+        """
+        # 使用汉宁窗
+        window = np.hanning(self.n_fft)
+
+        # 计算帧数
+        num_frames = (len(data) - self.n_fft) // self.hop_length + 1
+        if num_frames <= 0:
+            return np.array([[]])
+
+        # 向量化构建所有帧（避免循环）
+        # 创建索引矩阵
+        indices = (
+            np.arange(self.n_fft)[:, np.newaxis]
+            + np.arange(num_frames) * self.hop_length
+        )
+
+        # 一次性提取所有帧
+        frames = data[indices] * window[:, np.newaxis]
+
+        # 对所有帧进行FFT（向量化操作）
+        fft_result = rfft(frames, axis=0)
+        spectrogram = np.abs(fft_result)
+
+        # 转换为对数尺度（避免 log(0)）
+        spectrogram = np.log(spectrogram + 1e-10)
+
+        return spectrogram
+
+    def compute_mel_spectrogram(self, spectrogram: np.ndarray) -> np.ndarray:
+        """
+        计算梅尔频谱图 - 优化版本。
+
+        :param spectrogram: 线性频谱图
+
+        :return: 梅尔频谱图
+        """
+        n_freqs = spectrogram.shape[0]
+
+        # 简化版梅尔滤波器（线性插值近似）
+        # 创建mel频段的边界索引
+        mel_points = np.linspace(0, n_freqs - 1, self.n_mels + 2, dtype=int)
+
+        # 使用简单的分段求和替代三角滤波器
+        mel_spec = np.zeros((self.n_mels, spectrogram.shape[1]))
+
+        for i in range(self.n_mels):
+            start = mel_points[i]
+            end = mel_points[i + 2]
+            # 直接对频段求平均（比三角滤波快很多）
+            mel_spec[i] = np.mean(spectrogram[start:end], axis=0)
+
+        return mel_spec
+
+    def compute_spectral_centroid(self, spectrogram: np.ndarray) -> np.ndarray:
+        """
+        计算频谱质心。
+
+        :param spectrogram: 频谱图
+
+        :return: 频谱质心数组（每帧一个值）
+        """
+        # 计算频率bins
+        freqs = np.linspace(0, self.target_sample_rate / 2, spectrogram.shape[0])
+
+        # 计算每帧的频谱质心
+        magnitude = np.exp(spectrogram)  # 转回线性尺度
+        centroid = np.sum(freqs[:, np.newaxis] * magnitude, axis=0) / (
+            np.sum(magnitude, axis=0) + 1e-10
+        )
+
+        return centroid
+
     def extract(
         self,
         data: np.ndarray,
         sample_rate: int,
         compute_centered: bool = False,
+        compute_spectral: bool = True,
     ) -> AudioFeatures:
         """
         提取音频特征。
@@ -388,6 +529,7 @@ class FeaturesExtractor:
         :param data: 原始音频数据
         :param sample_rate: 原始采样率
         :param compute_centered: 是否计算零均值化数据
+        :param compute_spectral: 是否计算频谱特征
 
         :return: 音频特征对象
         """
@@ -405,12 +547,35 @@ class FeaturesExtractor:
         if compute_centered:
             centered_data = processed_data - data_mean
 
+        # 计算频谱特征
+        spectrogram = None
+        mel_spec = None
+        spectral_centroid = None
+        if compute_spectral and len(processed_data) >= self.n_fft:
+            spectrogram = self.compute_spectrogram(processed_data)
+            if spectrogram.size > 0:
+                mel_spec = self.compute_mel_spectrogram(spectrogram)
+                spectral_centroid = self.compute_spectral_centroid(spectrogram)
+
+        # 计算能量包络
+        energy_envelope = None
+        if len(processed_data) >= self.hop_length:
+            energy_envelope = self.compute_energy_envelope(processed_data)
+
+        # 计算零交叉率
+        zcr = self.compute_zero_crossing_rate(processed_data)
+
         return AudioFeatures(
             data=processed_data,
             sample_rate=self.target_sample_rate,
             energy=energy,
             mean=data_mean,
             centered_data=centered_data,
+            spectrogram=spectrogram,
+            mel_spectrogram=mel_spec,
+            energy_envelope=energy_envelope,
+            zero_crossing_rate=zcr,
+            spectral_centroid=spectral_centroid,
         )
 
     def extract_from_template(self, template: AudioTemplate) -> AudioFeatures:
@@ -506,14 +671,15 @@ class MatchResult:
 
 class TemplateMatcher:
     """
-    音频模板匹配器（FFT 加速版）。
+    音频模板匹配器（多特征融合版）。
 
-    使用 FFT 加速的归一化互相关算法进行模板匹配，支持实时音频流。
-    主要优化：
-    - 预计算模板的 FFT 和能量
-    - 使用 FFT 进行快速互相关
-    - 降采样以减少计算量
-    - 批量处理多模板匹配
+    使用多种音频特征进行模板匹配，提高泛化能力：
+    - 时域相关性（NCC）
+    - 频谱相似度（谱图、梅尔谱图）
+    - 能量包络匹配
+    - 零交叉率相似度
+    - 频谱质心相似度
+    通过加权融合多个特征的匹配分数，实现更鲁棒的音频匹配。
     """
 
     def __init__(
@@ -523,6 +689,12 @@ class TemplateMatcher:
         target_sample_rate: int = REALTIME_SAMPLE_RATE,
         cooldown_ms: float = COOLDOWN_MS,
         features_extractor: FeaturesExtractor = None,
+        # 特征权重
+        weight_time_corr: float = 0.25,
+        weight_mel_spec: float = 0.35,
+        weight_energy_env: float = 0.25,
+        weight_zcr: float = 0.05,
+        weight_spectral_centroid: float = 0.10,
     ):
         """
         初始化模板匹配器。
@@ -532,10 +704,29 @@ class TemplateMatcher:
         :param target_sample_rate: 目标采样率（用于重采样，较低采样率可提高速度）
         :param cooldown_ms: 检测冷却时间（毫秒）
         :param features_extractor: 特征提取器，默认自动创建
+        :param weight_time_corr: 时域相关性权重
+        :param weight_mel_spec: 梅尔频谱权重
+        :param weight_energy_env: 能量包络权重
+        :param weight_zcr: 零交叉率权重
+        :param weight_spectral_centroid: 频谱质心权重
         """
         self.threshold = threshold
         self.target_sample_rate = target_sample_rate
         self.cooldown_ms = cooldown_ms
+
+        # 特征权重（归一化）
+        total_weight = (
+            weight_time_corr
+            + weight_mel_spec
+            + weight_energy_env
+            + weight_zcr
+            + weight_spectral_centroid
+        )
+        self.weight_time_corr = weight_time_corr / total_weight
+        self.weight_mel_spec = weight_mel_spec / total_weight
+        self.weight_energy_env = weight_energy_env / total_weight
+        self.weight_zcr = weight_zcr / total_weight
+        self.weight_spectral_centroid = weight_spectral_centroid / total_weight
 
         # 特征提取器
         self.features_extractor = features_extractor or FeaturesExtractor(
@@ -707,6 +898,187 @@ class TemplateMatcher:
 
         return max_score, int(max_idx)
 
+    def _compute_spectral_similarity(
+        self,
+        window_spec: np.ndarray,
+        template_spec: np.ndarray,
+    ) -> tuple[float, int]:
+        """
+        计算频谱相似度（使用向量化优化的滑动窗口）。
+
+        :param window_spec: 窗口频谱图 (频率bins, 时间帧)
+        :param template_spec: 模板频谱图 (频率bins, 时间帧)
+
+        :return: (最大相似度, 最佳匹配位置的帧索引)
+        """
+        if window_spec is None or template_spec is None:
+            return 0.0, 0
+
+        if window_spec.size == 0 or template_spec.size == 0:
+            return 0.0, 0
+
+        n_freqs_w, n_frames_w = window_spec.shape
+        n_freqs_t, n_frames_t = template_spec.shape
+
+        if n_freqs_w != n_freqs_t or n_frames_w < n_frames_t:
+            return 0.0, 0
+
+        # 展平为向量以加速计算
+        template_vec = template_spec.flatten()
+        template_norm = np.linalg.norm(template_vec)
+
+        if template_norm == 0:
+            return 0.0, 0
+
+        # 向量化计算所有位置的余弦相似度
+        num_positions = n_frames_w - n_frames_t + 1
+        similarities = np.zeros(num_positions)
+
+        # 预计算窗口切片的归一化
+        for i in range(num_positions):
+            window_slice = window_spec[:, i : i + n_frames_t].flatten()
+            window_norm = np.linalg.norm(window_slice)
+
+            if window_norm > 0:
+                similarities[i] = np.dot(window_slice, template_vec) / (
+                    window_norm * template_norm
+                )
+
+        # 找到最大值
+        best_idx = np.argmax(similarities)
+        max_similarity = similarities[best_idx]
+
+        # 将相似度限制在 [0, 1] 范围
+        max_similarity = min(max(max_similarity, 0.0), 1.0)
+
+        return float(max_similarity), int(best_idx)
+
+    def _compute_envelope_similarity(
+        self,
+        window_env: np.ndarray,
+        template_env: np.ndarray,
+    ) -> tuple[float, int]:
+        """
+        计算能量包络相似度（向量化优化版本）。
+
+        :param window_env: 窗口能量包络
+        :param template_env: 模板能量包络
+
+        :return: (最大相似度, 最佳匹配位置)
+        """
+        if window_env is None or template_env is None:
+            return 0.0, 0
+
+        if len(window_env) == 0 or len(template_env) == 0:
+            return 0.0, 0
+
+        window_len = len(window_env)
+        template_len = len(template_env)
+
+        if window_len < template_len:
+            return 0.0, 0
+
+        # 归一化包络（使用 L2 归一化）
+        template_norm_val = np.linalg.norm(template_env)
+        if template_norm_val == 0:
+            return 0.0, 0
+
+        template_norm = template_env / template_norm_val
+
+        # 使用卷积快速计算所有位置的点积
+        # 注意：需要对窗口的每个切片单独归一化，所以还是要循环
+        # 但可以向量化部分计算
+        num_positions = window_len - template_len + 1
+        similarities = np.zeros(num_positions)
+
+        for i in range(num_positions):
+            window_slice = window_env[i : i + template_len]
+            window_norm_val = np.linalg.norm(window_slice)
+
+            if window_norm_val > 0:
+                similarities[i] = np.dot(window_slice, template_norm) / window_norm_val
+
+        # 找到最大值
+        best_idx = np.argmax(similarities)
+        max_similarity = similarities[best_idx]
+
+        # 将相似度限制在 [0, 1] 范围
+        max_similarity = min(max(max_similarity, 0.0), 1.0)
+
+        return float(max_similarity), int(best_idx)
+
+    def _compute_zcr_similarity(
+        self,
+        window_zcr: float,
+        template_zcr: float,
+    ) -> float:
+        """
+        计算零交叉率相似度。
+
+        :param window_zcr: 窗口零交叉率
+        :param template_zcr: 模板零交叉率
+
+        :return: 相似度 (0-1)
+        """
+        # 使用高斯核计算相似度
+        # ZCR 差异越小，相似度越高
+        diff = abs(window_zcr - template_zcr)
+        # 设置一个合理的标准差（根据经验调整）
+        sigma = 0.1
+        similarity = np.exp(-0.5 * (diff / sigma) ** 2)
+        return float(similarity)
+
+    def _compute_centroid_similarity(
+        self,
+        window_centroid: np.ndarray,
+        template_centroid: np.ndarray,
+    ) -> tuple[float, int]:
+        """
+        计算频谱质心相似度（向量化优化版本）。
+
+        :param window_centroid: 窗口频谱质心数组
+        :param template_centroid: 模板频谱质心数组
+
+        :return: (最大相似度, 最佳匹配位置)
+        """
+        if window_centroid is None or template_centroid is None:
+            return 0.0, 0
+
+        if len(window_centroid) == 0 or len(template_centroid) == 0:
+            return 0.0, 0
+
+        window_len = len(window_centroid)
+        template_len = len(template_centroid)
+
+        if window_len < template_len:
+            return 0.0, 0
+
+        # 归一化质心（按照最大频率）
+        max_freq = self.target_sample_rate / 2
+        window_norm = window_centroid / max_freq
+        template_norm = template_centroid / max_freq
+
+        # 向量化计算所有位置的相似度
+        num_positions = window_len - template_len + 1
+
+        # 使用滑动窗口视图（避免复制数据）
+        # 计算所有位置的MSE
+        similarities = np.zeros(num_positions)
+
+        for i in range(num_positions):
+            window_slice = window_norm[i : i + template_len]
+            mse = np.mean((window_slice - template_norm) ** 2)
+            similarities[i] = np.exp(-mse * 10)  # 转换为相似度
+
+        # 找到最大值
+        best_idx = np.argmax(similarities)
+        max_similarity = similarities[best_idx]
+
+        # 将相似度限制在 [0, 1] 范围
+        max_similarity = min(max(max_similarity, 0.0), 1.0)
+
+        return float(max_similarity), int(best_idx)
+
     def match_single(
         self,
         window_data: np.ndarray,
@@ -716,13 +1088,13 @@ class TemplateMatcher:
         preprocessed_window: np.ndarray = None,
     ) -> MatchResult:
         """
-        对单个模板进行匹配。
+        对单个模板进行多特征匹配。
 
         :param window_data: 窗口音频数据
         :param template_name: 模板名称
         :param sample_rate: 窗口采样率，默认使用 target_sample_rate
         :param check_cooldown: 是否检查冷却时间
-        :param preprocessed_window: 已预处理的窗口数据（可选，用于批量匹配时避免重复预处理）
+        :param preprocessed_window: 已预处理的窗口特征（可选，用于批量匹配时避免重复预处理）
 
         :return: 匹配结果
         """
@@ -756,28 +1128,69 @@ class TemplateMatcher:
             if sample_rate is None:
                 sample_rate = self.target_sample_rate
             window_features = self.features_extractor.extract(
-                window_data, sample_rate, compute_centered=True
+                window_data, sample_rate, compute_centered=True, compute_spectral=True
             )
 
-        # 计算相关性（使用 FFT 加速）
-        score, position = self._compute_correlation_fft(
+        # 1. 计算时域相关性（使用 FFT 加速）
+        time_score, time_position = self._compute_correlation_fft(
             window_features, template_features
         )
 
+        # 2. 计算梅尔频谱相似度
+        mel_score, mel_position = self._compute_spectral_similarity(
+            window_features.mel_spectrogram,
+            template_features.mel_spectrogram,
+        )
+
+        # 3. 计算能量包络相似度
+        env_score, env_position = self._compute_envelope_similarity(
+            window_features.energy_envelope,
+            template_features.energy_envelope,
+        )
+
+        # 4. 计算零交叉率相似度
+        zcr_score = self._compute_zcr_similarity(
+            window_features.zero_crossing_rate,
+            template_features.zero_crossing_rate,
+        )
+
+        # 5. 计算频谱质心相似度
+        centroid_score, centroid_position = self._compute_centroid_similarity(
+            window_features.spectral_centroid,
+            template_features.spectral_centroid,
+        )
+
+        # 加权融合所有特征分数
+        final_score = (
+            self.weight_time_corr * time_score
+            + self.weight_mel_spec * mel_score
+            + self.weight_energy_env * env_score
+            + self.weight_zcr * zcr_score
+            + self.weight_spectral_centroid * centroid_score
+        )
+
+        # 使用时域位置作为主要位置（因为它最准确）
+        # 但如果时域匹配很差，可以考虑其他特征的位置
+        if time_score < 0.3 and mel_score > time_score:
+            # 将梅尔频谱的帧位置转换为采样点位置
+            position = mel_position * self.features_extractor.hop_length
+        else:
+            position = time_position
+
         # 判断是否匹配
-        matched = score >= self.threshold
+        matched = final_score >= self.threshold
 
         # 更新冷却时间
         if matched:
             self._last_match_times[template_name] = current_time
 
         # 计算置信度（将分数映射到 0-1 范围，以阈值为中点）
-        if score >= self.threshold:
-            confidence = 0.5 + 0.5 * (score - self.threshold) / (
+        if final_score >= self.threshold:
+            confidence = 0.5 + 0.5 * (final_score - self.threshold) / (
                 1 - self.threshold + 1e-10
             )
         else:
-            confidence = 0.5 * score / (self.threshold + 1e-10)
+            confidence = 0.5 * final_score / (self.threshold + 1e-10)
 
         # 获取模板时长
         template_obj = self._templates.get(template_name)
@@ -791,7 +1204,7 @@ class TemplateMatcher:
 
         return MatchResult(
             template_name=template_name,
-            score=score,
+            score=final_score,
             matched=matched,
             timestamp=current_time,
             position=position,
@@ -819,9 +1232,9 @@ class TemplateMatcher:
         if sample_rate is None:
             sample_rate = self.target_sample_rate
 
-        # 预处理窗口数据（只做一次）
+        # 预处理窗口数据（只做一次，包括频谱特征）
         preprocessed_window = self.features_extractor.extract(
-            window_data, sample_rate, compute_centered=True
+            window_data, sample_rate, compute_centered=True, compute_spectral=True
         )
 
         results = []
@@ -877,7 +1290,12 @@ class TemplateMatcher:
             f"templates={self.template_count}, "
             f"threshold={self.threshold}, "
             f"sample_rate={self.target_sample_rate}, "
-            f"cooldown_ms={self.cooldown_ms})"
+            f"cooldown_ms={self.cooldown_ms}, "
+            f"weights=[time:{self.weight_time_corr:.2f}, "
+            f"mel:{self.weight_mel_spec:.2f}, "
+            f"env:{self.weight_energy_env:.2f}, "
+            f"zcr:{self.weight_zcr:.2f}, "
+            f"centroid:{self.weight_spectral_centroid:.2f}])"
         )
 
 
@@ -1051,6 +1469,47 @@ class RealtimeMatcher:
         )
 
 
+def compute_iou(
+    pred_start: float, pred_end: float, ref_start: float, ref_end: float
+) -> float:
+    """
+    计算预测时间段和参考时间段的 IoU (Intersection over Union)。
+
+    :param pred_start: 预测开始时间（秒）
+    :param pred_end: 预测结束时间（秒）
+    :param ref_start: 参考开始时间（秒）
+    :param ref_end: 参考结束时间（秒）
+
+    :return: IoU 值 (0-1)
+    """
+    # 计算交集
+    intersection_start = max(pred_start, ref_start)
+    intersection_end = min(pred_end, ref_end)
+    intersection = max(0, intersection_end - intersection_start)
+
+    # 计算并集
+    union_start = min(pred_start, ref_start)
+    union_end = max(pred_end, ref_end)
+    union = union_end - union_start
+
+    if union <= 0:
+        return 0.0
+
+    return intersection / union
+
+
+def compute_offset(pred_time: float, ref_time: float) -> float:
+    """
+    计算预测时间和参考时间的偏移（秒）。
+
+    :param pred_time: 预测时间（秒）
+    :param ref_time: 参考时间（秒）
+
+    :return: 偏移值（秒），正值表示预测偏晚，负值表示预测偏早
+    """
+    return pred_time - ref_time
+
+
 def test_templates(
     templates_dir: Path = None,
     sounds_dir: Path = None,
@@ -1076,6 +1535,16 @@ def test_templates(
 
     templates_dir = Path(templates_dir)
     sounds_dir = Path(sounds_dir)
+
+    # 加载参考时间数据
+    refs_path = sounds_dir / "refs.json"
+    refs_data = {}
+    if refs_path.exists():
+        with open(refs_path, "r", encoding="utf-8") as f:
+            refs_data = json.load(f)
+        logger.note(f"已加载参考时间数据: {refs_path}")
+    else:
+        logger.warn(f"未找到参考时间文件: {refs_path}")
 
     # 加载模板
     logger.note(f"正在从 {templates_dir} 加载模板...")
@@ -1118,7 +1587,23 @@ def test_templates(
 
     # 执行测试
     results: dict[str, list[MatchResult]] = {}
+    all_results_data = {}  # 合并所有结果
     total_match_time = 0.0
+
+    # 准确率统计（最佳匹配）
+    total_with_ref = 0  # 有参考数据的测试数
+    accurate_matches = 0  # IoU > 0.5 的匹配数（最佳匹配）
+    total_best_iou = 0.0
+    total_best_start_offset = 0.0
+    total_best_end_offset = 0.0
+
+    # 全模板统计
+    total_all_iou = 0.0  # 所有模板的总IoU
+    total_all_start_offset = 0.0
+    total_all_end_offset = 0.0
+    total_all_count = 0  # 所有模板匹配的总数
+    worst_iou = 1.0  # 最差IoU
+    worst_iou_info = ""  # 最差IoU的信息
 
     for test_file in test_files:
         # 读取测试音频
@@ -1161,6 +1646,76 @@ def test_templates(
         sorted_results = sorted(match_results, key=lambda r: r.score, reverse=True)
         best = sorted_results[0] if sorted_results else None
 
+        # 获取参考时间
+        file_name = test_file.name
+        ref_info = refs_data.get(file_name, {})
+        ref_start = ref_info.get("start_time", -1)
+        ref_end = ref_info.get("end_time", -1)
+        has_ref = ref_start >= 0 and ref_end >= 0
+
+        # 计算最佳匹配的 IoU 和偏移度
+        best_iou = 0.0
+        best_start_offset = 0.0
+        best_end_offset = 0.0
+        is_accurate = False
+
+        # 计算所有模板的指标
+        all_ious = []
+        all_start_offsets = []
+        all_end_offsets = []
+        all_template_metrics = []
+
+        if has_ref:
+            # 计算所有模板的IoU
+            for result in sorted_results:
+                result_dict = result.to_dict()
+                pred_start = float(result_dict["start_time"])
+                pred_end = float(result_dict["end_time"])
+
+                r_iou = compute_iou(pred_start, pred_end, ref_start, ref_end)
+                r_start_offset = compute_offset(pred_start, ref_start)
+                r_end_offset = compute_offset(pred_end, ref_end)
+
+                all_ious.append(r_iou)
+                all_start_offsets.append(r_start_offset)
+                all_end_offsets.append(r_end_offset)
+
+                all_template_metrics.append(
+                    {
+                        "template_name": result.template_name,
+                        "score": round(result.score, 4),
+                        "iou": round(r_iou, 4),
+                        "start_offset": round(r_start_offset, 4),
+                        "end_offset": round(r_end_offset, 4),
+                    }
+                )
+
+                # 更新全局最差IoU
+                if r_iou < worst_iou:
+                    worst_iou = r_iou
+                    worst_iou_info = f"{file_name} - {result.template_name}"
+
+            # 最佳匹配的指标
+            if best:
+                best_iou = all_ious[0]
+                best_start_offset = all_start_offsets[0]
+                best_end_offset = all_end_offsets[0]
+                is_accurate = best_iou > 0.5
+
+                total_with_ref += 1
+                total_best_iou += best_iou
+                total_best_start_offset += abs(best_start_offset)
+                total_best_end_offset += abs(best_end_offset)
+
+                if is_accurate:
+                    accurate_matches += 1
+
+                # 累计所有模板的指标
+                total_all_iou += sum(all_ious)
+                total_all_start_offset += sum(abs(o) for o in all_start_offsets)
+                total_all_end_offset += sum(abs(o) for o in all_end_offsets)
+                total_all_count += len(all_ious)
+
         # 保存结果到同名 JSON 文件（添加 _match 后缀）
         json_path = test_file.with_name(test_file.stem + "_match.json")
         json_data = {
@@ -1168,9 +1723,52 @@ def test_templates(
             "match_time_ms": round(match_time, 2),
             "best_match": best.to_dict() if best else None,
             "all_matches": [r.to_dict() for r in sorted_results],
+            "reference": (
+                {
+                    "start_time": ref_start,
+                    "end_time": ref_end,
+                }
+                if has_ref
+                else None
+            ),
+            "metrics": (
+                {
+                    "best_iou": round(best_iou, 4),
+                    "best_start_offset": round(best_start_offset, 4),
+                    "best_end_offset": round(best_end_offset, 4),
+                    "is_accurate": is_accurate,
+                    "avg_iou": (
+                        round(sum(all_ious) / len(all_ious), 4) if all_ious else 0.0
+                    ),
+                    "worst_iou": round(min(all_ious), 4) if all_ious else 0.0,
+                    "avg_start_offset": (
+                        round(
+                            sum(abs(o) for o in all_start_offsets)
+                            / len(all_start_offsets),
+                            4,
+                        )
+                        if all_start_offsets
+                        else 0.0
+                    ),
+                    "avg_end_offset": (
+                        round(
+                            sum(abs(o) for o in all_end_offsets) / len(all_end_offsets),
+                            4,
+                        )
+                        if all_end_offsets
+                        else 0.0
+                    ),
+                }
+                if has_ref
+                else None
+            ),
+            "all_template_metrics": all_template_metrics if has_ref else None,
         }
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(json_data, f, ensure_ascii=False, indent=2)
+
+        # 添加到合并结果
+        all_results_data[file_name] = json_data
 
         # 输出结果
         logger.file(f"\n测试文件: {rel_path}")
@@ -1197,7 +1795,7 @@ def test_templates(
                     f"  · {result.template_name}: {result.score:.3f} {time_info}"
                 )
 
-        # 输出最佳匹配和 JSON 保存信息
+        # 输出最佳匹配和准确率信息
         if best and best.matched:
             best_dict = best.to_dict()
             best_template = logstr.file(best.template_name)
@@ -1206,7 +1804,30 @@ def test_templates(
                 f"[{best_dict['start_time']}s ~ {best_dict['end_time']}s]"
             )
             logger.okay(f"  → 最佳匹配: {best_template} ({best_score}) {best_time}")
+
+            # 如果有参考数据，输出准确率指标
+            if has_ref:
+                ref_time = logstr.mesg(f"[{ref_start}s ~ {ref_end}s]")
+                best_iou_str = (
+                    logstr.okay(f"{best_iou:.3f}")
+                    if best_iou > 0.5
+                    else logstr.warn(f"{best_iou:.3f}")
+                )
+                avg_iou = sum(all_ious) / len(all_ious) if all_ious else 0.0
+                worst_iou_val = min(all_ious) if all_ious else 0.0
+                logger.note(f"  → 参考时间: {ref_time}")
+                logger.note(
+                    f"  → 最佳IoU: {best_iou_str}, 开始偏移: {best_start_offset:+.2f}s, 结束偏移: {best_end_offset:+.2f}s"
+                )
+                logger.note(f"  → 平均IoU: {avg_iou:.3f}, 最差IoU: {worst_iou_val:.3f}")
+
         logger.file(f"  → 结果已保存: {json_path.name}")
+
+    # 保存合并结果
+    results_json_path = sounds_dir / "results.json"
+    with open(results_json_path, "w", encoding="utf-8") as f:
+        json.dump(all_results_data, f, ensure_ascii=False, indent=2)
+    logger.okay(f"\n所有结果已合并保存到: {results_json_path}")
 
     # 输出统计信息
     logger.note("\n" + "=" * 60)
@@ -1229,6 +1850,45 @@ def test_templates(
             f"{total_match_time / total_files:.1f}ms" if total_files > 0 else "N/A"
         ),
     }
+
+    # 添加准确率统计
+    if total_with_ref > 0:
+        # 最佳匹配统计
+        avg_best_iou = total_best_iou / total_with_ref
+        avg_best_start_offset = total_best_start_offset / total_with_ref
+        avg_best_end_offset = total_best_end_offset / total_with_ref
+        accuracy_rate = accurate_matches / total_with_ref * 100
+
+        # 所有模板统计
+        avg_all_iou = total_all_iou / total_all_count if total_all_count > 0 else 0.0
+        avg_all_start_offset = (
+            total_all_start_offset / total_all_count if total_all_count > 0 else 0.0
+        )
+        avg_all_end_offset = (
+            total_all_end_offset / total_all_count if total_all_count > 0 else 0.0
+        )
+
+        info_dict.update(
+            {
+                "": "",  # 空行分隔
+                "有参考数据": total_with_ref,
+                "准确匹配数 (IoU>0.5)": accurate_matches,
+                "准确率": f"{accuracy_rate:.1f}%",
+                " ": "",  # 空行分隔
+                "【最佳匹配】": "",
+                "平均IoU": f"{avg_best_iou:.3f}",
+                "平均开始偏移": f"{avg_best_start_offset:.2f}s",
+                "平均结束偏移": f"{avg_best_end_offset:.2f}s",
+                "  ": "",  # 空行分隔
+                "【所有模板】": "",
+                "总匹配数": total_all_count,
+                "全局平均IoU": f"{avg_all_iou:.3f}",
+                "全局最差IoU": f"{worst_iou:.3f} ({worst_iou_info})",
+                "全局平均开始偏移": f"{avg_all_start_offset:.2f}s",
+                "全局平均结束偏移": f"{avg_all_end_offset:.2f}s",
+            }
+        )
+
     logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
     return results
@@ -1326,6 +1986,38 @@ class TemplateMatcherArgParser:
             help=f"模板文件前缀过滤（默认: {TEMPLATE_PREFIX}）",
         )
 
+        # 特征权重参数
+        self.parser.add_argument(
+            "--weight-time",
+            type=float,
+            default=0.25,
+            help="时域相关性权重（默认: 0.25）",
+        )
+        self.parser.add_argument(
+            "--weight-mel",
+            type=float,
+            default=0.35,
+            help="梅尔频谱权重（默认: 0.35）",
+        )
+        self.parser.add_argument(
+            "--weight-env",
+            type=float,
+            default=0.25,
+            help="能量包络权重（默认: 0.25）",
+        )
+        self.parser.add_argument(
+            "--weight-zcr",
+            type=float,
+            default=0.05,
+            help="零交叉率权重（默认: 0.05）",
+        )
+        self.parser.add_argument(
+            "--weight-centroid",
+            type=float,
+            default=0.10,
+            help="频谱质心权重（默认: 0.10）",
+        )
+
     def parse(self) -> argparse.Namespace:
         """解析命令行参数。"""
         return self.parser.parse_args()
@@ -1354,11 +2046,16 @@ def main():
         window_ms=args.window_ms,
     )
 
-    # 创建匹配器（使用较低采样率以提高匹配速度）
+    # 创建匹配器（使用较低采样率以提高匹配速度，并设置特征权重）
     matcher = TemplateMatcher(
         threshold=args.threshold,
         target_sample_rate=REALTIME_SAMPLE_RATE,
         cooldown_ms=args.cooldown_ms,
+        weight_time_corr=args.weight_time,
+        weight_mel_spec=args.weight_mel,
+        weight_energy_env=args.weight_env,
+        weight_zcr=args.weight_zcr,
+        weight_spectral_centroid=args.weight_centroid,
     )
 
     # 创建实时匹配器
