@@ -239,6 +239,200 @@ class TemplateLoader:
 
 
 @dataclass
+class AudioFeatures:
+    """
+    音频特征数据类。
+
+    存储音频特征提取的结果，包括处理后的数据、能量等信息。
+    """
+
+    data: np.ndarray
+    """处理后的音频数据（单声道，float32）"""
+    sample_rate: int
+    """采样率"""
+    energy: float = 0.0
+    """音频能量（零均值后的平方和）"""
+    mean: float = 0.0
+    """音频均值"""
+    centered_data: Optional[np.ndarray] = None
+    """零均值化后的数据（可选，用于优化）"""
+
+    @property
+    def samples(self) -> int:
+        """获取采样点数。"""
+        return len(self.data)
+
+    @property
+    def duration_ms(self) -> float:
+        """获取音频时长（毫秒）。"""
+        return self.samples / self.sample_rate * 1000
+
+    def __repr__(self) -> str:
+        return (
+            f"AudioFeatures("
+            f"samples={self.samples}, "
+            f"sample_rate={self.sample_rate}, "
+            f"energy={self.energy:.2f}, "
+            f"mean={self.mean:.4f})"
+        )
+
+
+class FeaturesExtractor:
+    """
+    音频特征提取器。
+
+    负责音频预处理和特征提取，包括：
+    - 单声道转换
+    - 重采样
+    - 数据类型转换
+    - 能量计算
+    - 零均值化
+    """
+
+    def __init__(self, target_sample_rate: int = REALTIME_SAMPLE_RATE):
+        """
+        初始化特征提取器。
+
+        :param target_sample_rate: 目标采样率
+        """
+        self.target_sample_rate = target_sample_rate
+
+    @staticmethod
+    def to_mono(data: np.ndarray) -> np.ndarray:
+        """
+        转换为单声道。
+
+        :param data: 音频数据 (samples,) 或 (samples, channels)
+
+        :return: 单声道数据 (samples,)
+        """
+        if data.ndim == 1:
+            return data
+        return np.mean(data, axis=1)
+
+    @staticmethod
+    def resample(data: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+        """
+        重采样音频数据。
+
+        :param data: 音频数据
+        :param from_rate: 原始采样率
+        :param to_rate: 目标采样率
+
+        :return: 重采样后的数据
+        """
+        if from_rate == to_rate:
+            return data
+
+        num_samples = int(len(data) * to_rate / from_rate)
+        return scipy_signal.resample(data, num_samples)
+
+    def preprocess(
+        self,
+        data: np.ndarray,
+        sample_rate: int,
+        to_mono: bool = True,
+        resample: bool = True,
+    ) -> np.ndarray:
+        """
+        预处理音频数据。
+
+        :param data: 原始音频数据
+        :param sample_rate: 原始采样率
+        :param to_mono: 是否转换为单声道
+        :param resample: 是否重采样
+
+        :return: 预处理后的数据（float32）
+        """
+        # 转单声道
+        if to_mono:
+            if data.ndim > 1:
+                data = self.to_mono(data)
+            else:
+                data = data.copy()
+        else:
+            data = data.copy()
+
+        # 重采样
+        if resample and sample_rate != self.target_sample_rate:
+            data = self.resample(data, sample_rate, self.target_sample_rate)
+
+        # 转换为 float32
+        return data.astype(np.float32)
+
+    @staticmethod
+    def compute_energy(data: np.ndarray, zero_mean: bool = True) -> float:
+        """
+        计算音频能量。
+
+        :param data: 音频数据
+        :param zero_mean: 是否先减去均值
+
+        :return: 能量值（平方和）
+        """
+        if zero_mean:
+            data_mean = np.mean(data)
+            data_centered = data - data_mean
+            return float(np.sum(data_centered**2))
+        return float(np.sum(data**2))
+
+    def extract(
+        self,
+        data: np.ndarray,
+        sample_rate: int,
+        compute_centered: bool = False,
+    ) -> AudioFeatures:
+        """
+        提取音频特征。
+
+        :param data: 原始音频数据
+        :param sample_rate: 原始采样率
+        :param compute_centered: 是否计算零均值化数据
+
+        :return: 音频特征对象
+        """
+        # 预处理
+        processed_data = self.preprocess(data, sample_rate)
+
+        # 计算均值
+        data_mean = float(np.mean(processed_data))
+
+        # 计算能量
+        energy = self.compute_energy(processed_data, zero_mean=True)
+
+        # 零均值化（可选）
+        centered_data = None
+        if compute_centered:
+            centered_data = processed_data - data_mean
+
+        return AudioFeatures(
+            data=processed_data,
+            sample_rate=self.target_sample_rate,
+            energy=energy,
+            mean=data_mean,
+            centered_data=centered_data,
+        )
+
+    def extract_from_template(self, template: AudioTemplate) -> AudioFeatures:
+        """
+        从音频模板提取特征。
+
+        :param template: 音频模板
+
+        :return: 音频特征对象
+        """
+        mono_data = template.to_mono()
+        return self.extract(
+            mono_data,
+            template.sample_rate,
+            compute_centered=True,  # 模板需要零均值化数据用于匹配
+        )
+
+    def __repr__(self) -> str:
+        return f"FeaturesExtractor(target_sample_rate={self.target_sample_rate})"
+
+
+@dataclass
 class MatchResult:
     """
     匹配结果数据类。
@@ -328,6 +522,7 @@ class TemplateMatcher:
         threshold: float = MATCH_THRESHOLD,
         target_sample_rate: int = REALTIME_SAMPLE_RATE,
         cooldown_ms: float = COOLDOWN_MS,
+        features_extractor: FeaturesExtractor = None,
     ):
         """
         初始化模板匹配器。
@@ -336,22 +531,23 @@ class TemplateMatcher:
         :param threshold: 匹配阈值（0-1）
         :param target_sample_rate: 目标采样率（用于重采样，较低采样率可提高速度）
         :param cooldown_ms: 检测冷却时间（毫秒）
+        :param features_extractor: 特征提取器，默认自动创建
         """
         self.threshold = threshold
         self.target_sample_rate = target_sample_rate
         self.cooldown_ms = cooldown_ms
 
+        # 特征提取器
+        self.features_extractor = features_extractor or FeaturesExtractor(
+            target_sample_rate=target_sample_rate
+        )
+
         # 原始模板引用
         self._templates: dict[str, AudioTemplate] = {}
-        # 预处理后的模板（单声道、重采样、归一化）
-        self._processed_templates: dict[str, np.ndarray] = {}
-        # 预计算的模板能量
-        self._template_energies: dict[str, float] = {}
+        # 预处理后的模板特征
+        self._template_features: dict[str, AudioFeatures] = {}
         # 上次匹配时间（用于冷却）
         self._last_match_times: dict[str, float] = {}
-        # 缓存的窗口预处理结果
-        self._cached_window: Optional[np.ndarray] = None
-        self._cached_window_id: int = 0
 
         if templates:
             for template in templates:
@@ -363,32 +559,16 @@ class TemplateMatcher:
 
         :param template: 音频模板
         """
-        # 转换为单声道
-        mono_data = template.to_mono()
+        # 使用特征提取器提取模板特征
+        features = self.features_extractor.extract_from_template(template)
 
-        # 重采样（如果采样率不匹配）
-        if template.sample_rate != self.target_sample_rate:
-            num_samples = int(
-                len(mono_data) * self.target_sample_rate / template.sample_rate
-            )
-            # 使用 scipy.signal.resample_poly 更快
-            mono_data = scipy_signal.resample(mono_data, num_samples)
-
-        # 转换为 float32（不做归一化，NCC 本身就是归一化的）
-        mono_data = mono_data.astype(np.float32)
-
-        # 预计算模板的均值和“能量”（方差 * n，用于 NCC 计算）
-        template_mean = np.mean(mono_data)
-        template_centered = mono_data - template_mean
-        template_energy = np.sum(template_centered**2)
-
+        # 保存原始模板和处理后的特征
         self._templates[template.name] = template
-        self._processed_templates[template.name] = mono_data
-        self._template_energies[template.name] = template_energy
+        self._template_features[template.name] = features
         self._last_match_times[template.name] = 0
 
         logger.note(
-            f"已添加模板: {template.name} ({len(mono_data)} samples @ {self.target_sample_rate}Hz)"
+            f"已添加模板: {template.name} ({len(features.data)} samples @ {features.sample_rate}Hz)"
         )
 
     def remove_template(self, name: str):
@@ -399,8 +579,7 @@ class TemplateMatcher:
         """
         if name in self._templates:
             del self._templates[name]
-            del self._processed_templates[name]
-            del self._template_energies[name]
+            del self._template_features[name]
             del self._last_match_times[name]
 
     def _normalize(self, data: np.ndarray) -> np.ndarray:
@@ -429,48 +608,23 @@ class TemplateMatcher:
         elapsed_ms = (current_time - last_time) * 1000
         return elapsed_ms < self.cooldown_ms
 
-    def _preprocess_window(
-        self,
-        window_data: np.ndarray,
-        sample_rate: int,
-    ) -> np.ndarray:
-        """
-        预处理窗口数据（转单声道、重采样）。
-
-        :param window_data: 原始窗口数据
-        :param sample_rate: 原始采样率
-
-        :return: 预处理后的单声道数据
-        """
-        # 转单声道
-        if window_data.ndim > 1:
-            window_mono = np.mean(window_data, axis=1)
-        else:
-            window_mono = window_data.copy()
-
-        # 重采样
-        if sample_rate != self.target_sample_rate:
-            num_samples = int(len(window_mono) * self.target_sample_rate / sample_rate)
-            # 使用 scipy.signal.resample
-            window_mono = scipy_signal.resample(window_mono, num_samples)
-
-        # 转换为 float32（不做归一化，NCC 本身就是归一化的）
-        return window_mono.astype(np.float32)
-
     def _compute_correlation_fft(
-        self, window: np.ndarray, template: np.ndarray, template_energy: float
+        self, window_features: AudioFeatures, template_features: AudioFeatures
     ) -> tuple[float, int]:
         """
         使用 FFT 计算归一化互相关（快速版本）。
 
-        :param window: 窗口音频数据（单声道，已预处理）
-        :param template: 模板音频数据（单声道，已预处理）
-        :param template_energy: 预计算的模板能量（减去均值后）
+        :param window_features: 窗口音频特征
+        :param template_features: 模板音频特征
 
         :return: (最大相关系数, 最佳匹配位置)
         """
+        window = window_features.centered_data
+        template_zm = template_features.centered_data
+        template_energy = template_features.energy
+
         window_len = len(window)
-        template_len = len(template)
+        template_len = len(template_zm)
 
         # 确保窗口长度大于模板
         if window_len < template_len:
@@ -478,10 +632,6 @@ class TemplateMatcher:
 
         if template_energy <= 0:
             return 0.0, 0
-
-        # 将模板零均值化
-        template_mean = np.mean(template)
-        template_zm = template - template_mean
 
         # 计算 FFT 长度（选择 2 的幂次以加速）
         fft_len = 1
@@ -579,7 +729,7 @@ class TemplateMatcher:
         current_time = time.time()
 
         # 检查模板是否存在
-        if template_name not in self._processed_templates:
+        if template_name not in self._template_features:
             return MatchResult(
                 template_name=template_name,
                 score=0.0,
@@ -596,20 +746,22 @@ class TemplateMatcher:
                 timestamp=current_time,
             )
 
-        template = self._processed_templates[template_name]
-        template_energy = self._template_energies[template_name]
+        # 获取模板特征
+        template_features = self._template_features[template_name]
 
         # 预处理窗口数据
         if preprocessed_window is not None:
-            window_mono = preprocessed_window
+            window_features = preprocessed_window
         else:
             if sample_rate is None:
                 sample_rate = self.target_sample_rate
-            window_mono = self._preprocess_window(window_data, sample_rate)
+            window_features = self.features_extractor.extract(
+                window_data, sample_rate, compute_centered=True
+            )
 
         # 计算相关性（使用 FFT 加速）
         score, position = self._compute_correlation_fft(
-            window_mono, template, template_energy
+            window_features, template_features
         )
 
         # 判断是否匹配
@@ -668,7 +820,9 @@ class TemplateMatcher:
             sample_rate = self.target_sample_rate
 
         # 预处理窗口数据（只做一次）
-        preprocessed_window = self._preprocess_window(window_data, sample_rate)
+        preprocessed_window = self.features_extractor.extract(
+            window_data, sample_rate, compute_centered=True
+        )
 
         results = []
         for template_name in self._templates:
@@ -1242,23 +1396,11 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # Case: 测试模式 - 使用默认模板和测试音频目录
+    # Case: 测试
     # python -m gtaz.audios.signals --test
 
-    # Case: 测试模式 - 指定模板目录和测试音频目录
-    # python -m gtaz.audios.signals --test -t path/to/templates -s path/to/sounds
-
-    # Case: 测试模式 - 调整阈值
-    # python -m gtaz.audios.signals --test -T 0.5
-
-    # Case: 从默认目录加载模板，持续匹配
+    # Case: 持续匹配
     # python -m gtaz.audios.signals
-
-    # Case: 指定模板目录
-    # python -m gtaz.audios.signals -t path/to/templates
-
-    # Case: 指定单个模板文件
-    # python -m gtaz.audios.signals -f path/to/template.wav
 
     # Case: 调整阈值和冷却时间
     # python -m gtaz.audios.signals -T 0.7 -c 3000
