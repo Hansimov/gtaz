@@ -49,6 +49,8 @@ CANDIDATE_MIN_OFFSET_MS = 300
 
 # 统一采样率（44100Hz可支持最高22050Hz的频率）
 UNIFIED_SAMPLE_RATE = 44100
+# 高通滤波截止频率
+HIGH_PASS_CUTOFF_HZ = 10000
 
 logger = TCLogger(
     name="AudioTemplateMatcher",
@@ -87,9 +89,9 @@ class TemplateLoader:
             if file_path.is_file() and pattern.match(file_path.name):
                 self.template_files.append(file_path)
 
-        logger.success(f"扫描到 {len(self.template_files)} 个模板文件")
-        for f in self.template_files:
-            logger.note(f"  - {f.name}")
+        logger.mesg(f"扫描到 {len(self.template_files)} 个模板文件")
+        # for f in self.template_files:
+        #     logger.note(f"  - {f.name}")
 
         return self.template_files
 
@@ -112,10 +114,7 @@ class TemplateLoader:
                     data = (data.astype(np.float32) - 128) / 128.0
 
                 self.template_data.append((sample_rate, data))
-                logger.mesg(
-                    f"加载模板: {file_path.name}, "
-                    f"采样率: {sample_rate}, 长度: {len(data)} samples"
-                )
+                # logger.mesg(f"加载模板: {file_path.name}, 长度: {len(data)} samples")
             except Exception as e:
                 logger.warn(f"加载模板文件失败: {file_path}, 错误: {e}")
 
@@ -123,10 +122,32 @@ class TemplateLoader:
 
 
 class AudioDataSamplesUnifier:
-    """音频数据统一化"""
+    """音频数据统一化，包含重采样和高通滤波"""
 
-    def __init__(self, target_sample_rate: int = UNIFIED_SAMPLE_RATE):
+    def __init__(
+        self,
+        target_sample_rate: int = UNIFIED_SAMPLE_RATE,
+        highpass_freq: float = 10000.0,  # 高通滤波截止频率
+    ):
         self.target_sample_rate = target_sample_rate
+        self.highpass_freq = highpass_freq
+
+    def highpass_filter(self, data: np.ndarray, sample_rate: int) -> np.ndarray:
+        """应用高通滤波器，保留高频信号"""
+        # 计算归一化截止频率（相对于奈奎斯特频率）
+        nyquist = sample_rate / 2
+        if self.highpass_freq >= nyquist:
+            # 截止频率超过奈奎斯特频率，无法滤波
+            return data
+
+        normalized_freq = self.highpass_freq / nyquist
+
+        # 设计巴特沃斯高通滤波器（4阶）
+        b, a = signal.butter(4, normalized_freq, btype="high")
+
+        # 应用滤波器
+        filtered = signal.filtfilt(b, a, data)
+        return filtered.astype(np.float32)
 
     def resample(
         self, data: np.ndarray, original_rate: int, target_rate: int
@@ -141,16 +162,23 @@ class AudioDataSamplesUnifier:
         return resampled.astype(np.float32)
 
     def unify(self, audio_list: List[Tuple[int, np.ndarray]]) -> List[np.ndarray]:
-        """统一所有音频数据到目标采样率"""
+        """统一所有音频数据到目标采样率，并应用高通滤波"""
         unified_data = []
         for sample_rate, data in audio_list:
+            # 先重采样
             unified = self.resample(data, sample_rate, self.target_sample_rate)
+            # 再应用高通滤波
+            unified = self.highpass_filter(unified, self.target_sample_rate)
             unified_data.append(unified)
         return unified_data
 
     def unify_single(self, sample_rate: int, data: np.ndarray) -> np.ndarray:
-        """统一单个音频数据到目标采样率"""
-        return self.resample(data, sample_rate, self.target_sample_rate)
+        """统一单个音频数据到目标采样率，并应用高通滤波"""
+        # 先重采样
+        unified = self.resample(data, sample_rate, self.target_sample_rate)
+        # 再应用高通滤波
+        unified = self.highpass_filter(unified, self.target_sample_rate)
+        return unified
 
 
 @dataclass
@@ -333,9 +361,9 @@ class TemplateAligner:
         for i, template in enumerate(templates[1:], 1):
             offset, corr_coef = self.cross_correlate(reference, template)
             offsets.append(offset)
-            logger.mesg(
-                f"模板 {i} 对齐偏移: {offset} samples, 相关系数: {corr_coef:.4f}"
-            )
+            # logger.mesg(
+            #     f"模板 {i} 对齐偏移: {offset} samples, 相关系数: {corr_coef:.4f}"
+            # )
 
             # 应用偏移
             if offset > 0:
@@ -557,10 +585,9 @@ class FeatureMatcher:
     def compute_similarity(self, feature1: Feature, feature2: Feature) -> float:
         """计算两个特征的相似度（归一化互相关）
 
-        返回值范围: [-1, 1]
+        返回值范围: [0, 1]
         - 1: 完全正相关
-        - 0: 不相关
-        - -1: 完全负相关
+        - 0: 不相关或负相关
         """
         f1 = feature1.data.flatten()
         f2 = feature2.data.flatten()
@@ -578,9 +605,9 @@ class FeatureMatcher:
 
         similarity = np.dot(f1, f2) / (norm1 * norm2)
 
-        # 直接返回相关系数，不进行映射
-        # 只有高正相关才是真正的匹配
-        return float(similarity)
+        # 将相关系数映射到[0,1]范围
+        # 负相关视为不匹配，设为0
+        return float(max(0.0, similarity))
 
     def match(self, test_data: np.ndarray, start_from_sample: int = 0) -> MatchResult:
         """在测试数据中匹配模板
@@ -697,7 +724,7 @@ class TestDataSamplesLoader:
         for wav_file in self.sounds_dir.rglob("*.wav"):
             test_files.append(wav_file)
 
-        logger.success(f"扫描到 {len(test_files)} 个测试文件")
+        logger.okay(f"扫描到 {len(test_files)} 个测试文件")
         return test_files
 
     def get_trim_samples(self) -> int:
@@ -749,7 +776,7 @@ class MatchResultsPlotter:
     def __init__(
         self,
         sample_rate: int = UNIFIED_SAMPLE_RATE,
-        n_fft: int = 2048,
+        n_fft: int = 1024,  # 减小n_fft以提高绘制速度
         f_max: float = None,  # None表示使用奈奎斯特频率(sample_rate/2)
     ):
         self.sample_rate = sample_rate
@@ -798,12 +825,12 @@ class MatchResultsPlotter:
         # 时间轴转换为毫秒
         times_ms = times * 1000
 
-        # 绘制频谱图
+        # 绘制频谱图（使用'auto'替代'gouraud'以提高速度）
         mesh = ax.pcolormesh(
             times_ms,
             frequencies,
             log_magnitude,
-            shading="gouraud",
+            shading="auto",
             cmap="viridis",
         )
 
@@ -873,10 +900,10 @@ class MatchResultsPlotter:
             bbox=dict(boxstyle="round", facecolor="black", alpha=0.7),
         )
 
-        # 保存图像
+        # 保存图像（降低dpi以提高速度）
         output_path.parent.mkdir(parents=True, exist_ok=True)
         plt.tight_layout()
-        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.savefig(output_path, dpi=72, bbox_inches="tight")
         plt.close(fig)
 
 
@@ -955,7 +982,7 @@ class FeatureMatchTester:
 
         # 根据模板时长更新匹配窗口大小
         self.window_ms = self.fused_template_feature.duration_ms
-        logger.success(
+        logger.okay(
             f"模板特征融合完成, 特征维度: {self.fused_template_feature.data.shape}, "
             f"模板时长: {self.window_ms:.1f}ms"
         )
@@ -1054,7 +1081,7 @@ class FeatureMatchTester:
             results.append(result)
 
         logger.hint("=" * 50)
-        logger.success(f"测试完成, 共处理 {len(results)} 个文件")
+        logger.okay(f"测试完成, 共处理 {len(results)} 个文件")
 
         return results
 
@@ -1136,7 +1163,7 @@ def main():
     args = arg_parser.parse()
 
     if args.test:
-        logger.success("启动音频模板匹配测试...")
+        logger.okay("启动音频模板匹配测试...")
 
         tester = FeatureMatchTester(
             templates_dir=Path(args.templates_dir),
@@ -1154,7 +1181,7 @@ def main():
         # 输出摘要
         total_candidates = sum(len(r.candidates) for r in results)
         logger.hint("=" * 50)
-        logger.success(f"测试摘要:")
+        logger.okay(f"测试摘要:")
         logger.mesg(f"  - 测试文件数: {len(results)}")
         logger.mesg(f"  - 总匹配数: {total_candidates}")
     else:
