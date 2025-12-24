@@ -31,7 +31,13 @@ from .sounds import (
 )
 
 
-logger = TCLogger(name="TemplateMatcher", use_prefix=True, use_prefix_ms=True)
+logger = TCLogger(
+    name="TemplateMatcher",
+    use_prefix=False,
+    use_file=True,
+    file_path=Path(__file__).parent / "output.log",
+    file_mode="w",
+)
 
 
 # 获取当前模块所在目录
@@ -46,7 +52,7 @@ TEMPLATE_PREFIX = "template_"
 TEST_SOUNDS_DIR = CACHE_DIR / "sounds"
 
 # 默认匹配阈值（0-1，越高表示匹配度越高）
-MATCH_THRESHOLD = 0.6
+MATCH_THRESHOLD = 0.82
 # 默认检测冷却时间（毫秒）
 COOLDOWN_MS = 2000
 # 实时匹配的目标采样率（降采样以提高速度）
@@ -165,7 +171,7 @@ class TemplateLoader:
                 file_path=file_path,
             )
             self._templates[name] = template
-            logger.okay(f"已加载模板: {template}")
+            # logger.okay(f"已加载模板: {template}")
             return template
         except Exception as e:
             logger.warn(f"加载模板文件失败 {file_path}: {e}")
@@ -626,15 +632,11 @@ class MatchResult:
 
     def to_dict(self) -> dict:
         """转换为字典，用于 JSON 序列化。"""
-        # 计算匹配位置的时间（基于原始音频采样率）
-        if self.original_sample_rate > 0 and self.sample_rate > 0:
-            # 将 position 从 target_sample_rate 转换回 original_sample_rate
-            original_position = (
-                self.position * self.original_sample_rate / self.sample_rate
-            )
-
-            # 计算原始音频中的时间
-            start_seconds = original_position / self.original_sample_rate
+        # 计算匹配位置的时间（基于 position 所在的采样率）
+        # 注意：多片段检测可能已将音频重采样到 target_sample_rate，此时 position
+        # 已经是 target_sample_rate 域的绝对采样点索引；不应再转换回 original_sample_rate。
+        if self.sample_rate > 0:
+            start_seconds = self.position / self.sample_rate
             duration_seconds = self.template_duration_ms / 1000
             end_seconds = start_seconds + duration_seconds
 
@@ -689,11 +691,11 @@ class TemplateMatcher:
         target_sample_rate: int = REALTIME_SAMPLE_RATE,
         cooldown_ms: float = COOLDOWN_MS,
         features_extractor: FeaturesExtractor = None,
-        # 特征权重
-        weight_time_corr: float = 0.25,
-        weight_mel_spec: float = 0.35,
-        weight_energy_env: float = 0.25,
-        weight_zcr: float = 0.05,
+        # 特征权重（提高频谱权重，降低时域权重以减少假阳性）
+        weight_time_corr: float = 0.15,
+        weight_mel_spec: float = 0.45,
+        weight_energy_env: float = 0.30,
+        weight_zcr: float = 0.0,
         weight_spectral_centroid: float = 0.10,
     ):
         """
@@ -759,7 +761,8 @@ class TemplateMatcher:
         self._last_match_times[template.name] = 0
 
         logger.note(
-            f"已添加模板: {template.name} ({len(features.data)} samples @ {features.sample_rate}Hz)"
+            f"- 已添加模板: {template.name} "
+            f"({len(features.data)} samples @ {features.sample_rate}Hz)"
         )
 
     def remove_template(self, name: str):
@@ -876,7 +879,7 @@ class TemplateMatcher:
 
         # 设置最小能量阈值：窗口能量至少是模板能量的一定比例
         # 这可以过滤掉低能量（静音）区域的假匹配
-        min_energy_ratio = 0.1  # 提高到 10%
+        min_energy_ratio = 0.15  # 15% 平衡过滤噪声和保留真实匹配
         min_window_energy = min_energy_ratio * template_energy
 
         # 创建有效性掩码
@@ -1160,25 +1163,33 @@ class TemplateMatcher:
             template_features.spectral_centroid,
         )
 
-        # 加权融合所有特征分数
-        final_score = (
-            self.weight_time_corr * time_score
-            + self.weight_mel_spec * mel_score
-            + self.weight_energy_env * env_score
-            + self.weight_zcr * zcr_score
-            + self.weight_spectral_centroid * centroid_score
-        )
-
-        # 使用时域位置作为主要位置（因为它最准确）
-        # 但如果时域匹配很差，可以考虑其他特征的位置
-        if time_score < 0.3 and mel_score > time_score:
-            # 将梅尔频谱的帧位置转换为采样点位置
-            position = mel_position * self.features_extractor.hop_length
+        # 如果关键特征过低，直接判定为不匹配以削减假阳性
+        mel_gate = 0.80
+        env_gate = 0.78
+        if mel_score < mel_gate or env_score < env_gate:
+            matched = False
+            final_score = 0.0
+            position = 0
         else:
-            position = time_position
+            # 加权融合所有特征分数
+            final_score = (
+                self.weight_time_corr * time_score
+                + self.weight_mel_spec * mel_score
+                + self.weight_energy_env * env_score
+                + self.weight_zcr * zcr_score
+                + self.weight_spectral_centroid * centroid_score
+            )
 
-        # 判断是否匹配
-        matched = final_score >= self.threshold
+            # 使用时域位置作为主要位置（因为它最准确）
+            # 但如果时域匹配很差，可以考虑其他特征的位置
+            if time_score < 0.3 and mel_score > time_score:
+                # 将梅尔频谱的帧位置转换为采样点位置
+                position = mel_position * self.features_extractor.hop_length
+            else:
+                position = time_position
+
+            # 判断是否匹配
+            matched = final_score >= self.threshold
 
         # 更新冷却时间
         if matched:
@@ -1219,18 +1230,36 @@ class TemplateMatcher:
         window_data: np.ndarray,
         sample_rate: int = None,
         check_cooldown: bool = True,
+        use_sliding: bool = False,
+        window_duration: float = 15.0,
+        window_stride: float = 5.0,
     ) -> list[MatchResult]:
         """
-        对所有模板进行匹配（优化版：只预处理一次窗口数据）。
+        对所有模板进行匹配（优化版：只预处理一次窗口数据，可选滑动窗口）。
 
         :param window_data: 窗口音频数据
         :param sample_rate: 窗口采样率
         :param check_cooldown: 是否检查冷却时间
+        :param use_sliding: 是否使用滑动窗口策略（适用于长音频）
+        :param window_duration: 滑动窗口时长（秒）
+        :param window_stride: 滑动窗口步长（秒）
 
         :return: 所有模板的匹配结果列表
         """
         if sample_rate is None:
             sample_rate = self.target_sample_rate
+
+        # 如果启用滑动窗口且音频足够长，使用分段匹配
+        if use_sliding:
+            audio_duration = len(window_data) / sample_rate
+            if audio_duration > window_duration * 1.5:
+                return self.match_all_sliding(
+                    window_data,
+                    sample_rate,
+                    check_cooldown,
+                    window_duration,
+                    window_stride,
+                )
 
         # 预处理窗口数据（只做一次，包括频谱特征）
         preprocessed_window = self.features_extractor.extract(
@@ -1248,6 +1277,62 @@ class TemplateMatcher:
             )
             results.append(result)
         return results
+
+    def match_all_sliding(
+        self,
+        window_data: np.ndarray,
+        sample_rate: int = None,
+        check_cooldown: bool = True,
+        window_duration: float = 15.0,
+        window_stride: float = 5.0,
+    ) -> list[MatchResult]:
+        """
+        使用滑动窗口策略对所有模板进行匹配。
+
+        将长音频分为多个重叠窗口，每个窗口独立匹配，返回每个模板的最佳结果。
+
+        :param window_data: 窗口音频数据
+        :param sample_rate: 窗口采样率
+        :param check_cooldown: 是否检查冷却时间
+        :param window_duration: 滑动窗口时长（秒）
+        :param window_stride: 滑动窗口步长（秒）
+
+        :return: 所有模板的最佳匹配结果列表
+        """
+        if sample_rate is None:
+            sample_rate = self.target_sample_rate
+
+        # 计算窗口参数
+        window_samples = int(window_duration * sample_rate)
+        stride_samples = int(window_stride * sample_rate)
+        audio_length = len(window_data)
+
+        # 存储每个模板的所有分段匹配结果
+        template_results = {name: [] for name in self._templates}
+
+        # 滑动窗口遍历
+        for start_pos in range(0, audio_length - window_samples + 1, stride_samples):
+            end_pos = start_pos + window_samples
+            segment = window_data[start_pos:end_pos]
+
+            # 对该分段执行所有模板匹配
+            segment_results = self.match_all(
+                segment, sample_rate, check_cooldown=False, use_sliding=False
+            )
+
+            # 调整位置偏移并存储
+            for result in segment_results:
+                result.position += start_pos
+                template_results[result.template_name].append(result)
+
+        # 对每个模板，选择分数最高的结果
+        best_results = []
+        for template_name, results_list in template_results.items():
+            if results_list:
+                best = max(results_list, key=lambda r: r.score)
+                best_results.append(best)
+
+        return best_results
 
     def match_best(
         self,
@@ -1273,6 +1358,596 @@ class TemplateMatcher:
         if best.matched:
             return best
         return None
+
+    def detect_all_segments(
+        self,
+        audio_data: np.ndarray,
+        sample_rate: int = None,
+        template_name: str = None,
+        stride_ratio: float = 0.25,
+        nms_iou_threshold: float = 0.3,
+    ) -> list[MatchResult]:
+        """
+        检测音频中所有匹配的片段（支持多次出现）。
+
+        使用滑动窗口扫描整个音频，检测所有超过阈值的匹配片段，
+        并使用非极大值抑制（NMS）去除重叠的低分片段。
+
+        :param audio_data: 完整音频数据
+        :param sample_rate: 音频采样率
+        :param template_name: 指定模板名称，None则对所有模板检测
+        :param stride_ratio: 滑动步长相对于模板长度的比例（0.25表示25%重叠）
+        :param nms_iou_threshold: NMS的IoU阈值，超过此值的重叠片段会被抑制
+
+        :return: 所有检测到的匹配片段列表（已按时间排序）
+        """
+        if sample_rate is None:
+            sample_rate = self.target_sample_rate
+
+        # 预处理音频数据：转换为单声道并重采样到 target_sample_rate
+        original_sr = sample_rate
+        preprocessed_audio = self.features_extractor.preprocess(
+            audio_data, sample_rate, to_mono=True, resample=True
+        )
+
+        # 确定要检测的模板列表
+        if template_name:
+            if template_name not in self._templates:
+                return []
+            template_names = [template_name]
+        else:
+            template_names = list(self._templates.keys())
+
+        all_detections = []
+
+        # 对每个模板进行检测
+        for tmpl_name in template_names:
+            template = self._templates[tmpl_name]
+            template_features = self._template_features[tmpl_name]
+
+            # 计算模板长度（采样点数）
+            template_length = len(template_features.data)
+
+            # 计算滑动步长
+            stride = max(1, int(template_length * stride_ratio))
+
+            # 滑动窗口扫描
+            audio_length = len(preprocessed_audio)
+
+            for start_pos in range(0, audio_length - template_length + 1, stride):
+                end_pos = start_pos + template_length
+                window = preprocessed_audio[start_pos:end_pos]
+
+                # 对窗口进行匹配
+                result = self.match_single(
+                    window,
+                    tmpl_name,
+                    sample_rate=self.target_sample_rate,  # 使用重采样后的采样率
+                    check_cooldown=False,
+                )
+
+                # 只保留匹配成功的结果
+                if result.matched and result.score >= self.threshold:
+                    # 调整position为音频中的绝对位置
+                    result.position = start_pos
+                    result.sample_rate = self.target_sample_rate
+                    result.original_sample_rate = original_sr
+                    all_detections.append(result)
+
+        # 如果没有检测到任何片段，直接返回
+        if not all_detections:
+            return []
+
+        # 按模板和分数分组，对每个模板的检测结果应用NMS
+        template_groups = {}
+        for det in all_detections:
+            if det.template_name not in template_groups:
+                template_groups[det.template_name] = []
+            template_groups[det.template_name].append(det)
+
+        # 对每个模板应用NMS
+        final_detections = []
+        max_per_template = 5
+        for tmpl_name, detections in template_groups.items():
+            # 按分数降序排序
+            detections.sort(key=lambda x: x.score, reverse=True)
+
+            # 应用NMS
+            keep = []
+            while detections:
+                # 取出最高分的检测
+                best = detections.pop(0)
+                keep.append(best)
+
+                # 计算最佳检测的时间范围
+                best_start = best.position / sample_rate
+                best_end = best_start + (best.template_duration_ms / 1000.0)
+
+                # 过滤掉与最佳检测重叠过多的其他检测
+                remaining = []
+                for det in detections:
+                    det_start = det.position / sample_rate
+                    det_end = det_start + (det.template_duration_ms / 1000.0)
+
+                    # 计算IoU
+                    intersection_start = max(best_start, det_start)
+                    intersection_end = min(best_end, det_end)
+                    intersection = max(0, intersection_end - intersection_start)
+
+                    union_start = min(best_start, det_start)
+                    union_end = max(best_end, det_end)
+                    union = union_end - union_start
+
+                    iou = intersection / union if union > 0 else 0
+
+                    # 如果IoU小于阈值，保留该检测
+                    if iou < nms_iou_threshold:
+                        remaining.append(det)
+
+                detections = remaining
+
+            # 仅保留前 max_per_template 个结果
+            final_detections.extend(keep[:max_per_template])
+
+        # 按时间排序
+        final_detections.sort(key=lambda x: x.position)
+
+        return final_detections
+
+    @staticmethod
+    def _pick_peaks_1d(
+        scores: np.ndarray,
+        min_height: float,
+        min_distance: int,
+    ) -> np.ndarray:
+        """Pick local maxima indices from a 1D score array.
+
+        A peak is an index i such that scores[i-1] < scores[i] >= scores[i+1] and
+        scores[i] >= min_height. Peaks closer than min_distance keep only the
+        highest one.
+        """
+        if scores is None or scores.size < 3:
+            return np.array([], dtype=np.int64)
+
+        # Local maxima mask (strict on left, non-strict on right to keep plateau starts)
+        mid = scores[1:-1]
+        peaks_mask = (scores[:-2] < mid) & (mid >= scores[2:]) & (mid >= min_height)
+        peak_idxs = np.nonzero(peaks_mask)[0] + 1
+
+        if peak_idxs.size == 0:
+            return peak_idxs.astype(np.int64)
+
+        if min_distance <= 1:
+            # Just sort by index (time)
+            return np.sort(peak_idxs).astype(np.int64)
+
+        # Enforce min_distance by greedy selection on score (highest first)
+        order = np.argsort(scores[peak_idxs])[::-1]
+        selected: list[int] = []
+        for k in order:
+            idx = int(peak_idxs[k])
+            if all(abs(idx - s) >= min_distance for s in selected):
+                selected.append(idx)
+
+        return np.array(sorted(selected), dtype=np.int64)
+
+    @staticmethod
+    def _merge_nearby_segments(
+        segments: list[MatchResult],
+        merge_gap_seconds: float,
+        sample_rate: int,
+    ) -> list[MatchResult]:
+        """Merge segments that are very close in time (same template)."""
+        if not segments:
+            return []
+
+        segments = sorted(
+            segments, key=lambda r: (r.template_name, r.position, -r.score)
+        )
+        merged: list[MatchResult] = []
+
+        current = segments[0]
+        for seg in segments[1:]:
+            if seg.template_name != current.template_name:
+                merged.append(current)
+                current = seg
+                continue
+
+            cur_end = current.position / sample_rate + (
+                current.template_duration_ms / 1000.0
+            )
+            seg_start = seg.position / sample_rate
+            if seg_start - cur_end <= merge_gap_seconds:
+                # Merge duplicates by keeping the higher-score one
+                if seg.score > current.score:
+                    current = seg
+            else:
+                merged.append(current)
+                current = seg
+
+        merged.append(current)
+        return merged
+
+    def detect_all_segments_v2(
+        self,
+        audio_data: np.ndarray,
+        sample_rate: int = None,
+        template_name: str = None,
+        peak_threshold: float | None = None,
+        peak_min_distance_ratio: float = 0.75,
+        merge_gap_seconds: float = 0.10,
+        max_per_template: int = 8,
+    ) -> list[MatchResult]:
+        """Detect all matching segments using full correlation sequence + peak picking.
+
+        Compared to `detect_all_segments`, this avoids scanning with many windows.
+        It computes one NCC-like score sequence per template over the entire audio
+        and then picks peaks as candidate occurrences.
+        """
+        if sample_rate is None:
+            sample_rate = self.target_sample_rate
+
+        original_sr = sample_rate
+        preprocessed_audio = self.features_extractor.preprocess(
+            audio_data, sample_rate, to_mono=True, resample=True
+        )
+        sr = self.target_sample_rate
+
+        if template_name:
+            if template_name not in self._templates:
+                return []
+            template_names = [template_name]
+        else:
+            template_names = list(self._templates.keys())
+
+        detections: list[MatchResult] = []
+
+        for tmpl_name in template_names:
+            template_features = self._template_features[tmpl_name]
+            template_zm = template_features.data
+            template_len = len(template_zm)
+            if template_len < 8 or len(preprocessed_audio) < template_len:
+                continue
+
+            template_energy = float(np.sum(template_zm**2))
+            if template_energy <= 0:
+                continue
+
+            window_len = len(preprocessed_audio)
+
+            fft_len = 1
+            while fft_len < window_len + template_len - 1:
+                fft_len *= 2
+
+            template_zm_fft = rfft(template_zm[::-1], fft_len)
+            audio_fft = rfft(preprocessed_audio, fft_len)
+            correlation = irfft(audio_fft * template_zm_fft, fft_len)
+
+            valid_start = template_len - 1
+            valid_len = window_len - template_len + 1
+            correlation = correlation[valid_start : valid_start + valid_len]
+
+            audio_sq = preprocessed_audio**2
+            cumsum_sq = np.concatenate(([0.0], np.cumsum(audio_sq)))
+            window_sq_sum = cumsum_sq[template_len:] - cumsum_sq[:-template_len]
+
+            cumsum_val = np.concatenate(([0.0], np.cumsum(preprocessed_audio)))
+            window_sum = cumsum_val[template_len:] - cumsum_val[:-template_len]
+            window_mean = window_sum / template_len
+            window_std_energy = window_sq_sum - template_len * window_mean**2
+            window_std_energy = np.maximum(window_std_energy, 0.0)
+
+            denominator = np.sqrt(window_std_energy * template_energy)
+
+            min_energy_ratio = 0.15
+            valid_mask = window_std_energy >= (min_energy_ratio * template_energy)
+            safe_den = np.where(denominator > 0, denominator, 1.0)
+            scores = np.where(valid_mask, correlation / safe_den, -np.inf)
+
+            # Clamp to [0, 1] and drop non-finite values
+            scores = np.where(np.isfinite(scores), np.clip(scores, 0.0, 1.0), 0.0)
+
+            thr = self.threshold if peak_threshold is None else float(peak_threshold)
+            min_distance = max(1, int(template_len * peak_min_distance_ratio))
+            peak_idxs = self._pick_peaks_1d(
+                scores, min_height=thr, min_distance=min_distance
+            )
+            if peak_idxs.size == 0:
+                continue
+
+            # Keep strongest peaks first (then cap per template)
+            peak_order = np.argsort(scores[peak_idxs])[::-1]
+            peak_idxs = peak_idxs[peak_order][:max_per_template]
+            peak_idxs = np.sort(peak_idxs)
+
+            template_obj = self._templates.get(tmpl_name)
+            template_duration_ms = template_obj.duration_ms if template_obj else 0.0
+
+            now = time.time()
+            for pos in peak_idxs:
+                s = float(scores[int(pos)])
+                detections.append(
+                    MatchResult(
+                        template_name=tmpl_name,
+                        score=s,
+                        matched=True,
+                        timestamp=now,
+                        position=int(pos),
+                        confidence=min(
+                            max((s - thr) / max(1e-10, (1.0 - thr)), 0.0), 1.0
+                        ),
+                        sample_rate=sr,
+                        original_sample_rate=original_sr,
+                        template_duration_ms=template_duration_ms,
+                    )
+                )
+
+        if not detections:
+            return []
+
+        # Merge very close duplicates per template then sort by time
+        detections = self._merge_nearby_segments(detections, merge_gap_seconds, sr)
+        detections.sort(key=lambda r: r.position)
+        return detections
+
+    def _compute_envelope_ncc_sequence(
+        self,
+        audio_data: np.ndarray,
+        template_features: "AudioFeatures",
+    ) -> np.ndarray:
+        """Compute NCC score sequence between audio envelope and template envelope.
+
+        The sequence index is in envelope-frame units (hop_length samples per frame).
+        """
+        # Compute audio envelope in hop-length frames
+        hop = self.features_extractor.hop_length
+        audio_env = self.features_extractor.compute_energy_envelope(
+            audio_data, frame_length=hop
+        )
+        template_env = template_features.energy_envelope
+        if audio_env is None or template_env is None:
+            return np.array([], dtype=np.float32)
+
+        if len(audio_env) < len(template_env) or len(template_env) < 3:
+            return np.array([], dtype=np.float32)
+
+        # Zero-mean template envelope for NCC
+        t = template_env.astype(np.float32)
+        t = t - float(np.mean(t))
+        t_energy = float(np.sum(t**2))
+        if t_energy <= 0:
+            return np.array([], dtype=np.float32)
+
+        x = audio_env.astype(np.float32)
+        n = len(x)
+        m = len(t)
+
+        fft_len = 1
+        while fft_len < n + m - 1:
+            fft_len *= 2
+
+        t_fft = rfft(t[::-1], fft_len)
+        x_fft = rfft(x, fft_len)
+        corr = irfft(x_fft * t_fft, fft_len)
+
+        valid_start = m - 1
+        valid_len = n - m + 1
+        corr = corr[valid_start : valid_start + valid_len]
+
+        # sliding window normalization for x
+        x_sq = x**2
+        cumsum_sq = np.concatenate(([0.0], np.cumsum(x_sq)))
+        x_sq_sum = cumsum_sq[m:] - cumsum_sq[:-m]
+
+        cumsum_val = np.concatenate(([0.0], np.cumsum(x)))
+        x_sum = cumsum_val[m:] - cumsum_val[:-m]
+        x_mean = x_sum / m
+        x_var_energy = x_sq_sum - m * x_mean**2
+        x_var_energy = np.maximum(x_var_energy, 0.0)
+
+        denom = np.sqrt(x_var_energy * t_energy)
+        safe = np.where(denom > 0, denom, 1.0)
+
+        # small energy gating to avoid silence peaks
+        min_energy_ratio = 0.10
+        valid_mask = x_var_energy >= (min_energy_ratio * t_energy)
+        scores = np.where(valid_mask, corr / safe, -np.inf)
+        scores = np.where(np.isfinite(scores), np.clip(scores, 0.0, 1.0), 0.0)
+        return scores.astype(np.float32)
+
+    def calibrate_thresholds_from_negatives(
+        self,
+        sounds_dir: Path | None = None,
+        quantile: float = 0.999,
+        margin: float = 0.02,
+        min_threshold: float = 0.70,
+        max_threshold: float = 0.95,
+    ) -> dict[str, float]:
+        """Calibrate per-template coarse thresholds using negative files in refs.json.
+
+        Uses envelope NCC sequence maxima on each negative file.
+        Returns a dict {template_name: threshold}.
+        """
+        if sounds_dir is None:
+            sounds_dir = TEST_SOUNDS_DIR
+        sounds_dir = Path(sounds_dir)
+
+        refs_path = sounds_dir / "refs.json"
+        if not refs_path.exists():
+            return {}
+
+        refs_data = json.loads(refs_path.read_text(encoding="utf-8"))
+        negative_files = [
+            k
+            for k, v in refs_data.items()
+            if float(v.get("start_time", -1)) < 0 or float(v.get("end_time", -1)) < 0
+        ]
+        if not negative_files:
+            return {}
+
+        # resolve file paths
+        neg_paths: list[Path] = []
+        for fname in negative_files:
+            for p in sounds_dir.rglob(fname):
+                neg_paths.append(p)
+                break
+
+        if not neg_paths:
+            return {}
+
+        per_template_maxes: dict[str, list[float]] = {
+            name: [] for name in self._templates
+        }
+
+        for wav_path in neg_paths:
+            try:
+                audio, sr0 = sf.read(wav_path)
+            except Exception:
+                continue
+
+            # match test behavior: skip first 5 seconds
+            skip_s = 5.0
+            skip_n = int(skip_s * sr0)
+            if len(audio) <= skip_n:
+                continue
+            audio = audio[skip_n:]
+
+            # preprocess to target SR
+            audio = self.features_extractor.preprocess(
+                audio, sr0, to_mono=True, resample=True
+            )
+
+            for tmpl_name in self._templates:
+                template_features = self._template_features[tmpl_name]
+                seq = self._compute_envelope_ncc_sequence(audio, template_features)
+                if seq.size == 0:
+                    per_template_maxes[tmpl_name].append(0.0)
+                else:
+                    per_template_maxes[tmpl_name].append(float(np.max(seq)))
+
+        thresholds: dict[str, float] = {}
+        for tmpl_name, vals in per_template_maxes.items():
+            arr = np.asarray(vals, dtype=np.float32)
+            if arr.size == 0:
+                continue
+            # With very few negative files, quantiles can be misleading; use a conservative base.
+            # Base is max(quantile, max) so any observed negative max is covered.
+            base_q = float(np.quantile(arr, quantile))
+            base_m = float(np.max(arr))
+            base = max(base_q, base_m)
+            thr = base + float(margin)
+            thr = float(np.clip(thr, min_threshold, max_threshold))
+            thresholds[tmpl_name] = thr
+
+        return thresholds
+
+    def detect_all_segments_v3(
+        self,
+        audio_data: np.ndarray,
+        sample_rate: int = None,
+        template_name: str = None,
+        coarse_thresholds: dict[str, float] | None = None,
+        peak_min_distance_ratio: float = 0.60,
+        refine_search_seconds: float = 0.35,
+        refine_accept_threshold: float | None = None,
+        merge_gap_seconds: float = 0.10,
+        max_per_template: int = 8,
+    ) -> list[MatchResult]:
+        """Two-stage detector: envelope coarse peaks -> match_single refinement."""
+        if sample_rate is None:
+            sample_rate = self.target_sample_rate
+
+        original_sr = sample_rate
+        audio = self.features_extractor.preprocess(
+            audio_data, sample_rate, to_mono=True, resample=True
+        )
+        sr = self.target_sample_rate
+        hop = self.features_extractor.hop_length
+
+        if template_name:
+            if template_name not in self._templates:
+                return []
+            template_names = [template_name]
+        else:
+            template_names = list(self._templates.keys())
+
+        coarse_thresholds = coarse_thresholds or {}
+        if refine_accept_threshold is None:
+            # Stricter than global threshold to suppress false positives
+            refine_accept_threshold = min(0.95, max(self.threshold + 0.03, 0.86))
+
+        detections: list[MatchResult] = []
+        now = time.time()
+
+        for tmpl_name in template_names:
+            template_features = self._template_features[tmpl_name]
+            template_len = len(template_features.data)
+            if template_len < 8 or len(audio) < template_len:
+                continue
+
+            seq = self._compute_envelope_ncc_sequence(audio, template_features)
+            if seq.size == 0:
+                continue
+
+            thr = float(
+                coarse_thresholds.get(tmpl_name, max(0.72, self.threshold - 0.05))
+            )
+            min_distance_frames = max(
+                1, int((template_len / hop) * peak_min_distance_ratio)
+            )
+            peak_frames = self._pick_peaks_1d(
+                seq.astype(np.float64), min_height=thr, min_distance=min_distance_frames
+            )
+            if peak_frames.size == 0:
+                continue
+
+            # sort by coarse score desc and cap
+            order = np.argsort(seq[peak_frames])[::-1]
+            peak_frames = peak_frames[order][:max_per_template]
+
+            template_obj = self._templates.get(tmpl_name)
+            template_duration_ms = template_obj.duration_ms if template_obj else 0.0
+
+            # refine around each coarse peak
+            refine_half = int(refine_search_seconds * sr)
+            refined_candidates: list[MatchResult] = []
+            for pf in peak_frames:
+                approx_pos = int(pf) * hop
+                start = max(0, approx_pos - refine_half)
+                end = min(len(audio), approx_pos + template_len + refine_half)
+                region = audio[start:end]
+                if len(region) < template_len:
+                    continue
+
+                refined = self.match_single(
+                    region,
+                    tmpl_name,
+                    sample_rate=sr,
+                    check_cooldown=False,
+                )
+                if (not refined.matched) or (
+                    refined.score < float(refine_accept_threshold)
+                ):
+                    continue
+
+                refined.position = start + refined.position
+                refined.sample_rate = sr
+                refined.original_sample_rate = original_sr
+                refined.timestamp = now
+                refined.template_duration_ms = template_duration_ms
+                refined_candidates.append(refined)
+
+            # Per-template: keep only top-K refined detections
+            if refined_candidates:
+                refined_candidates.sort(key=lambda r: r.score, reverse=True)
+                detections.extend(refined_candidates[:max_per_template])
+
+        if not detections:
+            return []
+
+        detections = self._merge_nearby_segments(detections, merge_gap_seconds, sr)
+        detections.sort(key=lambda r: r.position)
+        return detections
 
     def reset_cooldowns(self):
         """重置所有模板的冷却时间。"""
@@ -1561,6 +2236,22 @@ def test_templates(
         threshold=threshold,
     )
 
+    # 使用负例自校准粗检阈值（用于 v3 二阶段检测）
+    calibrated_thresholds = matcher.calibrate_thresholds_from_negatives(
+        sounds_dir=sounds_dir,
+        quantile=0.9995,
+        margin=0.02,
+        min_threshold=0.70,
+        max_threshold=0.95,
+    )
+    if calibrated_thresholds:
+        logger.note(
+            "已基于负例自校准粗检阈值: "
+            + ", ".join(
+                f"{k}={v:.3f}" for k, v in sorted(calibrated_thresholds.items())
+            )
+        )
+
     # 收集测试音频文件
     test_files: list[Path] = []
     extensions = [".wav", ".flac", ".ogg", ".mp3"]
@@ -1605,6 +2296,16 @@ def test_templates(
     worst_iou = 1.0  # 最差IoU
     worst_iou_info = ""  # 最差IoU的信息
 
+    # 多片段评估统计
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    total_fp_near_ref = 0
+    total_fp_far = 0
+    negative_files = 0
+    negative_fp_files = 0
+    negative_fp_segments = 0
+
     for test_file in test_files:
         # 读取测试音频
         try:
@@ -1622,28 +2323,33 @@ def test_templates(
             logger.warn(f"音频文件太短，跳过: {test_file}")
             continue
 
-        # 执行匹配（禁用冷却）并计时
+        # 执行多片段检测（禁用冷却）并计时
         start_time = time.perf_counter()
-        match_results = matcher.match_all(
+        all_segments = matcher.detect_all_segments_v3(
             data,
             sample_rate=sample_rate,
-            check_cooldown=False,
+            template_name=None,  # 检测所有模板
+            coarse_thresholds=calibrated_thresholds,
+            peak_min_distance_ratio=0.85,
+            refine_search_seconds=0.45,
+            refine_accept_threshold=threshold,
+            merge_gap_seconds=0.10,
+            max_per_template=3,
         )
         match_time = (time.perf_counter() - start_time) * 1000
         total_match_time += match_time
 
         # 将匹配位置补偿回原始音频位置（加上跳过的 5 秒）
-        for result in match_results:
-            # position 是基于 target_sample_rate 的，需要加上对应的偏移
-            skip_samples_resampled = int(skip_seconds * result.sample_rate)
-            result.position += skip_samples_resampled
+        for result in all_segments:
+            # position 以 result.sample_rate 为单位（target_sample_rate），直接加上跳过段的采样点
+            result.position += int(skip_seconds * result.sample_rate)
 
         # 记录结果
         rel_path = test_file.relative_to(sounds_dir)
-        results[str(rel_path)] = match_results
+        results[str(rel_path)] = all_segments
 
         # 按分数排序
-        sorted_results = sorted(match_results, key=lambda r: r.score, reverse=True)
+        sorted_results = sorted(all_segments, key=lambda r: r.score, reverse=True)
         best = sorted_results[0] if sorted_results else None
 
         # 获取参考时间
@@ -1716,6 +2422,56 @@ def test_templates(
                 total_all_end_offset += sum(abs(o) for o in all_end_offsets)
                 total_all_count += len(all_ious)
 
+            # 多片段评估：基于 IoU 的 one-to-one 匹配
+            pred_intervals = []
+            for result in sorted_results:
+                d = result.to_dict()
+                pred_intervals.append((float(d["start_time"]), float(d["end_time"])))
+
+            ref_interval = (float(ref_start), float(ref_end))
+            ious_for_pred = [
+                compute_iou(ps, pe, ref_interval[0], ref_interval[1])
+                for (ps, pe) in pred_intervals
+            ]
+
+            # 视为“有命中”阈值
+            hit_iou_threshold = 0.5
+            has_hit = any(i >= hit_iou_threshold for i in ious_for_pred)
+
+            # 额外：统计 FP 的“距离参考段远近”
+            # 认为与参考段中心点相距 <= 3s 的检测属于 near-ref（更可能是“找到了但没对齐/泛化失败”）
+            ref_center = (float(ref_start) + float(ref_end)) / 2.0
+            near_ref_window_s = 3.0
+            fp_near = 0
+            fp_far = 0
+            for (ps, pe), iou_val in zip(pred_intervals, ious_for_pred):
+                pred_center = (ps + pe) / 2.0
+                if iou_val >= hit_iou_threshold:
+                    continue
+                if abs(pred_center - ref_center) <= near_ref_window_s:
+                    fp_near += 1
+                else:
+                    fp_far += 1
+            total_fp_near_ref += fp_near
+            total_fp_far += fp_far
+
+            if has_hit:
+                total_tp += 1
+                # 其他预测都算 FP（因为只有一个参考段）
+                total_fp += max(0, len(pred_intervals) - 1)
+                total_fn += 0
+            else:
+                total_tp += 0
+                total_fp += len(pred_intervals)
+                total_fn += 1
+        else:
+            # 负例：所有检测均为 FP
+            negative_files += 1
+            if sorted_results:
+                negative_fp_files += 1
+                negative_fp_segments += len(sorted_results)
+            total_fp += len(sorted_results)
+
         # 保存结果到同名 JSON 文件（添加 _match 后缀）
         json_path = test_file.with_name(test_file.stem + "_match.json")
         json_data = {
@@ -1763,6 +2519,28 @@ def test_templates(
                 else None
             ),
             "all_template_metrics": all_template_metrics if has_ref else None,
+            "segment_metrics": (
+                {
+                    "is_negative": (not has_ref),
+                    "segment_count": len(sorted_results),
+                    "has_hit_iou_0_5": (
+                        None
+                        if not has_ref
+                        else any(
+                            compute_iou(
+                                float(r.to_dict()["start_time"]),
+                                float(r.to_dict()["end_time"]),
+                                float(ref_start),
+                                float(ref_end),
+                            )
+                            >= 0.5
+                            for r in sorted_results
+                        )
+                    ),
+                    "fp_near_ref": (None if not has_ref else fp_near),
+                    "fp_far": (None if not has_ref else fp_far),
+                }
+            ),
         }
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(json_data, f, ensure_ascii=False, indent=2)
@@ -1773,27 +2551,47 @@ def test_templates(
         # 输出结果
         logger.file(f"\n测试文件: {rel_path}")
 
-        # 输出匹配结果（低分用 warn，高分用 okay）
-        LOW_SCORE_THRESHOLD = 0.75
-        for result in sorted_results:
-            result_dict = result.to_dict()
-            time_info = f"[{result_dict['start_time']} ~ {result_dict['end_time']}] ({result_dict['duration']}s)"
+        # 判断是否为负例
+        is_negative = not has_ref
 
-            if result.score < LOW_SCORE_THRESHOLD:
-                # 低分结果：整行用 warn
-                logger.warn(
-                    f"  ⚠ {result.template_name}: {result.score:.3f} {time_info}"
-                )
-            elif result.matched:
-                # 高分匹配：使用颜色样式
-                template_str = logstr.file(result.template_name)
-                score_str = logstr.okay(f"{result.score:.3f}")
-                time_str = logstr.mesg(time_info)
-                logger.okay(f"  ✓ {template_str}: {score_str} {time_str}")
+        if not sorted_results:
+            # 没有检测到任何片段
+            if is_negative:
+                logger.okay(f"  ✓ 负例：未检测到任何匹配片段（正确）")
             else:
-                logger.mesg(
-                    f"  · {result.template_name}: {result.score:.3f} {time_info}"
-                )
+                logger.warn(f"  ⚠ 未检测到任何匹配片段")
+        else:
+            # 显示检测到的片段数量
+            segment_count = len(sorted_results)
+            if is_negative:
+                logger.warn(f"  ⚠ 负例：检测到 {segment_count} 个片段（假阳性）")
+            else:
+                logger.note(f"  → 检测到 {segment_count} 个匹配片段")
+
+            # 输出匹配结果（低分用 warn，高分用 okay）
+            LOW_SCORE_THRESHOLD = 0.75
+            for i, result in enumerate(sorted_results[:10], 1):  # 最多显示前10个
+                result_dict = result.to_dict()
+                time_info = f"[{result_dict['start_time']} ~ {result_dict['end_time']}] ({result_dict['duration']}s)"
+
+                if result.score < LOW_SCORE_THRESHOLD:
+                    # 低分结果：整行用 warn
+                    logger.warn(
+                        f"    #{i} {result.template_name}: {result.score:.3f} {time_info}"
+                    )
+                elif result.matched:
+                    # 高分匹配：使用颜色样式
+                    template_str = logstr.file(result.template_name)
+                    score_str = logstr.okay(f"{result.score:.3f}")
+                    time_str = logstr.mesg(time_info)
+                    logger.okay(f"    #{i} {template_str}: {score_str} {time_str}")
+                else:
+                    logger.mesg(
+                        f"    #{i} {result.template_name}: {result.score:.3f} {time_info}"
+                    )
+
+            if segment_count > 10:
+                logger.note(f"    ... 还有 {segment_count - 10} 个片段未显示")
 
         # 输出最佳匹配和准确率信息
         if best and best.matched:
@@ -1883,11 +2681,37 @@ def test_templates(
                 "【所有模板】": "",
                 "总匹配数": total_all_count,
                 "全局平均IoU": f"{avg_all_iou:.3f}",
-                "全局最差IoU": f"{worst_iou:.3f} ({worst_iou_info})",
+                # "全局最差IoU": f"{worst_iou:.3f} ({worst_iou_info})",
                 "全局平均开始偏移": f"{avg_all_start_offset:.2f}s",
                 "全局平均结束偏移": f"{avg_all_end_offset:.2f}s",
             }
         )
+
+    # 多片段评估（TP/FP/FN，precision/recall/F1）
+    precision = (total_tp / (total_tp + total_fp)) if (total_tp + total_fp) > 0 else 0.0
+    recall = (total_tp / (total_tp + total_fn)) if (total_tp + total_fn) > 0 else 0.0
+    f1 = (
+        (2 * precision * recall / (precision + recall))
+        if (precision + recall) > 0
+        else 0.0
+    )
+    info_dict.update(
+        {
+            "   ": "",
+            "【多片段评估】": "",
+            "TP": total_tp,
+            "FP": total_fp,
+            "FP(near_ref)": total_fp_near_ref,
+            "FP(far)": total_fp_far,
+            "FN": total_fn,
+            "Precision": f"{precision:.3f}",
+            "Recall": f"{recall:.3f}",
+            "F1": f"{f1:.3f}",
+            "负例文件数": negative_files,
+            "负例出现FP的文件数": negative_fp_files,
+            "负例FP片段总数": negative_fp_segments,
+        }
+    )
 
     logger.note(dict_to_lines(info_dict, key_prefix="* "))
 
