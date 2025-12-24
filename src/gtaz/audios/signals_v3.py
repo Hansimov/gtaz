@@ -22,7 +22,7 @@ CACHE_DIR = MODULE_DIR.parent / "cache"
 # 模板目录
 TEMPLATES_DIR = MODULE_DIR / "wavs"
 # 模板文件正则表达式
-TEMPLATE_REGEX = r"templatex_.*\.wav"
+TEMPLATE_REGEX = r"templatey_.*\.wav"
 
 # 测试音频目录
 SOUNDS_DIR = CACHE_DIR / "sounds"
@@ -33,24 +33,31 @@ TEST_JSONS_DIR = SOUNDS_DIR / "jsons"
 # 测试结果绘制图像输出目录
 TEST_PLOTS_DIR = SOUNDS_DIR / "plots"
 
-# 特征X轴样本点数
-FEATURE_X_POINTS = 20
-# 特征Y轴样本点数
-FEATURE_Y_POINTS = 512
+# 特征X轴样本点数（时间分辨率，越高越能捕捉尖峰）
+FEATURE_X_POINTS = 50
+# 特征Y轴样本点数（频率分辨率）
+FEATURE_Y_POINTS = 256
 
 # 特征匹配窗口（毫秒）- 根据模板时长自动调整
 MATCH_WINDOW_MS = 800
 # 特征匹配步长（毫秒）
-MATCH_STEP_MS = 50
+MATCH_STEP_MS = 100
+# 模板融合后的最小时长（毫秒）
+MIN_TEMPLATE_DURATION_MS = 600
 # 特征匹配阈值（相关系数，范围[-1,1]，只有高正相关才算匹配）
-MATCH_GATE = 0.7
+MATCH_GATE = 0.4
 # 候选者之间最小相邻时间间隔（毫秒）
-CANDIDATE_MIN_OFFSET_MS = 300
+CANDIDATE_MIN_OFFSET_MS = 400
+# 音量比例阈值，测试信号音量低于模板的此比例则不匹配
+# 例如 0.5 表示测试信号音量低于模板的50%时过滤
+VOLUME_RATIO_THRESHOLD = 0.5
 
 # 统一采样率（44100Hz可支持最高22050Hz的频率）
 UNIFIED_SAMPLE_RATE = 44100
+# 低通滤波截止频率
+LOW_PASS_CUTOFF_HZ = 1000
 # 高通滤波截止频率
-HIGH_PASS_CUTOFF_HZ = 10000
+HIGH_PASS_CUTOFF_HZ = 400
 
 logger = TCLogger(
     name="AudioTemplateMatcher",
@@ -122,28 +129,47 @@ class TemplateLoader:
 
 
 class AudioDataSamplesUnifier:
-    """音频数据统一化，包含重采样和高通滤波"""
+    """音频数据统一化，包含重采样和滤波"""
 
     def __init__(
         self,
         target_sample_rate: int = UNIFIED_SAMPLE_RATE,
-        highpass_freq: float = 10000.0,  # 高通滤波截止频率
+        filter_type: str = "none",  # 滤波器类型: "lowpass", "highpass", "none"
+        filter_freq: float = None,  # 滤波截止频率
     ):
         self.target_sample_rate = target_sample_rate
-        self.highpass_freq = highpass_freq
+        self.filter_type = filter_type.lower()
+        # 默认截止频率
+        if filter_freq is None:
+            if self.filter_type == "lowpass":
+                self.filter_freq = LOW_PASS_CUTOFF_HZ
+            elif self.filter_type == "highpass":
+                self.filter_freq = HIGH_PASS_CUTOFF_HZ
+            else:
+                self.filter_freq = 0
+        else:
+            self.filter_freq = filter_freq
 
-    def highpass_filter(self, data: np.ndarray, sample_rate: int) -> np.ndarray:
-        """应用高通滤波器，保留高频信号"""
+    def apply_filter(self, data: np.ndarray, sample_rate: int) -> np.ndarray:
+        """应用滤波器"""
+        if self.filter_type == "none" or self.filter_freq <= 0:
+            return data
+
         # 计算归一化截止频率（相对于奈奎斯特频率）
         nyquist = sample_rate / 2
-        if self.highpass_freq >= nyquist:
+        if self.filter_freq >= nyquist:
             # 截止频率超过奈奎斯特频率，无法滤波
             return data
 
-        normalized_freq = self.highpass_freq / nyquist
+        normalized_freq = self.filter_freq / nyquist
 
-        # 设计巴特沃斯高通滤波器（4阶）
-        b, a = signal.butter(4, normalized_freq, btype="high")
+        # 设计巴特沃斯滤波器（4阶）
+        if self.filter_type == "lowpass":
+            b, a = signal.butter(4, normalized_freq, btype="low")
+        elif self.filter_type == "highpass":
+            b, a = signal.butter(4, normalized_freq, btype="high")
+        else:
+            return data
 
         # 应用滤波器
         filtered = signal.filtfilt(b, a, data)
@@ -162,38 +188,58 @@ class AudioDataSamplesUnifier:
         return resampled.astype(np.float32)
 
     def unify(self, audio_list: List[Tuple[int, np.ndarray]]) -> List[np.ndarray]:
-        """统一所有音频数据到目标采样率，并应用高通滤波"""
+        """统一所有音频数据到目标采样率，并应用滤波"""
         unified_data = []
         for sample_rate, data in audio_list:
             # 先重采样
             unified = self.resample(data, sample_rate, self.target_sample_rate)
-            # 再应用高通滤波
-            unified = self.highpass_filter(unified, self.target_sample_rate)
+            # 再应用滤波
+            unified = self.apply_filter(unified, self.target_sample_rate)
             unified_data.append(unified)
         return unified_data
 
     def unify_single(self, sample_rate: int, data: np.ndarray) -> np.ndarray:
-        """统一单个音频数据到目标采样率，并应用高通滤波"""
+        """统一单个音频数据到目标采样率，并应用滤波"""
         # 先重采样
         unified = self.resample(data, sample_rate, self.target_sample_rate)
-        # 再应用高通滤波
-        unified = self.highpass_filter(unified, self.target_sample_rate)
+        # 再应用滤波
+        unified = self.apply_filter(unified, self.target_sample_rate)
         return unified
 
 
 @dataclass
 class Feature:
-    """音频特征数据类"""
+    """音频特征数据类
+
+    包含三类特征：
+    1. 时频特征矩阵 (data): 频谱图，shape = (FEATURE_X_POINTS, FEATURE_Y_POINTS)
+    2. 时域包络 (temporal_envelope): 每个时间帧的总能量，用于检测尖峰
+    3. 频谱带宽 (spectral_bandwidth): 每个时间帧的频谱扩散度，全频谱时值大，低频时值小
+    """
 
     # 时频特征矩阵: shape = (FEATURE_X_POINTS, FEATURE_Y_POINTS)
     # X轴是时间采样点，Y轴是频率强度
     data: np.ndarray
+    # 时域包络: shape = (FEATURE_X_POINTS,)
+    # 每个时间帧的总能量，用于检测尖峰
+    temporal_envelope: np.ndarray
+    # 频谱带宽: shape = (FEATURE_X_POINTS,)
+    # 每个时间帧的频谱扩散度（标准差），全频谱信号时值大
+    spectral_bandwidth: np.ndarray
     # 原始采样率
     sample_rate: int
     # 原始音频长度（采样点数）
     original_length: int
     # 特征对应的时间范围（毫秒）
     duration_ms: float
+    # 特征能量（频谱RMS值），用于判断信号强度
+    energy: float = 0.0
+    # 特征幅度均值（log magnitude的均值）
+    mean_magnitude: float = 0.0
+    # 尖峰突出度（时域包络的峰值与均值之比）
+    peak_prominence: float = 0.0
+    # 音量（原始时域信号的RMS值），用于绝对音量过滤
+    volume: float = 0.0
 
     def to_dict(self) -> Dict:
         """转换为字典（用于JSON序列化）"""
@@ -202,6 +248,10 @@ class Feature:
             "sample_rate": self.sample_rate,
             "original_length": self.original_length,
             "duration_ms": self.duration_ms,
+            "energy": round(self.energy, 6),
+            "mean_magnitude": round(self.mean_magnitude, 4),
+            "peak_prominence": round(self.peak_prominence, 4),
+            "volume": round(self.volume, 6),
         }
 
 
@@ -241,7 +291,16 @@ class FeatureExtractor:
         return weights
 
     def extract(self, data: np.ndarray) -> Feature:
-        """从音频数据提取频谱特征（线性Hz刻度，高频加权）"""
+        """从音频数据提取频谱特征
+
+        提取三类特征：
+        1. 时频特征矩阵：频谱图 (x_points, y_points)
+        2. 时域包络：每个时间帧的总能量 (x_points,)
+        3. 频谱带宽：每个时间帧的频谱扩散度 (x_points,)
+        """
+        # === 计算原始时域信号的音量（RMS）===
+        volume = float(np.sqrt(np.mean(data**2)))
+
         # 如果数据太短，进行零填充以满足n_fft要求
         min_length = self.n_fft
         if len(data) < min_length:
@@ -268,6 +327,29 @@ class FeatureExtractor:
 
         # 截取感兴趣的频率范围
         magnitude = magnitude[freq_bin_min:freq_bin_max, :]
+        freq_range = frequencies[freq_bin_min:freq_bin_max]
+
+        # === 计算时域包络（在重采样前计算，保留原始分辨率的信息）===
+        # 每个时间帧的总能量（沿频率轴求和）
+        frame_energy = np.sum(magnitude, axis=0)
+
+        # === 计算频谱带宽（频谱质心的标准差）===
+        # 频谱质心：能量加权的频率中心
+        # 频谱带宽：能量加权的频率标准差
+        spectral_bandwidth_raw = np.zeros(magnitude.shape[1])
+        for t in range(magnitude.shape[1]):
+            frame_mag = magnitude[:, t]
+            total_energy = np.sum(frame_mag)
+            if total_energy > 1e-10:
+                # 归一化为概率分布
+                prob = frame_mag / total_energy
+                # 频谱质心
+                centroid = np.sum(freq_range * prob)
+                # 频谱带宽（标准差）
+                variance = np.sum(((freq_range - centroid) ** 2) * prob)
+                spectral_bandwidth_raw[t] = np.sqrt(variance)
+            else:
+                spectral_bandwidth_raw[t] = 0.0
 
         # Y轴（频率）: 重采样到 y_points
         if magnitude.shape[0] != self.y_points:
@@ -276,29 +358,63 @@ class FeatureExtractor:
         # X轴（时间）: 重采样到 x_points
         if magnitude.shape[1] != self.x_points:
             magnitude = signal.resample(magnitude, self.x_points, axis=1)
+            frame_energy = signal.resample(frame_energy, self.x_points)
+            spectral_bandwidth_raw = signal.resample(
+                spectral_bandwidth_raw, self.x_points
+            )
+
+        # 确保非负
+        frame_energy = np.maximum(frame_energy, 0)
+        spectral_bandwidth_raw = np.maximum(spectral_bandwidth_raw, 0)
 
         # 对数压缩（使用np.maximum确保最小值，避免log10的警告）
         magnitude = np.maximum(magnitude, 1e-10)
         log_magnitude = np.log10(magnitude)
 
+        # 计算能量信息
+        energy = float(np.sqrt(np.mean(magnitude**2)))
+        mean_magnitude = float(np.mean(log_magnitude))
+
+        # === 计算时域包络特征 ===
+        # 归一化时域包络（相对于均值）
+        envelope_mean = np.mean(frame_energy)
+        if envelope_mean > 1e-10:
+            temporal_envelope = frame_energy / envelope_mean
+        else:
+            temporal_envelope = np.ones(self.x_points)
+
+        # === 计算尖峰突出度 ===
+        # 峰值与均值之比，值越大说明有明显尖峰
+        peak_prominence = float(np.max(temporal_envelope))
+
+        # === 归一化频谱带宽 ===
+        # 归一化到 [0, 1] 范围，相对于最大可能带宽
+        max_bandwidth = (self.f_max - self.f_min) / 2
+        if max_bandwidth > 0:
+            spectral_bandwidth = spectral_bandwidth_raw / max_bandwidth
+        else:
+            spectral_bandwidth = np.zeros(self.x_points)
+
         # 应用高频权重（沿频率轴）
-        # freq_weights shape: (y_points,) -> (y_points, 1) for broadcasting
         weighted_magnitude = log_magnitude * self.freq_weights[:, np.newaxis]
 
         # 转置使得 X轴是时间，Y轴是频率
         # shape: (x_points, y_points)
         feature_data = weighted_magnitude.T
 
-        # 注意：不进行归一化，保留原始幅度信息
-        # 归一化会导致所有特征看起来相似
-
         duration_ms = len(data) / self.sample_rate * 1000
 
         return Feature(
             data=feature_data.astype(np.float32),
+            temporal_envelope=temporal_envelope.astype(np.float32),
+            spectral_bandwidth=spectral_bandwidth.astype(np.float32),
             sample_rate=self.sample_rate,
             original_length=len(data),
             duration_ms=duration_ms,
+            energy=energy,
+            mean_magnitude=mean_magnitude,
+            peak_prominence=peak_prominence,
+            volume=volume,
         )
 
     def extract_window(
@@ -318,10 +434,20 @@ class FeatureExtractor:
 
 
 class TemplateAligner:
-    """模板对齐器 - 对多个模板进行时域对齐"""
+    """模板对齐器 - 对多个模板进行时域对齐
 
-    def __init__(self, sample_rate: int = UNIFIED_SAMPLE_RATE):
+    使用参考模板的中心区域进行对齐，而非严格的全体交集，
+    以保证融合后的模板有足够的时长。
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = UNIFIED_SAMPLE_RATE,
+        min_duration_ms: float = MIN_TEMPLATE_DURATION_MS,
+    ):
         self.sample_rate = sample_rate
+        self.min_duration_ms = min_duration_ms
+        self.min_duration_samples = int(min_duration_ms * sample_rate / 1000)
 
     def cross_correlate(self, ref: np.ndarray, target: np.ndarray) -> Tuple[int, float]:
         """计算两个信号的互相关，返回最佳偏移和相关系数"""
@@ -346,93 +472,117 @@ class TemplateAligner:
     def align_templates(
         self, templates: List[np.ndarray]
     ) -> Tuple[List[np.ndarray], List[int]]:
-        """对齐所有模板到第一个模板"""
+        """对齐所有模板到最长模板的中心区域
+
+        返回: (对齐后的模板列表, 偏移量列表)
+        偏移量是相对于参考模板的采样点偏移
+        """
         if len(templates) == 0:
             return [], []
 
         if len(templates) == 1:
             return templates, [0]
 
-        # 使用第一个模板作为参考
-        reference = templates[0]
-        offsets = [0]  # 第一个模板偏移为0
-        aligned_templates = [reference]
+        # 选择最长的模板作为参考
+        ref_idx = max(range(len(templates)), key=lambda i: len(templates[i]))
+        reference = templates[ref_idx]
 
-        for i, template in enumerate(templates[1:], 1):
-            offset, corr_coef = self.cross_correlate(reference, template)
-            offsets.append(offset)
-            # logger.mesg(
-            #     f"模板 {i} 对齐偏移: {offset} samples, 相关系数: {corr_coef:.4f}"
-            # )
-
-            # 应用偏移
-            if offset > 0:
-                # target需要向右移动，即在开头填充零
-                aligned = np.pad(template, (offset, 0), mode="constant")
-            elif offset < 0:
-                # target需要向左移动，即裁剪开头
-                aligned = template[-offset:]
+        offsets = []
+        for i, template in enumerate(templates):
+            if i == ref_idx:
+                offsets.append(0)
             else:
-                aligned = template
+                offset, corr_coef = self.cross_correlate(reference, template)
+                offsets.append(offset)
 
-            aligned_templates.append(aligned)
+        return templates, offsets
 
-        return aligned_templates, offsets
-
-    def find_overlap_region(
+    def find_center_region(
         self, templates: List[np.ndarray], offsets: List[int]
     ) -> Tuple[int, int]:
-        """找到所有模板的重叠区域"""
+        """找到基于参考模板中心的融合区域
+
+        策略：
+        1. 选择最长模板的中心区域作为基准
+        2. 区域长度为 max(min_duration_samples, 最小模板长度)
+        3. 确保区域在参考模板范围内
+        """
         if len(templates) == 0:
             return 0, 0
 
-        # 计算每个模板在统一坐标系中的起始和结束位置
-        starts = []
-        ends = []
+        # 找到最长模板的索引
+        ref_idx = max(range(len(templates)), key=lambda i: len(templates[i]))
+        ref_length = len(templates[ref_idx])
 
-        for template, offset in zip(templates, offsets):
-            start = max(0, -offset) if offset < 0 else 0
-            end = len(template)
-            # 转换到统一坐标系
-            starts.append(start + offset)
-            ends.append(end + offset)
+        # 计算目标区域长度
+        min_template_len = min(len(t) for t in templates)
+        target_length = max(self.min_duration_samples, min_template_len)
+        target_length = min(target_length, ref_length)  # 不能超过参考模板长度
 
-        # 重叠区域是所有模板的交集
-        overlap_start = max(starts)
-        overlap_end = min(ends)
+        # 计算中心区域的起始和结束位置（相对于参考模板）
+        center = ref_length // 2
+        region_start = max(0, center - target_length // 2)
+        region_end = min(ref_length, region_start + target_length)
 
-        if overlap_end <= overlap_start:
-            logger.warn("模板没有重叠区域")
-            return 0, min(len(t) for t in templates)
+        # 如果结束位置受限，重新调整起始位置
+        if region_end - region_start < target_length:
+            region_start = max(0, region_end - target_length)
 
+        duration_ms = (region_end - region_start) / self.sample_rate * 1000
         logger.mesg(
-            f"重叠区域: {overlap_start} - {overlap_end}, 长度: {overlap_end - overlap_start}"
+            f"融合区域: {region_start} - {region_end}, "
+            f"长度: {region_end - region_start} samples ({duration_ms:.1f}ms)"
         )
 
-        return overlap_start, overlap_end
+        return region_start, region_end
 
-    def extract_overlap(
+    def extract_aligned_region(
         self,
         templates: List[np.ndarray],
         offsets: List[int],
-        overlap_start: int,
-        overlap_end: int,
-    ) -> List[np.ndarray]:
-        """从对齐后的模板中提取重叠区域"""
+        region_start: int,
+        region_end: int,
+    ) -> Tuple[List[np.ndarray], List[float]]:
+        """从各模板中提取对齐后的区域
+
+        返回: (提取的模板列表, 每个模板的覆盖率权重)
+        对于没有完全覆盖区域的模板，缺失部分用零填充，权重降低
+        """
         extracted = []
+        weights = []
+        region_length = region_end - region_start
 
         for template, offset in zip(templates, offsets):
-            # 计算在原始模板中的对应位置
-            local_start = overlap_start - offset
-            local_end = overlap_end - offset
+            # 计算在当前模板中的对应位置
+            # offset > 0 表示当前模板相对于参考模板向右偏移
+            # 所以参考模板的 region_start 对应当前模板的 region_start - offset
+            local_start = region_start - offset
+            local_end = region_end - offset
 
-            # 确保索引在有效范围内
-            local_start = max(0, local_start)
-            local_end = min(len(template), local_end)
+            # 创建输出数组（初始化为零）
+            output = np.zeros(region_length, dtype=np.float32)
 
-            extracted.append(template[local_start:local_end])
+            # 计算有效的提取范围
+            valid_start = max(0, local_start)
+            valid_end = min(len(template), local_end)
 
-        return extracted
+            if valid_end > valid_start:
+                # 计算在输出数组中的对应位置
+                out_start = valid_start - local_start
+                out_end = out_start + (valid_end - valid_start)
+
+                # 复制有效数据
+                output[out_start:out_end] = template[valid_start:valid_end]
+
+                # 计算覆盖率作为权重
+                coverage = (valid_end - valid_start) / region_length
+            else:
+                coverage = 0.0
+
+            extracted.append(output)
+            weights.append(coverage)
+
+        return extracted, weights
 
 
 class TemplateFuser:
@@ -447,7 +597,12 @@ class TemplateFuser:
     def fuse_templates(
         self, templates: List[np.ndarray], weights: Optional[List[float]] = None
     ) -> Feature:
-        """融合多个对齐后的模板"""
+        """融合多个对齐后的模板
+
+        Args:
+            templates: 对齐后的模板列表（长度相同）
+            weights: 每个模板的权重（覆盖率），用于加权平均
+        """
         if len(templates) == 0:
             raise ValueError("没有模板可融合")
 
@@ -456,16 +611,20 @@ class TemplateFuser:
 
         # 默认使用均等权重
         if weights is None:
-            weights = [1.0 / len(templates)] * len(templates)
+            weights = [1.0] * len(templates)
 
         # 确保所有模板长度相同
         min_len = min(len(t) for t in templates)
         templates = [t[:min_len] for t in templates]
 
-        # 加权融合音频数据
+        # 加权融合音频数据（按覆盖率加权平均）
         fused_audio = np.zeros(min_len, dtype=np.float32)
-        for template, weight in zip(templates, weights):
-            fused_audio += template * weight
+        total_weight = sum(weights)
+
+        if total_weight > 0:
+            for template, weight in zip(templates, weights):
+                fused_audio += template * weight
+            fused_audio /= total_weight
 
         # 提取融合后的特征
         return self.feature_extractor.extract(fused_audio)
@@ -489,16 +648,41 @@ class TemplateFuser:
         for feature, weight in zip(features, weights):
             fused_data += feature.data * weight
 
-        # 归一化
-        max_val = np.max(fused_data)
-        if max_val > 0:
-            fused_data = fused_data / max_val
+        # 融合时域包络
+        fused_temporal_envelope = np.zeros_like(
+            features[0].temporal_envelope, dtype=np.float32
+        )
+        for feature, weight in zip(features, weights):
+            fused_temporal_envelope += feature.temporal_envelope * weight
+
+        # 融合频谱带宽
+        fused_spectral_bandwidth = np.zeros_like(
+            features[0].spectral_bandwidth, dtype=np.float32
+        )
+        for feature, weight in zip(features, weights):
+            fused_spectral_bandwidth += feature.spectral_bandwidth * weight
+
+        # 融合能量信息（加权平均）
+        fused_energy = sum(f.energy * w for f, w in zip(features, weights))
+        fused_mean_magnitude = sum(
+            f.mean_magnitude * w for f, w in zip(features, weights)
+        )
+        fused_peak_prominence = sum(
+            f.peak_prominence * w for f, w in zip(features, weights)
+        )
+        fused_volume = sum(f.volume * w for f, w in zip(features, weights))
 
         return Feature(
             data=fused_data,
+            temporal_envelope=fused_temporal_envelope,
+            spectral_bandwidth=fused_spectral_bandwidth,
             sample_rate=features[0].sample_rate,
             original_length=int(np.mean([f.original_length for f in features])),
             duration_ms=np.mean([f.duration_ms for f in features]),
+            energy=fused_energy,
+            mean_magnitude=fused_mean_magnitude,
+            peak_prominence=fused_peak_prominence,
+            volume=fused_volume,
         )
 
 
@@ -583,31 +767,127 @@ class FeatureMatcher:
         self.feature_extractor = FeatureExtractor(sample_rate=sample_rate)
 
     def compute_similarity(self, feature1: Feature, feature2: Feature) -> float:
-        """计算两个特征的相似度（归一化互相关）
+        """计算两个特征的相似度（综合时域、频域和带宽特征）
 
         返回值范围: [0, 1]
-        - 1: 完全正相关
-        - 0: 不相关或负相关
+        - 1: 完全匹配
+        - 0: 不匹配
+
+        算法（针对"全频谱尖峰 + 两侧低频信号"模式优化）:
+        1. 音量过滤: 测试信号音量不能比模板低太多（使用原始RMS音量）
+        2. 时域包络相似度: 检测是否有相似的尖峰模式（权重最高）
+        3. 频谱带宽相似度: 检测尖峰处是否为全频谱信号
+        4. 频谱形状相似度: 整体频谱形状匹配
+        5. 尖峰突出度匹配: 确保测试信号也有明显尖峰
         """
+        # === 0. 音量过滤（使用原始时域RMS音量）===
+        # feature1是模板，feature2是测试信号
+        template_volume = feature1.volume
+        test_volume = feature2.volume
+
+        # 计算音量比例
+        if template_volume > 1e-10:
+            volume_ratio = test_volume / template_volume
+        else:
+            volume_ratio = 1.0
+
+        # 如果测试信号音量低于模板的阈值比例，直接返回0
+        if volume_ratio < VOLUME_RATIO_THRESHOLD:
+            return 0.0
+
+        # 音量惩罚因子：测试信号音量稍低时的软惩罚
+        # 从阈值到1之间线性惩罚
+        if volume_ratio < 1.0:
+            # 线性映射：阈值->0, 1.0->1.0
+            volume_penalty = (volume_ratio - VOLUME_RATIO_THRESHOLD) / (
+                1.0 - VOLUME_RATIO_THRESHOLD
+            )
+        else:
+            # 测试信号音量更高，不惩罚
+            volume_penalty = 1.0
+
+        # === 1. 时域包络相似度（权重最高）===
+        # 检测时域包络的形状是否匹配（尖峰位置和形状）
+        env1 = feature1.temporal_envelope
+        env2 = feature2.temporal_envelope
+
+        # 归一化到相同尺度
+        env1_norm = env1 / (np.max(env1) + 1e-10)
+        env2_norm = env2 / (np.max(env2) + 1e-10)
+
+        # 皮尔逊相关系数
+        env1_centered = env1_norm - np.mean(env1_norm)
+        env2_centered = env2_norm - np.mean(env2_norm)
+        norm1 = np.linalg.norm(env1_centered)
+        norm2 = np.linalg.norm(env2_centered)
+
+        if norm1 > 0 and norm2 > 0:
+            envelope_similarity = np.dot(env1_centered, env2_centered) / (norm1 * norm2)
+            envelope_similarity = max(0.0, envelope_similarity)
+        else:
+            envelope_similarity = 0.0
+
+        # === 2. 频谱带宽相似度 ===
+        # 检测频谱带宽的时域变化模式是否匹配
+        bw1 = feature1.spectral_bandwidth
+        bw2 = feature2.spectral_bandwidth
+
+        bw1_centered = bw1 - np.mean(bw1)
+        bw2_centered = bw2 - np.mean(bw2)
+        norm1 = np.linalg.norm(bw1_centered)
+        norm2 = np.linalg.norm(bw2_centered)
+
+        if norm1 > 0 and norm2 > 0:
+            bandwidth_similarity = np.dot(bw1_centered, bw2_centered) / (norm1 * norm2)
+            bandwidth_similarity = max(0.0, bandwidth_similarity)
+        else:
+            bandwidth_similarity = 0.0
+
+        # === 3. 频谱形状相似度 ===
         f1 = feature1.data.flatten()
         f2 = feature2.data.flatten()
 
-        # 零均值归一化
-        f1 = f1 - np.mean(f1)
-        f2 = f2 - np.mean(f2)
+        f1_centered = f1 - np.mean(f1)
+        f2_centered = f2 - np.mean(f2)
+        norm1 = np.linalg.norm(f1_centered)
+        norm2 = np.linalg.norm(f2_centered)
 
-        # 计算归一化互相关（皮尔逊相关系数）
-        norm1 = np.linalg.norm(f1)
-        norm2 = np.linalg.norm(f2)
+        if norm1 > 0 and norm2 > 0:
+            spectral_similarity = np.dot(f1_centered, f2_centered) / (norm1 * norm2)
+            spectral_similarity = max(0.0, spectral_similarity)
+        else:
+            spectral_similarity = 0.0
 
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
+        # === 4. 尖峰突出度匹配 ===
+        # 如果模板有明显尖峰，测试信号也应该有
+        prominence1 = feature1.peak_prominence
+        prominence2 = feature2.peak_prominence
 
-        similarity = np.dot(f1, f2) / (norm1 * norm2)
+        # 计算突出度比值（期望接近1）
+        if prominence1 > 1.0:  # 模板有尖峰
+            prominence_ratio = min(prominence2 / prominence1, prominence1 / prominence2)
+            prominence_match = prominence_ratio**0.5  # 开方使其更宽容
+        else:
+            prominence_match = 1.0  # 模板无明显尖峰，不惩罚
 
-        # 将相关系数映射到[0,1]范围
-        # 负相关视为不匹配，设为0
-        return float(max(0.0, similarity))
+        # === 5. 综合得分 ===
+        # 时域包络权重最高，因为尖峰检测最重要
+        # 频谱带宽次之，用于区分全频谱和窄带信号
+        # 频谱形状权重降低，避免过拟合
+        envelope_weight = 0.5
+        bandwidth_weight = 0.25
+        spectral_weight = 0.25
+
+        weighted_score = (
+            envelope_weight * envelope_similarity
+            + bandwidth_weight * bandwidth_similarity
+            + spectral_weight * spectral_similarity
+        )
+
+        # 应用尖峰突出度惩罚和音量惩罚
+        final_score = float(weighted_score * prominence_match * volume_penalty)
+
+        return final_score
 
     def match(self, test_data: np.ndarray, start_from_sample: int = 0) -> MatchResult:
         """在测试数据中匹配模板
@@ -706,11 +986,15 @@ class TestDataSamplesLoader:
         sounds_dir: Path = SOUNDS_DIR,
         trim_ms: int = TEST_WAV_TRIM_MS,
         target_sample_rate: int = UNIFIED_SAMPLE_RATE,
+        filter_type: str = "none",
+        filter_freq: float = None,
     ):
         self.sounds_dir = sounds_dir
         self.trim_ms = trim_ms
         self.target_sample_rate = target_sample_rate
-        self.unifier = AudioDataSamplesUnifier(target_sample_rate)
+        self.unifier = AudioDataSamplesUnifier(
+            target_sample_rate, filter_type=filter_type, filter_freq=filter_freq
+        )
 
     def scan_test_files(self) -> List[Path]:
         """扫描测试WAV文件"""
@@ -776,7 +1060,7 @@ class MatchResultsPlotter:
     def __init__(
         self,
         sample_rate: int = UNIFIED_SAMPLE_RATE,
-        n_fft: int = 1024,  # 减小n_fft以提高绘制速度
+        n_fft: int = 512,  # 减小n_fft以提高绘制速度
         f_max: float = None,  # None表示使用奈奎斯特频率(sample_rate/2)
     ):
         self.sample_rate = sample_rate
@@ -822,12 +1106,12 @@ class MatchResultsPlotter:
         frequencies = frequencies[freq_mask]
         log_magnitude = log_magnitude[freq_mask, :]
 
-        # 时间轴转换为毫秒
-        times_ms = times * 1000
+        # 时间轴转换为秒
+        times_s = times
 
         # 绘制频谱图（使用'auto'替代'gouraud'以提高速度）
         mesh = ax.pcolormesh(
-            times_ms,
+            times_s,
             frequencies,
             log_magnitude,
             shading="auto",
@@ -839,23 +1123,26 @@ class MatchResultsPlotter:
 
         # 绘制匹配开始位置的垂直线
         if match_start_sample > 0:
-            match_start_ms = match_start_sample / self.sample_rate * 1000
+            match_start_s = match_start_sample / self.sample_rate
             ax.axvline(
-                x=match_start_ms,
+                x=match_start_s,
                 color="cyan",
                 linewidth=2,
                 linestyle="--",
-                label=f"Match start ({match_start_ms:.0f}ms)",
+                label=f"Match start ({match_start_s:.1f}s)",
             )
 
         # 绘制匹配区域
         y_max = frequencies[-1]
 
         for i, candidate in enumerate(match_result.candidates):
+            # 将毫秒转换为秒
+            start_s = candidate.start_ms / 1000
+            end_s = candidate.end_ms / 1000
             # 绘制矩形框（半透明填充 + 细边框）
             rect = plt.Rectangle(
-                (candidate.start_ms, 0),
-                candidate.end_ms - candidate.start_ms,
+                (start_s, 0),
+                end_s - start_s,
                 y_max,
                 fill=True,
                 facecolor="red",
@@ -867,7 +1154,7 @@ class MatchResultsPlotter:
             ax.add_patch(rect)
 
             # 添加分数文本
-            text_x = (candidate.start_ms + candidate.end_ms) / 2
+            text_x = (start_s + end_s) / 2
             text_y = y_max * 0.9
             ax.text(
                 text_x,
@@ -882,10 +1169,17 @@ class MatchResultsPlotter:
             )
 
         # 设置标签和标题
-        ax.set_xlabel("Time (ms)", fontsize=12)
+        ax.set_xlabel("Time (s)", fontsize=12)
         ax.set_ylabel("Frequency (Hz)", fontsize=12)
         ax.set_title(title, fontsize=14)
         ax.legend(loc="upper right")
+
+        # 设置X轴刻度精度为1秒
+        total_duration_s = len(test_data) / self.sample_rate
+        # 计算合适的刻度间隔
+        tick_interval = 1  # 1秒
+        x_ticks = np.arange(0, total_duration_s + tick_interval, tick_interval)
+        ax.set_xticks(x_ticks)
 
         # 添加匹配信息
         info_text = f"Total matches: {len(match_result.candidates)}"
@@ -903,7 +1197,7 @@ class MatchResultsPlotter:
         # 保存图像（降低dpi以提高速度）
         output_path.parent.mkdir(parents=True, exist_ok=True)
         plt.tight_layout()
-        plt.savefig(output_path, dpi=72, bbox_inches="tight")
+        plt.savefig(output_path, dpi=100, bbox_inches="tight")
         plt.close(fig)
 
 
@@ -922,6 +1216,8 @@ class FeatureMatchTester:
         step_ms: float = MATCH_STEP_MS,
         gate: float = MATCH_GATE,
         min_offset_ms: float = CANDIDATE_MIN_OFFSET_MS,
+        filter_type: str = "none",
+        filter_freq: float = None,
     ):
         self.templates_dir = templates_dir
         self.template_regex = template_regex
@@ -933,14 +1229,20 @@ class FeatureMatchTester:
         self.step_ms = step_ms
         self.gate = gate
         self.min_offset_ms = min_offset_ms
+        self.filter_type = filter_type
+        self.filter_freq = filter_freq
 
         # 初始化组件
         self.template_loader = TemplateLoader(templates_dir, template_regex)
-        self.unifier = AudioDataSamplesUnifier()
+        self.unifier = AudioDataSamplesUnifier(
+            filter_type=filter_type, filter_freq=filter_freq
+        )
         self.feature_extractor = FeatureExtractor()
         self.aligner = TemplateAligner()
         self.fuser = TemplateFuser(self.feature_extractor)
-        self.test_loader = TestDataSamplesLoader(sounds_dir, trim_ms)
+        self.test_loader = TestDataSamplesLoader(
+            sounds_dir, trim_ms, filter_type=filter_type, filter_freq=filter_freq
+        )
         self.plotter = MatchResultsPlotter()
 
         # 融合后的模板特征
@@ -966,19 +1268,25 @@ class FeatureMatchTester:
         logger.hint("对齐模板...")
         aligned_templates, offsets = self.aligner.align_templates(unified_templates)
 
-        # 找到重叠区域
-        overlap_start, overlap_end = self.aligner.find_overlap_region(
-            aligned_templates, offsets
+        # 找到中心融合区域（保证至少600ms）
+        region_start, region_end = self.aligner.find_center_region(
+            unified_templates, offsets
         )
 
-        # 提取重叠区域
-        extracted_templates = self.aligner.extract_overlap(
-            unified_templates, offsets, overlap_start, overlap_end
+        # 提取对齐后的区域（带覆盖率权重）
+        extracted_templates, weights = self.aligner.extract_aligned_region(
+            unified_templates, offsets, region_start, region_end
         )
 
-        # 融合模板
+        # 输出每个模板的覆盖率
+        avg_coverage = sum(weights) / len(weights) if weights else 0
+        logger.mesg(f"模板平均覆盖率: {avg_coverage:.1%}")
+
+        # 融合模板（使用覆盖率作为权重）
         logger.hint("融合模板特征...")
-        self.fused_template_feature = self.fuser.fuse_templates(extracted_templates)
+        self.fused_template_feature = self.fuser.fuse_templates(
+            extracted_templates, weights
+        )
 
         # 根据模板时长更新匹配窗口大小
         self.window_ms = self.fused_template_feature.duration_ms
@@ -986,6 +1294,8 @@ class FeatureMatchTester:
             f"模板特征融合完成, 特征维度: {self.fused_template_feature.data.shape}, "
             f"模板时长: {self.window_ms:.1f}ms"
         )
+
+        return self.fused_template_feature
 
         return self.fused_template_feature
 
@@ -1151,6 +1461,19 @@ class TemplateMatcherArgParser:
             default=CANDIDATE_MIN_OFFSET_MS,
             help="候选者最小间隔（毫秒）",
         )
+        self.parser.add_argument(
+            "--filter-type",
+            type=str,
+            choices=["none", "lowpass", "highpass"],
+            default="none",
+            help="滤波器类型: none(不滤波), lowpass(低通), highpass(高通)",
+        )
+        self.parser.add_argument(
+            "--filter-freq",
+            type=float,
+            default=None,
+            help="滤波截止频率(Hz)，默认低通6000Hz/高通10000Hz",
+        )
 
     def parse(self) -> argparse.Namespace:
         """解析命令行参数"""
@@ -1164,6 +1487,17 @@ def main():
 
     if args.test:
         logger.okay("启动音频模板匹配测试...")
+        if args.filter_type != "none":
+            if args.filter_type == "lowpass":
+                default_hz = LOW_PASS_CUTOFF_HZ
+            elif args.filter_type == "highpass":
+                default_hz = HIGH_PASS_CUTOFF_HZ
+            else:
+                default_hz = "未知"
+            logger.mesg(
+                f"滤波器: {args.filter_type}, "
+                f"截止频率: {args.filter_freq or default_hz}Hz"
+            )
 
         tester = FeatureMatchTester(
             templates_dir=Path(args.templates_dir),
@@ -1174,6 +1508,8 @@ def main():
             step_ms=args.step_ms,
             gate=args.gate,
             min_offset_ms=args.min_offset_ms,
+            filter_type=args.filter_type,
+            filter_freq=args.filter_freq,
         )
 
         results = tester.test_all_files()
@@ -1192,3 +1528,5 @@ if __name__ == "__main__":
     main()
 
     # python -m gtaz.audios.signals_v3 --test
+    # python -m gtaz.audios.signals_v3 --test --filter-type lowpass
+    # python -m gtaz.audios.signals_v3 --test --filter-type highpass
