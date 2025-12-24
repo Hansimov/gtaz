@@ -97,8 +97,6 @@ class TemplateLoader:
                 self.template_files.append(file_path)
 
         logger.mesg(f"扫描到 {len(self.template_files)} 个模板文件")
-        # for f in self.template_files:
-        #     logger.note(f"  - {f.name}")
 
         return self.template_files
 
@@ -121,7 +119,6 @@ class TemplateLoader:
                     data = (data.astype(np.float32) - 128) / 128.0
 
                 self.template_data.append((sample_rate, data))
-                # logger.mesg(f"加载模板: {file_path.name}, 长度: {len(data)} samples")
             except Exception as e:
                 logger.warn(f"加载模板文件失败: {file_path}, 错误: {e}")
 
@@ -215,6 +212,12 @@ class Feature:
     1. 时频特征矩阵 (data): 频谱图，shape = (FEATURE_X_POINTS, FEATURE_Y_POINTS)
     2. 时域包络 (temporal_envelope): 每个时间帧的总能量，用于检测尖峰
     3. 频谱带宽 (spectral_bandwidth): 每个时间帧的频谱扩散度，全频谱时值大，低频时值小
+    
+    额外的辅助特征：
+    - energy: 频谱能量 (RMS)
+    - mean_magnitude: 对数幅度均值
+    - peak_prominence: 尖峰突出度（峰值与均值之比）
+    - volume: 原始时域信号的 RMS 音量，用于音量过滤
     """
 
     # 时频特征矩阵: shape = (FEATURE_X_POINTS, FEATURE_Y_POINTS)
@@ -297,6 +300,9 @@ class FeatureExtractor:
         1. 时频特征矩阵：频谱图 (x_points, y_points)
         2. 时域包络：每个时间帧的总能量 (x_points,)
         3. 频谱带宽：每个时间帧的频谱扩散度 (x_points,)
+        
+        额外计算：
+        - volume: 原始时域信号的 RMS 音量，用于后续的音量过滤
         """
         # === 计算原始时域信号的音量（RMS）===
         volume = float(np.sqrt(np.mean(data**2)))
@@ -436,8 +442,8 @@ class FeatureExtractor:
 class TemplateAligner:
     """模板对齐器 - 对多个模板进行时域对齐
 
-    使用参考模板的中心区域进行对齐，而非严格的全体交集，
-    以保证融合后的模板有足够的时长。
+    使用参考模板（最长模板）的中心区域进行对齐，而非严格的全体交集，
+    以保证融合后的模板有足够的时长（至少 MIN_TEMPLATE_DURATION_MS）。
     """
 
     def __init__(
@@ -774,7 +780,7 @@ class FeatureMatcher:
         - 0: 不匹配
 
         算法（针对"全频谱尖峰 + 两侧低频信号"模式优化）:
-        1. 音量过滤: 测试信号音量不能比模板低太多（使用原始RMS音量）
+        1. 音量过滤: 测试信号音量不能比模板低于 VOLUME_RATIO_THRESHOLD 倍（使用原始RMS音量）
         2. 时域包络相似度: 检测是否有相似的尖峰模式（权重最高）
         3. 频谱带宽相似度: 检测尖峰处是否为全频谱信号
         4. 频谱形状相似度: 整体频谱形状匹配
@@ -1054,7 +1060,8 @@ class TestDataSamplesLoader:
 class MatchResultsPlotter:
     """匹配结果绘制
 
-    绘制频谱图(spectrogram)显示从低频到高频的信号强度分布
+    绘制频谱图(spectrogram)显示从低频到高频的信号强度分布，
+    并标记匹配开始位置（trim_ms）和匹配结果区域
     """
 
     def __init__(
@@ -1206,9 +1213,6 @@ class FeatureMatchTester:
 
     def __init__(
         self,
-        templates_dir: Path = TEMPLATES_DIR,
-        template_regex: str = TEMPLATE_REGEX,
-        sounds_dir: Path = SOUNDS_DIR,
         jsons_dir: Path = TEST_JSONS_DIR,
         plots_dir: Path = TEST_PLOTS_DIR,
         trim_ms: int = TEST_WAV_TRIM_MS,
@@ -1219,9 +1223,6 @@ class FeatureMatchTester:
         filter_type: str = "none",
         filter_freq: float = None,
     ):
-        self.templates_dir = templates_dir
-        self.template_regex = template_regex
-        self.sounds_dir = sounds_dir
         self.jsons_dir = jsons_dir
         self.plots_dir = plots_dir
         self.trim_ms = trim_ms
@@ -1233,7 +1234,7 @@ class FeatureMatchTester:
         self.filter_freq = filter_freq
 
         # 初始化组件
-        self.template_loader = TemplateLoader(templates_dir, template_regex)
+        self.template_loader = TemplateLoader(TEMPLATES_DIR, TEMPLATE_REGEX)
         self.unifier = AudioDataSamplesUnifier(
             filter_type=filter_type, filter_freq=filter_freq
         )
@@ -1241,7 +1242,7 @@ class FeatureMatchTester:
         self.aligner = TemplateAligner()
         self.fuser = TemplateFuser(self.feature_extractor)
         self.test_loader = TestDataSamplesLoader(
-            sounds_dir, trim_ms, filter_type=filter_type, filter_freq=filter_freq
+            SOUNDS_DIR, trim_ms, filter_type=filter_type, filter_freq=filter_freq
         )
         self.plotter = MatchResultsPlotter()
 
@@ -1331,8 +1332,10 @@ class FeatureMatchTester:
             min_offset_ms=self.min_offset_ms,
         )
 
-        # 执行匹配（从指定位置开始）
+        # 执行匹配（从指定位置开始），记录匹配时长
+        match_start_time = time.time()
         result = matcher.match(test_data, start_from_sample=match_start_sample)
+        match_duration = time.time() - match_start_time
         result.test_file = str(test_file)
 
         # 根据匹配结果输出日志
@@ -1341,11 +1344,13 @@ class FeatureMatchTester:
             max_score = max(c.score for c in result.candidates)
             logger.okay(
                 f"[{file_index}/{total_files}] {test_file.name} - "
-                f"候选数：{num_candidates}，最高分数：{max_score:.4f}"
+                f"候选数：{num_candidates}，最高分数：{max_score:.4f}，"
+                f"匹配耗时：{match_duration:.2f}秒"
             )
         else:
             logger.warn(
-                f"[{file_index}/{total_files}] {test_file.name} - " f"候选数：0"
+                f"[{file_index}/{total_files}] {test_file.name} - "
+                f"候选数：0，匹配耗时：{match_duration:.2f}秒"
             )
 
         # 生成输出文件名
@@ -1412,24 +1417,6 @@ class TemplateMatcherArgParser:
             "--test",
             action="store_true",
             help="运行测试模式",
-        )
-        self.parser.add_argument(
-            "--templates-dir",
-            type=str,
-            default=str(TEMPLATES_DIR),
-            help="模板文件目录",
-        )
-        self.parser.add_argument(
-            "--template-regex",
-            type=str,
-            default=TEMPLATE_REGEX,
-            help="模板文件正则表达式",
-        )
-        self.parser.add_argument(
-            "--sounds-dir",
-            type=str,
-            default=str(SOUNDS_DIR),
-            help="测试音频目录",
         )
         self.parser.add_argument(
             "--trim-ms",
@@ -1500,9 +1487,6 @@ def main():
             )
 
         tester = FeatureMatchTester(
-            templates_dir=Path(args.templates_dir),
-            template_regex=args.template_regex,
-            sounds_dir=Path(args.sounds_dir),
             trim_ms=args.trim_ms,
             window_ms=args.window_ms,
             step_ms=args.step_ms,
