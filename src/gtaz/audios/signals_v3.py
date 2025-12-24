@@ -34,9 +34,9 @@ TEST_JSONS_DIR = SOUNDS_DIR / "jsons"
 TEST_PLOTS_DIR = SOUNDS_DIR / "plots"
 
 # 特征X轴样本点数（时间分辨率，越高越能捕捉尖峰）
-FEATURE_X_POINTS = 50
+FEATURE_X_POINTS = 64
 # 特征Y轴样本点数（频率分辨率）
-FEATURE_Y_POINTS = 256
+FEATURE_Y_POINTS = 64
 
 # 特征匹配窗口（毫秒）- 根据模板时长自动调整
 MATCH_WINDOW_MS = 800
@@ -44,13 +44,13 @@ MATCH_WINDOW_MS = 800
 MATCH_STEP_MS = 100
 # 模板融合后的最小时长（毫秒）
 MIN_TEMPLATE_DURATION_MS = 600
-# 特征匹配阈值（相关系数，范围[-1,1]，只有高正相关才算匹配）
-MATCH_GATE = 0.4
+# 特征匹配阈值（相关系数，范围[0,1]）
+MATCH_GATE = 0.42
 # 候选者之间最小相邻时间间隔（毫秒）
-CANDIDATE_MIN_OFFSET_MS = 400
+CANDIDATE_MIN_OFFSET_MS = int(MATCH_WINDOW_MS / 2)
 # 音量比例阈值，测试信号音量低于模板的此比例则不匹配
 # 例如 0.5 表示测试信号音量低于模板的50%时过滤
-VOLUME_RATIO_THRESHOLD = 0.5
+VOLUME_RATIO_THRESHOLD = 0.25
 
 # 统一采样率（44100Hz可支持最高22050Hz的频率）
 UNIFIED_SAMPLE_RATE = 44100
@@ -212,7 +212,7 @@ class Feature:
     1. 时频特征矩阵 (data): 频谱图，shape = (FEATURE_X_POINTS, FEATURE_Y_POINTS)
     2. 时域包络 (temporal_envelope): 每个时间帧的总能量，用于检测尖峰
     3. 频谱带宽 (spectral_bandwidth): 每个时间帧的频谱扩散度，全频谱时值大，低频时值小
-    
+
     额外的辅助特征：
     - energy: 频谱能量 (RMS)
     - mean_magnitude: 对数幅度均值
@@ -300,7 +300,7 @@ class FeatureExtractor:
         1. 时频特征矩阵：频谱图 (x_points, y_points)
         2. 时域包络：每个时间帧的总能量 (x_points,)
         3. 频谱带宽：每个时间帧的频谱扩散度 (x_points,)
-        
+
         额外计算：
         - volume: 原始时域信号的 RMS 音量，用于后续的音量过滤
         """
@@ -339,23 +339,25 @@ class FeatureExtractor:
         # 每个时间帧的总能量（沿频率轴求和）
         frame_energy = np.sum(magnitude, axis=0)
 
-        # === 计算频谱带宽（频谱质心的标准差）===
+        # === 计算频谱带宽（频谱质心的标准差）- 向量化版本 ===
         # 频谱质心：能量加权的频率中心
         # 频谱带宽：能量加权的频率标准差
-        spectral_bandwidth_raw = np.zeros(magnitude.shape[1])
-        for t in range(magnitude.shape[1]):
-            frame_mag = magnitude[:, t]
-            total_energy = np.sum(frame_mag)
-            if total_energy > 1e-10:
-                # 归一化为概率分布
-                prob = frame_mag / total_energy
-                # 频谱质心
-                centroid = np.sum(freq_range * prob)
-                # 频谱带宽（标准差）
-                variance = np.sum(((freq_range - centroid) ** 2) * prob)
-                spectral_bandwidth_raw[t] = np.sqrt(variance)
-            else:
-                spectral_bandwidth_raw[t] = 0.0
+        total_energy = np.sum(magnitude, axis=0)  # shape: (time_frames,)
+        # 避免除零
+        total_energy_safe = np.where(total_energy > 1e-10, total_energy, 1.0)
+        # 归一化为概率分布
+        prob = magnitude / total_energy_safe  # shape: (freq_bins, time_frames)
+        # 频谱质心 - 向量化计算
+        centroid = np.sum(
+            freq_range[:, np.newaxis] * prob, axis=0
+        )  # shape: (time_frames,)
+        # 频谱带宽（标准差）- 向量化计算
+        variance = np.sum(((freq_range[:, np.newaxis] - centroid) ** 2) * prob, axis=0)
+        spectral_bandwidth_raw = np.sqrt(variance)
+        # 将能量过低的帧的带宽设为0
+        spectral_bandwidth_raw = np.where(
+            total_energy > 1e-10, spectral_bandwidth_raw, 0.0
+        )
 
         # Y轴（频率）: 重采样到 y_points
         if magnitude.shape[0] != self.y_points:
