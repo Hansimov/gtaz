@@ -178,54 +178,118 @@ class Feature:
 
 
 class FeatureExtractor:
-    """音频特征提取"""
+    """音频特征提取
+
+    使用Mel频率刻度和对数幅度来更好地区分高中低频特征。
+    Mel刻度模拟人耳对频率的感知，低频分辨率高，高频分辨率低。
+    """
 
     def __init__(
         self,
         x_points: int = FEATURE_X_POINTS,
         y_points: int = FEATURE_Y_POINTS,
         sample_rate: int = UNIFIED_SAMPLE_RATE,
+        n_fft: int = 2048,
+        f_min: float = 20.0,
+        f_max: float = 8000.0,
     ):
         self.x_points = x_points
         self.y_points = y_points
         self.sample_rate = sample_rate
+        self.n_fft = n_fft
+        self.f_min = f_min
+        self.f_max = f_max
+
+        # 预计算Mel滤波器组
+        self.mel_filterbank = self._create_mel_filterbank()
+
+    def _hz_to_mel(self, hz: float) -> float:
+        """将Hz转换为Mel刻度"""
+        return 2595.0 * np.log10(1.0 + hz / 700.0)
+
+    def _mel_to_hz(self, mel: float) -> float:
+        """将Mel刻度转换为Hz"""
+        return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+
+    def _create_mel_filterbank(self) -> np.ndarray:
+        """创建Mel滤波器组"""
+        # 频率范围转换为Mel刻度
+        mel_min = self._hz_to_mel(self.f_min)
+        mel_max = self._hz_to_mel(self.f_max)
+
+        # 在Mel刻度上均匀分布的点
+        mel_points = np.linspace(mel_min, mel_max, self.y_points + 2)
+        hz_points = np.array([self._mel_to_hz(m) for m in mel_points])
+
+        # 转换为FFT bin索引
+        bin_points = np.floor((self.n_fft + 1) * hz_points / self.sample_rate).astype(
+            int
+        )
+
+        # 创建滤波器组
+        n_freqs = self.n_fft // 2 + 1
+        filterbank = np.zeros((self.y_points, n_freqs))
+
+        for i in range(self.y_points):
+            left = bin_points[i]
+            center = bin_points[i + 1]
+            right = bin_points[i + 2]
+
+            # 三角滤波器上升沿
+            for j in range(left, center):
+                if j < n_freqs and center != left:
+                    filterbank[i, j] = (j - left) / (center - left)
+
+            # 三角滤波器下降沿
+            for j in range(center, right):
+                if j < n_freqs and right != center:
+                    filterbank[i, j] = (right - j) / (right - center)
+
+        return filterbank
 
     def extract(self, data: np.ndarray) -> Feature:
-        """从音频数据提取时频特征"""
+        """从音频数据提取Mel频谱特征"""
+        # 如果数据太短，进行零填充以满足n_fft要求
+        min_length = self.n_fft
+        if len(data) < min_length:
+            data = np.pad(data, (0, min_length - len(data)), mode="constant")
+        
         # 计算STFT参数
-        # nperseg: 每个段的长度，决定频率分辨率
-        nperseg = self.y_points * 2
-        # noverlap: 重叠长度
-        noverlap = nperseg // 2
+        hop_length = self.n_fft // 4
 
         # 计算STFT
         frequencies, times, Zxx = signal.stft(
             data,
             fs=self.sample_rate,
-            nperseg=nperseg,
-            noverlap=noverlap,
+            nperseg=self.n_fft,
+            noverlap=self.n_fft - hop_length,
         )
 
-        # 取幅度谱
-        magnitude = np.abs(Zxx)
+        # 取功率谱（幅度的平方）
+        power_spectrum = np.abs(Zxx) ** 2
 
-        # 重采样到目标维度
-        # Y轴（频率）: 从 nperseg//2+1 重采样到 y_points
-        if magnitude.shape[0] != self.y_points:
-            magnitude = signal.resample(magnitude, self.y_points, axis=0)
+        # 应用Mel滤波器组
+        # filterbank: (y_points, n_freqs), power_spectrum: (n_freqs, n_times)
+        mel_spectrum = np.dot(self.mel_filterbank, power_spectrum)
+
+        # 对数压缩（加小常数避免log(0)）
+        mel_spectrum = np.log10(mel_spectrum + 1e-10)
 
         # X轴（时间）: 重采样到 x_points
-        if magnitude.shape[1] != self.x_points:
-            magnitude = signal.resample(magnitude, self.x_points, axis=1)
+        if mel_spectrum.shape[1] != self.x_points:
+            mel_spectrum = signal.resample(mel_spectrum, self.x_points, axis=1)
 
         # 转置使得 X轴是时间，Y轴是频率
         # shape: (x_points, y_points)
-        feature_data = magnitude.T
+        feature_data = mel_spectrum.T
 
-        # 归一化
+        # 标准化到 [0, 1] 范围，保留频率分布的相对关系
+        min_val = np.min(feature_data)
         max_val = np.max(feature_data)
-        if max_val > 0:
-            feature_data = feature_data / max_val
+        if max_val > min_val:
+            feature_data = (feature_data - min_val) / (max_val - min_val)
+        else:
+            feature_data = np.zeros_like(feature_data)
 
         duration_ms = len(data) / self.sample_rate * 1000
 
@@ -539,8 +603,13 @@ class FeatureMatcher:
 
         return float(similarity)
 
-    def match(self, test_data: np.ndarray) -> MatchResult:
-        """在测试数据中匹配模板"""
+    def match(self, test_data: np.ndarray, start_from_sample: int = 0) -> MatchResult:
+        """在测试数据中匹配模板
+
+        Args:
+            test_data: 测试音频数据
+            start_from_sample: 从该采样点开始匹配（之前的数据不参与匹配）
+        """
         total_duration_ms = len(test_data) / self.sample_rate * 1000
 
         # 计算滑动窗口参数
@@ -550,8 +619,8 @@ class FeatureMatcher:
         # 存储所有候选
         all_candidates: List[MatchCandidate] = []
 
-        # 滑动窗口匹配
-        start_sample = 0
+        # 从指定位置开始滑动窗口匹配
+        start_sample = start_from_sample
         while start_sample + window_samples <= len(test_data):
             # 提取窗口特征
             window_feature = self.feature_extractor.extract_window(
@@ -621,7 +690,10 @@ class FeatureMatcher:
 
 
 class TestDataSamplesLoader:
-    """测试数据加载和预处理"""
+    """测试数据加载和预处理
+
+    trim_ms: 从该时间点开始匹配，之前的音频不参与匹配但会保留用于绘图
+    """
 
     def __init__(
         self,
@@ -649,8 +721,15 @@ class TestDataSamplesLoader:
         logger.success(f"扫描到 {len(test_files)} 个测试文件")
         return test_files
 
-    def load_test_file(self, file_path: Path) -> Tuple[np.ndarray, int]:
-        """加载单个测试文件"""
+    def get_trim_samples(self) -> int:
+        """获取trim对应的采样点数（在目标采样率下）"""
+        return int(self.trim_ms * self.target_sample_rate / 1000)
+
+    def load_test_file(self, file_path: Path) -> Tuple[np.ndarray, int, int]:
+        """加载单个测试文件
+
+        返回: (完整音频数据, 采样率, 开始匹配的采样点位置)
+        """
         try:
             sample_rate, data = wavfile.read(file_path)
 
@@ -666,35 +745,43 @@ class TestDataSamplesLoader:
             elif data.dtype == np.uint8:
                 data = (data.astype(np.float32) - 128) / 128.0
 
-            # 截断开头
-            if self.trim_ms > 0:
-                trim_samples = int(self.trim_ms * sample_rate / 1000)
-                if trim_samples < len(data):
-                    data = data[trim_samples:]
-
-            # 统一采样率
+            # 统一采样率（不截断数据）
             data = self.unifier.unify_single(sample_rate, data)
+
+            # 计算开始匹配的采样点位置
+            match_start_sample = self.get_trim_samples()
+            if match_start_sample >= len(data):
+                match_start_sample = 0
+                logger.warn(f"trim_ms ({self.trim_ms}ms) 超过音频长度，从头开始匹配")
 
             logger.mesg(
                 f"加载测试文件: {file_path.name}, "
-                f"长度: {len(data) / self.target_sample_rate:.2f}s"
+                f"总长度: {len(data) / self.target_sample_rate:.2f}s, "
+                f"从 {match_start_sample / self.target_sample_rate:.2f}s 开始匹配"
             )
 
-            return data, self.target_sample_rate
+            return data, self.target_sample_rate, match_start_sample
 
         except Exception as e:
             logger.warn(f"加载测试文件失败: {file_path}, 错误: {e}")
-            return np.array([]), self.target_sample_rate
+            return np.array([]), self.target_sample_rate, 0
 
 
 class MatchResultsPlotter:
-    """匹配结果绘制"""
+    """匹配结果绘制
+
+    绘制频谱图(spectrogram)显示从低频到高频的信号强度分布
+    """
 
     def __init__(
         self,
         sample_rate: int = UNIFIED_SAMPLE_RATE,
+        n_fft: int = 2048,
+        f_max: float = 8000.0,
     ):
         self.sample_rate = sample_rate
+        self.n_fft = n_fft
+        self.f_max = f_max
 
     def plot(
         self,
@@ -702,38 +789,83 @@ class MatchResultsPlotter:
         match_result: MatchResult,
         output_path: Path,
         title: str = "Audio Template Matching Result",
+        match_start_sample: int = 0,
     ):
-        """绘制匹配结果"""
+        """绘制匹配结果（频谱图）
+
+        Args:
+            test_data: 完整音频数据
+            match_result: 匹配结果
+            output_path: 输出路径
+            title: 图表标题
+            match_start_sample: 开始匹配的采样点位置，用于绘制分界线
+        """
         # 创建图形
         fig, ax = plt.subplots(figsize=(16, 6))
 
-        # 计算时间轴（毫秒）
-        time_ms = np.arange(len(test_data)) / self.sample_rate * 1000
+        # 计算STFT用于绘制频谱图
+        hop_length = self.n_fft // 4
+        frequencies, times, Zxx = signal.stft(
+            test_data,
+            fs=self.sample_rate,
+            nperseg=self.n_fft,
+            noverlap=self.n_fft - hop_length,
+        )
 
-        # 绘制波形
-        ax.plot(time_ms, test_data, "b-", linewidth=0.5, alpha=0.7, label="Waveform")
+        # 取对数幅度谱
+        magnitude = np.abs(Zxx)
+        log_magnitude = 10 * np.log10(magnitude + 1e-10)
+
+        # 限制频率范围
+        freq_mask = frequencies <= self.f_max
+        frequencies = frequencies[freq_mask]
+        log_magnitude = log_magnitude[freq_mask, :]
+
+        # 时间轴转换为毫秒
+        times_ms = times * 1000
+
+        # 绘制频谱图
+        mesh = ax.pcolormesh(
+            times_ms,
+            frequencies,
+            log_magnitude,
+            shading="gouraud",
+            cmap="viridis",
+        )
+
+        # 添加颜色条
+        cbar = plt.colorbar(mesh, ax=ax, label="Magnitude (dB)")
+
+        # 绘制匹配开始位置的垂直线
+        if match_start_sample > 0:
+            match_start_ms = match_start_sample / self.sample_rate * 1000
+            ax.axvline(
+                x=match_start_ms,
+                color="cyan",
+                linewidth=2,
+                linestyle="--",
+                label=f"Match start ({match_start_ms:.0f}ms)",
+            )
 
         # 绘制匹配区域
-        y_min, y_max = ax.get_ylim()
-        rect_height = y_max - y_min
+        y_max = frequencies[-1]
 
         for i, candidate in enumerate(match_result.candidates):
             # 绘制矩形框
             rect = plt.Rectangle(
-                (candidate.start_ms, y_min),
+                (candidate.start_ms, 0),
                 candidate.end_ms - candidate.start_ms,
-                rect_height,
-                fill=True,
-                facecolor="red",
-                edgecolor="darkred",
-                alpha=0.3,
+                y_max,
+                fill=False,
+                edgecolor="red",
                 linewidth=2,
+                linestyle="-",
             )
             ax.add_patch(rect)
 
             # 添加分数文本
             text_x = (candidate.start_ms + candidate.end_ms) / 2
-            text_y = y_max * 0.8
+            text_y = y_max * 0.9
             ax.text(
                 text_x,
                 text_y,
@@ -742,16 +874,15 @@ class MatchResultsPlotter:
                 va="center",
                 fontsize=10,
                 fontweight="bold",
-                color="darkred",
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+                color="white",
+                bbox=dict(boxstyle="round", facecolor="red", alpha=0.7),
             )
 
         # 设置标签和标题
         ax.set_xlabel("Time (ms)", fontsize=12)
-        ax.set_ylabel("Amplitude", fontsize=12)
+        ax.set_ylabel("Frequency (Hz)", fontsize=12)
         ax.set_title(title, fontsize=14)
         ax.legend(loc="upper right")
-        ax.grid(True, alpha=0.3)
 
         # 添加匹配信息
         info_text = f"Total matches: {len(match_result.candidates)}"
@@ -762,7 +893,8 @@ class MatchResultsPlotter:
             transform=ax.transAxes,
             verticalalignment="top",
             fontsize=10,
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+            color="white",
+            bbox=dict(boxstyle="round", facecolor="black", alpha=0.7),
         )
 
         # 保存图像
@@ -864,8 +996,10 @@ class FeatureMatchTester:
         logger.hint("-" * 40)
         logger.hint(f"测试文件: {test_file}")
 
-        # 加载测试数据
-        test_data, sample_rate = self.test_loader.load_test_file(test_file)
+        # 加载测试数据（返回完整数据和开始匹配的位置）
+        test_data, sample_rate, match_start_sample = self.test_loader.load_test_file(
+            test_file
+        )
 
         if len(test_data) == 0:
             logger.warn(f"测试文件数据为空: {test_file}")
@@ -884,8 +1018,8 @@ class FeatureMatchTester:
             min_offset_ms=self.min_offset_ms,
         )
 
-        # 执行匹配
-        result = matcher.match(test_data)
+        # 执行匹配（从指定位置开始）
+        result = matcher.match(test_data, start_from_sample=match_start_sample)
         result.test_file = str(test_file)
 
         logger.success(f"匹配完成, 找到 {len(result.candidates)} 个候选")
@@ -900,13 +1034,14 @@ class FeatureMatchTester:
             json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
         logger.success(f"保存JSON结果: {json_path}")
 
-        # 绘制并保存图像
+        # 绘制并保存图像（传入match_start_sample用于绘制分界线）
         plot_path = self.plots_dir / f"{output_name}.jpg"
         self.plotter.plot(
             test_data,
             result,
             plot_path,
             title=f"Match Result: {test_file.name}",
+            match_start_sample=match_start_sample,
         )
 
         return result
