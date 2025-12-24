@@ -38,17 +38,17 @@ FEATURE_X_POINTS = 20
 # 特征Y轴样本点数
 FEATURE_Y_POINTS = 512
 
-# 特征匹配窗口（毫秒）
+# 特征匹配窗口（毫秒）- 根据模板时长自动调整
 MATCH_WINDOW_MS = 800
 # 特征匹配步长（毫秒）
-MATCH_STEP_MS = 150
-# 特征匹配阈值
-MATCH_GATE = 0.6
+MATCH_STEP_MS = 50
+# 特征匹配阈值（相关系数，范围[-1,1]，只有高正相关才算匹配）
+MATCH_GATE = 0.7
 # 候选者之间最小相邻时间间隔（毫秒）
-CANDIDATE_MIN_OFFSET_MS = 500
+CANDIDATE_MIN_OFFSET_MS = 300
 
-# 统一采样率
-UNIFIED_SAMPLE_RATE = 16000
+# 统一采样率（44100Hz可支持最高22050Hz的频率）
+UNIFIED_SAMPLE_RATE = 44100
 
 logger = TCLogger(
     name="AudioTemplateMatcher",
@@ -191,7 +191,7 @@ class FeatureExtractor:
         sample_rate: int = UNIFIED_SAMPLE_RATE,
         n_fft: int = 2048,
         f_min: float = 20.0,
-        f_max: float = 8000.0,
+        f_max: float = None,  # None表示使用奈奎斯特频率(sample_rate/2)
         high_freq_weight: float = 2.0,  # 高频权重倍数
     ):
         self.x_points = x_points
@@ -199,7 +199,8 @@ class FeatureExtractor:
         self.sample_rate = sample_rate
         self.n_fft = n_fft
         self.f_min = f_min
-        self.f_max = f_max
+        # 如果f_max为None，使用奈奎斯特频率
+        self.f_max = f_max if f_max is not None else sample_rate / 2
         self.high_freq_weight = high_freq_weight
 
         # 预计算频率权重（线性增加，高频权重更高）
@@ -260,13 +261,8 @@ class FeatureExtractor:
         # shape: (x_points, y_points)
         feature_data = weighted_magnitude.T
 
-        # 标准化到 [0, 1] 范围，保留频率分布的相对关系
-        min_val = np.min(feature_data)
-        max_val = np.max(feature_data)
-        if max_val > min_val:
-            feature_data = (feature_data - min_val) / (max_val - min_val)
-        else:
-            feature_data = np.zeros_like(feature_data)
+        # 注意：不进行归一化，保留原始幅度信息
+        # 归一化会导致所有特征看起来相似
 
         duration_ms = len(data) / self.sample_rate * 1000
 
@@ -559,7 +555,13 @@ class FeatureMatcher:
         self.feature_extractor = FeatureExtractor(sample_rate=sample_rate)
 
     def compute_similarity(self, feature1: Feature, feature2: Feature) -> float:
-        """计算两个特征的相似度（归一化互相关）"""
+        """计算两个特征的相似度（归一化互相关）
+
+        返回值范围: [-1, 1]
+        - 1: 完全正相关
+        - 0: 不相关
+        - -1: 完全负相关
+        """
         f1 = feature1.data.flatten()
         f2 = feature2.data.flatten()
 
@@ -567,7 +569,7 @@ class FeatureMatcher:
         f1 = f1 - np.mean(f1)
         f2 = f2 - np.mean(f2)
 
-        # 计算归一化互相关
+        # 计算归一化互相关（皮尔逊相关系数）
         norm1 = np.linalg.norm(f1)
         norm2 = np.linalg.norm(f2)
 
@@ -575,9 +577,9 @@ class FeatureMatcher:
             return 0.0
 
         similarity = np.dot(f1, f2) / (norm1 * norm2)
-        # 将相似度映射到 [0, 1] 范围
-        similarity = (similarity + 1) / 2
 
+        # 直接返回相关系数，不进行映射
+        # 只有高正相关才是真正的匹配
         return float(similarity)
 
     def match(self, test_data: np.ndarray, start_from_sample: int = 0) -> MatchResult:
@@ -748,11 +750,12 @@ class MatchResultsPlotter:
         self,
         sample_rate: int = UNIFIED_SAMPLE_RATE,
         n_fft: int = 2048,
-        f_max: float = 8000.0,
+        f_max: float = None,  # None表示使用奈奎斯特频率(sample_rate/2)
     ):
         self.sample_rate = sample_rate
         self.n_fft = n_fft
-        self.f_max = f_max
+        # 如果f_max为None，使用奈奎斯特频率
+        self.f_max = f_max if f_max is not None else sample_rate / 2
 
     def plot(
         self,
@@ -822,15 +825,17 @@ class MatchResultsPlotter:
         y_max = frequencies[-1]
 
         for i, candidate in enumerate(match_result.candidates):
-            # 绘制矩形框
+            # 绘制矩形框（半透明填充 + 细边框）
             rect = plt.Rectangle(
                 (candidate.start_ms, 0),
                 candidate.end_ms - candidate.start_ms,
                 y_max,
-                fill=False,
-                edgecolor="red",
-                linewidth=2,
+                fill=True,
+                facecolor="red",
+                edgecolor="darkred",
+                linewidth=1,
                 linestyle="-",
+                alpha=0.3,
             )
             ax.add_patch(rect)
 
@@ -948,8 +953,11 @@ class FeatureMatchTester:
         logger.hint("融合模板特征...")
         self.fused_template_feature = self.fuser.fuse_templates(extracted_templates)
 
+        # 根据模板时长更新匹配窗口大小
+        self.window_ms = self.fused_template_feature.duration_ms
         logger.success(
-            f"模板特征融合完成, 特征维度: {self.fused_template_feature.data.shape}"
+            f"模板特征融合完成, 特征维度: {self.fused_template_feature.data.shape}, "
+            f"模板时长: {self.window_ms:.1f}ms"
         )
 
         return self.fused_template_feature
