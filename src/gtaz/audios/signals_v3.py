@@ -50,7 +50,7 @@ MATCH_GATE = 0.42
 CANDIDATE_MIN_OFFSET_MS = int(MATCH_WINDOW_MS / 2)
 # 音量比例阈值，测试信号音量低于模板的此比例则不匹配
 # 例如 0.5 表示测试信号音量低于模板的50%时过滤
-VOLUME_RATIO_THRESHOLD = 0.25
+VOLUME_RATIO_THRESHOLD = 0.45
 
 # 统一采样率（44100Hz可支持最高22050Hz的频率）
 UNIFIED_SAMPLE_RATE = 44100
@@ -107,16 +107,20 @@ class TemplateLoader:
         for file_path in self.template_files:
             try:
                 sample_rate, data = wavfile.read(file_path)
-                # 如果是立体声，转换为单声道
-                if len(data.shape) > 1:
-                    data = np.mean(data, axis=1)
-                # 转换为浮点数
+                # 先转换为浮点数（归一化），再转单声道
+                # 注意：必须先归一化再 np.mean，否则 np.mean 会把 int16 转成 float64 但值不变
                 if data.dtype == np.int16:
                     data = data.astype(np.float32) / 32768.0
                 elif data.dtype == np.int32:
                     data = data.astype(np.float32) / 2147483648.0
                 elif data.dtype == np.uint8:
                     data = (data.astype(np.float32) - 128) / 128.0
+                else:
+                    data = data.astype(np.float32)
+
+                # 如果是立体声，转换为单声道
+                if len(data.shape) > 1:
+                    data = np.mean(data, axis=1).astype(np.float32)
 
                 self.template_data.append((sample_rate, data))
             except Exception as e:
