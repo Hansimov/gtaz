@@ -62,6 +62,10 @@ TEMPLATE_FEATURE_CACHE = CACHE_DIR / "template_feature.pkl"
 # 检测间隔（毫秒）- 每隔多久执行一次匹配
 DETECT_INTERVAL_MS = 200
 
+# 绝对音量阈值（音量百分比）- 平均音量低于此值时不进行匹配
+# 这是日志中显示的音量数字，基于最近采样的 RMS 值
+VOLUME_THRESHOLD_PERCENT = 30
+
 
 class TemplateFeatureManager:
     """模板特征管理器
@@ -242,6 +246,10 @@ class AudioDetector:
         self._line_buffer: list[str] = []
         self._current_tick_detected = False  # 当前 tick 是否检测到信号
 
+        # 组内最高分数追踪
+        self._group_max_score = 0.0
+        self._group_max_score_index = -1
+
     def _is_first_in_group(self) -> bool:
         """判断是否是组内第一个。"""
         return self._sample_count % SAMPLES_PER_GROUP == 0
@@ -270,21 +278,23 @@ class AudioDetector:
         return min(volumes), sum(volumes) / len(volumes), max(volumes)
 
     def _log_group_stats(self, score: float = None):
-        """输出一组音量的统计信息。"""
+        """输出一组音量的统计信息（显示组内最高分数）。"""
         if self._group_volumes:
             min_vol, avg_vol, max_vol = self._calculate_stats(self._group_volumes)
             vol_strs = [
                 logstr.mesg(f"{round(v):2d}") for v in [min_vol, avg_vol, max_vol]
             ]
             vol_line = "/".join(vol_strs)
-            if score is not None:
-                if score >= self.gate:
-                    score_str = logstr.okay(f"{score:.3f}✓")
-                else:
-                    score_str = logstr.file(f"{score:.3f}")
-                logger.note(f" [{vol_line}] 分数={score_str}", use_prefix=False)
+            # 使用组内最高分数而非最后一次分数
+            display_score = self._group_max_score
+            display_index = self._group_max_score_index
+            if display_score >= self.gate:
+                score_str = logstr.okay(f"{display_score:.3f}✓")
+                if display_index >= 0:
+                    score_str += logstr.hint(f" @{display_index}")
             else:
-                logger.note(f" [{vol_line}]", use_prefix=False)
+                score_str = logstr.file(f"{display_score:.3f}")
+            logger.note(f" [{vol_line}] 分数={score_str}", use_prefix=False)
         else:
             logger.note("", use_prefix=False)
 
@@ -579,7 +589,7 @@ class AudioDetector:
             return
 
         logger.note(
-            f"开始实时检测 (阈值: {self.gate}, 间隔: {self.detect_interval_ms}ms)"
+            f"开始实时检测 (阈值: {self.gate}, 间隔: {self.detect_interval_ms}ms, 音量阈值: {VOLUME_THRESHOLD_PERCENT})"
         )
         if duration:
             logger.note(f"检测时长: {duration}秒")
@@ -588,7 +598,8 @@ class AudioDetector:
         self._sample_count = 0
         self._group_volumes = []
         self._current_tick_detected = False
-        last_score = 0.0
+        self._group_max_score = 0.0
+        self._group_max_score_index = -1
         detect_count = 0
         first_detect = True
 
@@ -598,9 +609,14 @@ class AudioDetector:
                 if duration and (time.time() - start_time) >= duration:
                     # 输出最后一组统计
                     if self._sample_count % SAMPLES_PER_GROUP != 0:
-                        self._log_group_stats(last_score)
+                        self._log_group_stats()
                     logger.note("检测时长已到")
                     break
+
+                # 组开始时重置组内最高分数
+                if self._is_first_in_group():
+                    self._group_max_score = 0.0
+                    self._group_max_score_index = -1
 
                 # 重置当前 tick 的检测状态
                 self._current_tick_detected = False
@@ -611,17 +627,35 @@ class AudioDetector:
                     current_time - self._last_detect_time
                 ) * 1000 >= self.detect_interval_ms:
                     self._last_detect_time = current_time
-                    # 首次检测时输出调试信息
-                    score, result = self.detect(debug=(debug and first_detect))
-                    first_detect = False
-                    detect_count += 1
-                    last_score = score
 
-                    # 如果匹配成功，设置当前 tick 检测状态并调用回调
-                    if score >= self.gate:
-                        self._current_tick_detected = True
-                        if self._on_match_callback and result:
-                            self._on_match_callback(score, result)
+                    # 计算最近采样的平均音量
+                    recent_avg_volume = (
+                        sum(self._group_volumes) / len(self._group_volumes)
+                        if self._group_volumes
+                        else 0
+                    )
+
+                    # 只有音量足够时才进行检测
+                    if recent_avg_volume >= VOLUME_THRESHOLD_PERCENT:
+                        # 首次检测时输出调试信息
+                        score, result = self.detect(debug=(debug and first_detect))
+                        first_detect = False
+                        detect_count += 1
+
+                        # 更新组内最高分数
+                        tick_in_group = self._sample_count % SAMPLES_PER_GROUP
+                        if score > self._group_max_score:
+                            self._group_max_score = score
+                            self._group_max_score_index = tick_in_group
+
+                        # 如果匹配成功，设置当前 tick 检测状态并调用回调
+                        if score >= self.gate:
+                            self._current_tick_detected = True
+                            if self._on_match_callback and result:
+                                self._on_match_callback(score, result)
+                    else:
+                        # 音量不足，跳过检测
+                        first_detect = False
 
                 # 获取当前音量并显示（检测状态决定是否高亮）
                 volume_percent = self.recorder.get_volume_percent()
@@ -633,7 +667,7 @@ class AudioDetector:
 
                 # 组结束时输出统计和分数
                 if self._is_last_in_group():
-                    self._log_group_stats(last_score)
+                    self._log_group_stats()
                     self._group_volumes = []
 
                 self._sample_count += 1
@@ -642,7 +676,7 @@ class AudioDetector:
         except KeyboardInterrupt:
             # 输出最后一组统计
             if self._sample_count % SAMPLES_PER_GROUP != 0:
-                self._log_group_stats(last_score)
+                self._log_group_stats()
             logger.note("\n检测到 Ctrl+C，正在退出...")
 
         finally:
@@ -669,7 +703,9 @@ class AudioDetector:
             logger.warn("无法启动音频流")
             return False, 0.0, None
 
-        logger.note(f"开始检测 (阈值: {self.gate})，匹配到即停止")
+        logger.note(
+            f"开始检测 (阈值: {self.gate}, 音量阈值: {VOLUME_THRESHOLD_PERCENT})，匹配到即停止"
+        )
         if timeout:
             logger.note(f"超时时间: {timeout}秒")
 
@@ -677,10 +713,11 @@ class AudioDetector:
         self._sample_count = 0
         self._group_volumes = []
         self._current_tick_detected = False
+        self._group_max_score = 0.0
+        self._group_max_score_index = -1
         matched = False
         final_score = 0.0
         final_result = None
-        last_score = 0.0
 
         try:
             while True:
@@ -688,9 +725,14 @@ class AudioDetector:
                 if timeout and (time.time() - start_time) >= timeout:
                     # 输出最后一组统计
                     if self._sample_count % SAMPLES_PER_GROUP != 0:
-                        self._log_group_stats(last_score)
+                        self._log_group_stats()
                     logger.note("检测超时")
                     break
+
+                # 组开始时重置组内最高分数
+                if self._is_first_in_group():
+                    self._group_max_score = 0.0
+                    self._group_max_score_index = -1
 
                 # 重置当前 tick 的检测状态
                 self._current_tick_detected = False
@@ -701,33 +743,48 @@ class AudioDetector:
                     current_time - self._last_detect_time
                 ) * 1000 >= self.detect_interval_ms:
                     self._last_detect_time = current_time
-                    score, result = self.detect()
-                    last_score = score
 
-                    # 检查是否匹配
-                    if score >= self.gate:
-                        self._current_tick_detected = True
-                        # 先输出当前高亮的音量字符
-                        volume_percent = self.recorder.get_volume_percent()
-                        self._group_volumes.append(volume_percent)
-                        volume_char = self.recorder.get_volume_char(volume_percent)
-                        self._log_volume_char(volume_char, highlight=True)
-                        # 输出当前组统计
-                        if self._sample_count % SAMPLES_PER_GROUP != 0:
-                            self._log_group_stats(score)
-                        elapsed = current_time - start_time
-                        logger.okay(
-                            f"[{elapsed:.1f}s] 匹配成功! 分数={logstr.okay(f'{score:.4f}')}"
-                        )
-                        matched = True
-                        final_score = score
-                        final_result = result
+                    # 计算最近采样的平均音量
+                    recent_avg_volume = (
+                        sum(self._group_volumes) / len(self._group_volumes)
+                        if self._group_volumes
+                        else 0
+                    )
 
-                        # 调用回调
-                        if on_match and result:
-                            on_match(score, result)
+                    # 只有音量足够时才进行检测
+                    if recent_avg_volume >= VOLUME_THRESHOLD_PERCENT:
+                        score, result = self.detect()
 
-                        break
+                        # 更新组内最高分数
+                        tick_in_group = self._sample_count % SAMPLES_PER_GROUP
+                        if score > self._group_max_score:
+                            self._group_max_score = score
+                            self._group_max_score_index = tick_in_group
+
+                        # 检查是否匹配
+                        if score >= self.gate:
+                            self._current_tick_detected = True
+                            # 先输出当前高亮的音量字符
+                            volume_percent = self.recorder.get_volume_percent()
+                            self._group_volumes.append(volume_percent)
+                            volume_char = self.recorder.get_volume_char(volume_percent)
+                            self._log_volume_char(volume_char, highlight=True)
+                            # 输出当前组统计
+                            if self._sample_count % SAMPLES_PER_GROUP != 0:
+                                self._log_group_stats()
+                            elapsed = current_time - start_time
+                            logger.okay(
+                                f"[{elapsed:.1f}s] 匹配成功! 分数={logstr.okay(f'{score:.4f}')}"
+                            )
+                            matched = True
+                            final_score = score
+                            final_result = result
+
+                            # 调用回调
+                            if on_match and result:
+                                on_match(score, result)
+
+                            break
 
                 # 获取当前音量并显示
                 volume_percent = self.recorder.get_volume_percent()
@@ -739,7 +796,7 @@ class AudioDetector:
 
                 # 组结束时输出统计和分数
                 if self._is_last_in_group():
-                    self._log_group_stats(last_score)
+                    self._log_group_stats()
                     self._group_volumes = []
 
                 self._sample_count += 1
@@ -748,7 +805,7 @@ class AudioDetector:
         except KeyboardInterrupt:
             # 输出最后一组统计
             if self._sample_count % SAMPLES_PER_GROUP != 0:
-                self._log_group_stats(last_score)
+                self._log_group_stats()
             logger.note("\n检测到 Ctrl+C，正在退出...")
 
         finally:
