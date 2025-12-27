@@ -40,6 +40,7 @@ def add_names(list_infos: list[dict], parent: tuple) -> list[dict]:
 
 NETMODE_INFOS = [
     {"name": "在线模式", "img": "title_GrandTheftAuto在线模式.jpg", "level": 0},
+    {"name": "在线模式", "img": "title_GrandTheftAuto在线模式_2.jpg", "level": 0},
     {"name": "故事模式", "img": "title_GrandTheftAutoV.jpg", "level": 0},
 ]
 
