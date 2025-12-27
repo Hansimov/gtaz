@@ -23,7 +23,7 @@ SECS_BEFORE_CONFIRM_BLOCK = 10
 # 检测到信号后的等待时间（秒）
 SECS_AT_ONLINE = 20
 # 等待音频信号稳定时间（秒）
-SECS_BEFORE_DETECT = 10
+SECS_BEFORE_DETECT = 15
 # 线上模式确认次数
 CONFIRM_COUNT_AT_HINT = 3
 # 相邻确认的间隔（秒）
@@ -150,6 +150,8 @@ class AutoPickuper:
             logger.note("=" * 50)
             logger.hint(f"[{logstr.file(i+1)}/{loop_count}] 循环开始")
             logger.note("=" * 50)
+            # 保证在故事模式
+            self.switch_to_story()
             # 切换到在线模式（邀请战局）
             self.switch_to_invite()
             # 等待货物全部到达

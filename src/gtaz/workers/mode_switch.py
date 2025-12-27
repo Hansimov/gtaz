@@ -4,6 +4,8 @@ import argparse
 import sys
 
 from tclogger import TCLogger, logstr
+from acto import SoftRetrier
+from typing import Union
 
 from ..menus.navigates import MenuNavigator
 from ..menus.locates import ExitLocatorRunner, is_score_too_low
@@ -26,7 +28,7 @@ class NetmodeSwitcher:
         self.locator = self.navigator.locator_runner.locator
         self.exit_runner = ExitLocatorRunner()
 
-    def get_netmode(self) -> str:
+    def get_netmode(self) -> Union[str, bool]:
         """获取当前模式
 
         :return: 当前模式名称，"在线模式" 或 "故事模式"，如果无法识别则返回 None
@@ -44,7 +46,12 @@ class NetmodeSwitcher:
             return mode_name
         else:
             logger.warn("无法识别当前模式")
-            return None
+            return False
+
+    def get_netmode_with_retry(self):
+        retrier = SoftRetrier(max_retries=10, retry_interval=5)
+        mode = retrier.run(self.get_netmode)
+        return mode
 
     def exit_and_confirm(self, max_retries: int = 10) -> bool:
         """定位退出提示并确认
@@ -136,7 +143,7 @@ class NetmodeSwitcher:
         :return: 是否成功切换模式
         """
         # 检查当前模式
-        mode = self.get_netmode()
+        mode = self.get_netmode_with_retry()
         if mode == "在线模式":
             self._log_okay_mode(mode)
             return True
@@ -151,7 +158,7 @@ class NetmodeSwitcher:
         :return: 是否成功切换模式
         """
         # 检查当前模式
-        mode = self.get_netmode()
+        mode = self.get_netmode_with_retry()
         if mode == "故事模式":
             self._log_okay_mode(mode)
             return True
@@ -170,10 +177,7 @@ class NetmodeSwitcher:
         :return: 是否成功切换到新的邀请战局
         """
         # 获取当前模式
-        mode = self.get_netmode()
-        if not mode:
-            logger.fail("无法识别当前模式，切换失败")
-            return False
+        mode = self.get_netmode_with_retry()
 
         # 根据模式设置目标路径和描述
         if mode == "故事模式":
