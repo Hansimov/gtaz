@@ -8,24 +8,26 @@ from tclogger import TCLogger, logstr
 
 from ..workers.mode_switch import NetmodeSwitcher
 from ..nets.blocks import GTAVFirewallBlocker
-from ..audios.detects import SignalDetector
+from ..audios.detects_v2 import AudioDetector
 
 
 logger = TCLogger(name="AutoPickuper", use_prefix=True, use_prefix_ms=True)
 
 
 # 默认循环次数
-LOOP_COUNT = 10
+LOOP_COUNT = 1
 # 切换到故事模式后的等待时间（秒）
-SECS_AT_STORY = 5
+SECS_AT_STORY = 10
 # 确认断网提示前的等待时间（秒）
-SECS_BEFORE_CONFIRM_BLOCK = 5
+SECS_BEFORE_CONFIRM_BLOCK = 10
 # 检测到信号后的等待时间（秒）
 SECS_AT_ONLINE = 20
 # 等待音频信号稳定时间（秒）
-SECS_BEFORE_DETECT = 2
+SECS_BEFORE_DETECT = 10
 # 线上模式确认次数
-CONFIRM_COUNT_AT_HINT = 2
+CONFIRM_COUNT_AT_HINT = 3
+# 相邻确认的间隔（秒）
+CONFIRM_INTERVAL_AT_HINT = 1
 
 
 class AutoPickuper:
@@ -56,14 +58,18 @@ class AutoPickuper:
         # 初始化各个组件
         self.switcher = NetmodeSwitcher()
         self.blocker = GTAVFirewallBlocker()
-        self.detector = SignalDetector()
+        self.detector = AudioDetector()
+        # 初始化检测器（加载模板特征）
+        self.detector.initialize()
 
     def _confirm_at_online(self):
-        """在线模式确认操作"""
+        """确认断网提示"""
         # TODO: 后续优化为检测到加载图像
+        logger.note(f"等待 {SECS_BEFORE_CONFIRM_BLOCK} 秒，以确认断网提示...")
         time.sleep(SECS_BEFORE_CONFIRM_BLOCK)
         for i in range(self.confirm_count_at_hint):
             self.switcher.interactor.confirm()
+            time.sleep(CONFIRM_INTERVAL_AT_HINT)
 
     def _sleep_at_online(self):
         """在线模式等待操作"""
@@ -76,6 +82,7 @@ class AutoPickuper:
 
     def _sleep_before_detect(self):
         """等待音频信号稳定"""
+        logger.note(f"等待 {self.secs_before_detect} 秒，直到音频信号稳定...")
         time.sleep(self.secs_before_detect)
 
     def switch_to_invite(self) -> bool:
@@ -99,14 +106,14 @@ class AutoPickuper:
         self.switcher.switch_to_new_invite_lobby()
         # 等待音频信号稳定再开启检测
         self._sleep_before_detect()
-        # 启动音量信号检测，并退出
-        self.detector.stop_after_detect(count=1, interval=3)
+        # 启动音频检测，检测到匹配信号后立即退出
+        matched, score, result = self.detector.detect_then_stop()
+        if matched:
+            logger.okay(f"检测到匹配信号，分数: {score:.4f}")
         # 启用防火墙规则
-        # self.blocker.enable_rule()
+        self.blocker.enable_rule()
         # 确认断网提示
         self._confirm_at_online()
-        # 等待货物全部到达
-        self._sleep_at_online()
         return True
 
     def _sleep_at_story(self):
@@ -124,15 +131,13 @@ class AutoPickuper:
         """
         # 切换到故事模式
         self.switcher.switch_online_to_story()
-        # 等待指定秒数
-        self._sleep_at_story()
-
+        # TODO: 后续优化：检测是否已经切到故事模式
         return True
 
     def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
         """循环切换模式
 
-        流程：循环调用 switch_to_story + switch_to_online 指定次数
+        流程：循环调用 switch_to_invite 和 switch_to_story，直到指定次数
 
         :param loop_count: 循环次数
         :return: 是否成功完成所有循环
@@ -147,8 +152,12 @@ class AutoPickuper:
             logger.note("=" * 50)
             # 切换到在线模式（邀请战局）
             self.switch_to_invite()
+            # 等待货物全部到达
+            self._sleep_at_online()
             # 切换到故事模式
             self.switch_to_story()
+            # 等待指定秒数
+            self._sleep_at_story()
         logger.okay("所有循环完成")
         return True
 
@@ -237,7 +246,7 @@ if __name__ == "__main__":
     # 切换到在线模式（邀请战局）
     # python -m gtaz.workers.auto_pickup -i
 
-    # 循环切换（默认10次）
+    # 循环切换（默认1次）
     # python -m gtaz.workers.auto_pickup -l
 
     # 循环切换5次

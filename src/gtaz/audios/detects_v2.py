@@ -64,7 +64,7 @@ DETECT_INTERVAL_MS = 200
 
 # 绝对音量阈值（音量百分比）- 平均音量低于此值时不进行匹配
 # 这是日志中显示的音量数字，基于最近采样的 RMS 值
-VOLUME_THRESHOLD_PERCENT = 30
+VOLUME_THRESHOLD_PERCENT = 25
 
 
 class TemplateFeatureManager:
