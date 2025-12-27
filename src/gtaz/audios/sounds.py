@@ -51,6 +51,16 @@ MAX_DURATION = 600
 START_RECORD_KEY = "1"
 STOP_RECORD_KEY = "2"
 
+# 音量字符（用于实时显示）
+VOLUME_CHARS = "▁▂▃▅▆▇"
+VOLUME_BITS = len(VOLUME_CHARS)
+# 音量增益系数（幂函数的指数，<1 增强低音量区分度）
+VOLUME_GAIN = 1.0
+# 每组输出的样本数
+SAMPLES_PER_GROUP = 20
+# 音量采样间隔（毫秒）
+VOLUME_SAMPLE_INTERVAL_MS = 100
+
 # 进度日志样式映射
 PROGRESS_LOGSTR = {
     0: logstr.file,
@@ -186,6 +196,8 @@ class AudioBuffer:
         self._total_samples: int = 0
         # 线程锁
         self._lock = threading.Lock()
+        # 最近一次添加的数据块的 RMS 音量
+        self._latest_rms: float = 0.0
 
     def add_chunk(self, data: np.ndarray, timestamp: float = None):
         """
@@ -207,6 +219,12 @@ class AudioBuffer:
         with self._lock:
             self._chunks.append(chunk)
             self._total_samples += chunk.samples
+            # 计算这个数据块的 RMS 音量（转单声道后）
+            if len(data.shape) > 1:
+                mono_data = np.mean(data, axis=1)
+            else:
+                mono_data = data
+            self._latest_rms = float(np.sqrt(np.mean(mono_data**2)))
             # 清理超出窗口的旧数据
             self._cleanup()
 
@@ -246,6 +264,15 @@ class AudioBuffer:
         """
         with self._lock:
             return self._total_samples
+
+    def get_latest_rms(self) -> float:
+        """
+        获取最近一次添加的数据块的 RMS 音量。
+
+        :return: RMS 音量值（0.0-1.0 范围）
+        """
+        with self._lock:
+            return self._latest_rms
 
     def clear(self):
         """清空缓冲区。"""
@@ -569,6 +596,47 @@ class SoundRecorder:
         """析构函数，确保停止音频流。"""
         self.stop_stream()
 
+    def get_current_volume(self) -> float:
+        """
+        获取最近一次采样的音量（RMS值）。
+
+        :return: 音量值（0.0-1.0）
+        """
+        # 使用最近数据块的 RMS 音量，而不是整个窗口
+        # 这样响应更快，且能反映实时音量变化
+        return self.buffer.get_latest_rms()
+
+    def get_volume_percent(self, apply_gain: bool = True) -> int:
+        """
+        获取当前音量百分比（0-100）。
+
+        :param apply_gain: 是否应用音量增益
+        :return: 音量百分比
+        """
+        volume = self.get_current_volume()
+        # 实时采集的 RMS 音量通常很小（约 0.01-0.1）
+        # 放大 10 倍使其更容易观察（0.01 -> 0.1 -> 10%）
+        volume = volume * 10
+        if apply_gain:
+            # 应用幂函数增益，增强低音量区分度
+            volume = volume**VOLUME_GAIN
+        return int(min(100, volume * 100))
+
+    @staticmethod
+    def get_volume_char(volume_percent: int, highlight: bool = False) -> str:
+        """
+        将音量百分比映射到音量字符。
+
+        :param volume_percent: 音量百分比（0-100）
+        :param highlight: 是否高亮显示（检测到信号时）
+        :return: 对应的音量字符
+        """
+        index = min(VOLUME_BITS - 1, int(volume_percent / 100 * VOLUME_BITS))
+        char = VOLUME_CHARS[index]
+        if highlight:
+            return logstr.okay(char)
+        return char
+
     def __repr__(self) -> str:
         return (
             f"SoundRecorder("
@@ -615,6 +683,11 @@ class RecordRunner:
         self.stop_detector = None
         if hotkey_toggle:
             self._create_detectors()
+
+        # 音量显示相关
+        self._sample_count = 0
+        self._group_volumes: list[int] = []
+        self._line_buffer: list[str] = []
 
     def _create_detectors(self):
         """创建热键检测器。"""
@@ -685,6 +758,42 @@ class RecordRunner:
         else:
             logger.note(f"定时模式：{self.duration} 秒...")
 
+    def _is_first_in_group(self) -> bool:
+        """判断是否是组内第一个。"""
+        return self._sample_count % SAMPLES_PER_GROUP == 0
+
+    def _is_last_in_group(self) -> bool:
+        """判断是否是组内最后一个。"""
+        return (self._sample_count + 1) % SAMPLES_PER_GROUP == 0
+
+    def _log_volume_char(self, volume_char: str):
+        """输出音量字符。"""
+        if self._is_first_in_group():
+            self._line_buffer = []
+            logger.mesg(volume_char, end="")
+        else:
+            logger.mesg(volume_char, use_prefix=False, end="")
+        self._line_buffer.append(volume_char)
+
+    @staticmethod
+    def _calculate_stats(volumes: list[int]) -> tuple[int, float, int]:
+        """计算音量统计信息。"""
+        if not volumes:
+            return 0, 0.0, 0
+        return min(volumes), sum(volumes) / len(volumes), max(volumes)
+
+    def _log_group_stats(self):
+        """输出一组音量的统计信息。"""
+        if self._group_volumes:
+            min_vol, avg_vol, max_vol = self._calculate_stats(self._group_volumes)
+            vol_strs = [
+                logstr.mesg(f"{round(v):2d}") for v in [min_vol, avg_vol, max_vol]
+            ]
+            vol_line = "/".join(vol_strs)
+            logger.note(f" [{vol_line}]", use_prefix=False)
+        else:
+            logger.note("", use_prefix=False)
+
     def _save_recording(self):
         """保存录制数据。"""
         duration = self.recorder.get_recorded_duration()
@@ -706,6 +815,8 @@ class RecordRunner:
         # 开始录制
         self.recorder.start_recording()
         start_time = time.time()
+        self._sample_count = 0
+        self._group_volumes = []
 
         # 主循环
         interrupted = False
@@ -722,18 +833,29 @@ class RecordRunner:
                     action_info = self.stop_detector.detect()
                     if action_info.has_action:
                         logger.note(
-                            f"检测到 {key_hint(STOP_RECORD_KEY)} 键，停止录制..."
+                            f"\n检测到 {key_hint(STOP_RECORD_KEY)} 键，停止录制..."
                         )
                         break
 
-                # 输出进度
-                if int(elapsed) % 1 == 0:  # 每秒输出一次
-                    self._log_loop_progress(elapsed)
+                # 获取当前音量并显示
+                volume_percent = self.recorder.get_volume_percent()
+                self._group_volumes.append(volume_percent)
+                volume_char = self.recorder.get_volume_char(volume_percent)
+                self._log_volume_char(volume_char)
 
-                time.sleep(0.1)
+                # 组结束时输出统计
+                if self._is_last_in_group():
+                    self._log_group_stats()
+                    self._group_volumes = []
+
+                self._sample_count += 1
+                time.sleep(VOLUME_SAMPLE_INTERVAL_MS / 1000)
 
         except KeyboardInterrupt:
             interrupted = True
+            # 如果当前组未完成，输出统计
+            if self._sample_count % SAMPLES_PER_GROUP != 0:
+                self._log_group_stats()
             self._log_keyboard_interrupt()
 
         # 停止录制
