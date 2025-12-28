@@ -47,8 +47,8 @@ class AutoPickuper:
         self.detector.initialize()
 
     # =============== 故事模式相关 =============== #
-    def _sleep_at_story(self):
-        """故事模式等待操作"""
+    def _do_at_story(self):
+        """故事模式操作"""
         time.sleep(WAIT_AT_STORY)
 
     def switch_to_story(self) -> bool:
@@ -89,7 +89,7 @@ class AutoPickuper:
         time.sleep(WAIT_FOR_GOODS)
 
     def _do_at_online(self):
-        """在线模式等待操作"""
+        """在线模式操作"""
         # 等待断网提示
         self._wait_for_disconnect_warn()
         # 确认断网警报
@@ -131,6 +131,15 @@ class AutoPickuper:
         return True
 
     # =============== 循环 =============== #
+    def _do_at_last(self):
+        """收尾操作"""
+        # TODO: 后续优化：自动执行收尾操作
+        logger.hint("已完成最后一次循环，还需执行如下操作：")
+        logger.hint("- 禁用防火墙规则，恢复网络连接：")
+        logger.mesg("  python -m gtaz.nets.blocks -s")
+        logger.hint("- 保存进度到服务器：")
+        logger.mesg("  Alt+F4，再取消")
+
     def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
         """循环切换模式
 
@@ -153,10 +162,16 @@ class AutoPickuper:
             self.switch_to_invite()
             # 执行在线模式操作
             self._do_at_online()
+            # 最后一轮
+            if i >= loop_count - 1:
+                # 执行收尾操作
+                self._do_at_last()
+                # 最后一轮不再切回故事模式
+                break
             # 切换到故事模式
             self.switch_to_story()
-            # 等待指定秒数
-            self._sleep_at_story()
+            # 执行故事模式操作
+            self._do_at_story()
         logger.okay("所有循环完成")
         return True
 

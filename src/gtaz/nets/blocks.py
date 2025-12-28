@@ -16,7 +16,8 @@ GTAV_PROCESS_NAME = "GTA5_Enhanced.exe"
 # 防火墙规则名称
 GTAV_FIREWALL_RULE_NAME = "GTAV_Blocker"
 # 阻断 IP 列表
-GTAV_BLOCK_IPS = ["192.81.241.171", "192.81.245.200", "192.81.245.201"]
+# GTAV_BLOCK_IPS = ["192.81.241.171", "192.81.245.200", "192.81.245.201"]  # 存档+交易
+GTAV_BLOCK_IPS = ["192.81.241.171"]  # 仅存档
 
 
 def run_command(
