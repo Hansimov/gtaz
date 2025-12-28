@@ -12,6 +12,7 @@ from tclogger import PathType, TCLogger, dict_to_str, logstr, strf_path
 from typing import Literal, Union
 
 from .commons import MENU_IMGS_DIR, NETMODE_INFOS
+from .commons import HOME_HEADER_INFOS, HOME_FOCUS_INFOS, HOME_EDGE_INFOS
 from .commons import MENU_HEADER_INFOS, MENU_FOCUS_INFOS
 from .commons import MENU_LIST_INFOS, MENU_ITEM_INFOS
 from .commons import STORY_MENU_HEADER_INFOS, STORY_MENU_FOCUS_INFOS
@@ -26,6 +27,8 @@ logger = TCLogger(name="MenuLocator", use_prefix=True, use_prefix_ms=True)
 
 MATCH_THRESHOLD = 0.5
 HIGH_THRESHOLD = 0.8
+
+NetmodeType = Literal["界面模式", "在线模式", "故事模式"]
 
 
 def cv2_read(img_path: PathType) -> np.ndarray:
@@ -63,7 +66,9 @@ def crop_img(img_np: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
     return img_np[y1:y2, x1:x2]
 
 
-FeatureType = Literal["raw", "netmode", "header", "focus", "list", "item", "exit"]
+FeatureType = Literal[
+    "raw", "netmode", "header", "focus", "list", "item", "edge", "exit"
+]
 
 
 @dataclass
@@ -123,6 +128,7 @@ class MergedMatchResult:
     focus: MatchResult = None
     list: MatchResult = None
     item: MatchResult = None
+    edge: MatchResult = None
 
     def __post_init__(self):
         """初始化默认值"""
@@ -136,11 +142,13 @@ class MergedMatchResult:
             self.list = FailedMatchResult("默认列表")
         if self.item is None:
             self.item = FailedMatchResult("默认条目")
+        if self.edge is None:
+            self.edge = FailedMatchResult("默认提示")
 
     def to_dict(self) -> dict:
         """转换为字典"""
         res_dict = {}
-        for key in ["netmode", "header", "focus", "list", "item"]:
+        for key in ["netmode", "header", "focus", "list", "item", "edge"]:
             result = getattr(self, key)
             if result is None:
                 res_dict[key] = None
@@ -174,6 +182,7 @@ class ImageFeatureExtractor:
             "focus": self.extract_raw,
             "list": self.extract_text_map,
             "item": self.extract_raw,
+            "edge": self.extract_raw,
             "exit": self.extract_raw,
         }
 
@@ -533,20 +542,36 @@ class MenuLocator:
     def __init__(self):
         """初始化菜单定位器。"""
         self.matcher = MenuMatcher()
-        # 当前模式："在线模式" 或 "故事模式"，默认为 None 表示未确定
-        self.current_mode: str = None
-        # 加载网络模式模板（在线/故事）
+        # 当前网络模式："界面模式"/"在线模式"/"故事模式"，默认为 None 表示未确定
+        self.netmode: NetmodeType = None
+        # 加载网络模式模板（界面/在线/故事）
         self._load_netmode_templates()
         # 暂不加载具体菜单模板，等待 match_mode 确定模式后再加载
         self.header_templates: list[TemplateInfo] = []
         self.focus_templates: list[TemplateInfo] = []
         self.list_templates: list[TemplateInfo] = []
         self.item_templates: list[TemplateInfo] = []
+        self.edge_templates: list[TemplateInfo] = []  # 界面模式：底部提示模板
 
     def _load_netmode_templates(self) -> None:
-        """加载在线模式和故事模式的模板"""
+        """加载在线模式/故事模式/界面模式的模板"""
         self.netmode_templates: list[TemplateInfo] = [
             build_template_info(info) for info in NETMODE_INFOS
+        ]
+
+    def _load_home_templates(self) -> None:
+        """界面模式：加载选项模板"""
+        # 加载标题模板
+        self.header_templates: list[TemplateInfo] = [
+            build_template_info(info) for info in HOME_HEADER_INFOS
+        ]
+        # 加载焦点模板
+        self.focus_templates: list[TemplateInfo] = [
+            build_template_info(info) for info in HOME_FOCUS_INFOS
+        ]
+        # 加载底部提示模板
+        self.edge_templates: list[TemplateInfo] = [
+            build_template_info(info) for info in HOME_EDGE_INFOS
         ]
 
     def _load_story_templates(self) -> None:
@@ -594,7 +619,7 @@ class MenuLocator:
         ]
 
     def match_mode(self, img_np: np.ndarray) -> MatchResult:
-        """匹配在线/故事模式菜单。
+        """匹配 界面/在线/故事 模式菜单。
 
         :param img_np: 输入图像数组
 
@@ -612,9 +637,11 @@ class MenuLocator:
         if best_match and not is_bad_match_result(best_match):
             mode_name = best_match.name
             # 只有当模式发生变化或首次匹配时才重新加载模板
-            if self.current_mode != mode_name:
-                self.current_mode = mode_name
-                if mode_name == "故事模式":
+            if self.netmode != mode_name:
+                self.netmode = mode_name
+                if mode_name == "界面模式":
+                    self._load_home_templates()
+                elif mode_name == "故事模式":
                     self._load_story_templates()
                 elif mode_name == "在线模式":
                     self._load_online_templates()
@@ -825,6 +852,12 @@ class MenuLocator:
         final_match = self._align_result(best_match, list_x1, list_y1)
         return final_match
 
+    def match_edge(
+        self, img_np: np.ndarray, header_result: MatchResult, focus_result: MatchResult
+    ) -> MatchResult:
+        """匹配底部提示区域。"""
+        pass
+
 
 def is_score_too_low(result: MatchResult, threshold: float = None) -> bool:
     """判断匹配结果的分数是否低于阈值"""
@@ -984,7 +1017,7 @@ class MenuLocatorRunner:
 
     def locate(self, img_np: np.ndarray, verbose: bool = True) -> MergedMatchResult:
         """匹配所有菜单元素，返回合并的匹配结果。"""
-        # 匹配网络模式（在线/故事）
+        # 匹配网络模式（界面/在线/故事）
         mode_result = self.locator.match_mode(img_np)
         if verbose:
             self._log_result_line(mode_result, name_type="模式")
@@ -1007,6 +1040,12 @@ class MenuLocatorRunner:
             return MergedMatchResult(
                 netmode=mode_result, header=header_result, focus=focus_result
             )
+        # 界面模式只需要匹配到焦点即可
+        if mode_result.name == "界面模式":
+            return MergedMatchResult(
+                netmode=mode_result, header=header_result, focus=focus_result
+            )
+        # 故事模式 / 在线模式
         # 匹配列表
         list_result = self.locator.match_list(
             img_np, header_result=header_result, focus_result=focus_result

@@ -16,7 +16,7 @@ logger = TCLogger(name="NetmodeSwitcher", use_prefix=True, use_prefix_ms=True)
 
 
 class NetmodeSwitcher:
-    """GTA 在线/故事模式切换器"""
+    """GTA 界面/在线/故事模式切换器"""
 
     def __init__(self):
         """初始化模式切换器"""
@@ -31,7 +31,7 @@ class NetmodeSwitcher:
     def get_netmode(self) -> Union[str, bool]:
         """获取当前模式
 
-        :return: 当前模式名称，"在线模式" 或 "故事模式"，如果无法识别则返回 None
+        :return: 当前模式名称，"界面模式"/"在线模式"/"故事模式"，如果无法识别则返回 None
         """
         # 确保菜单打开
         self.navigator.ensure_menu_opened()
@@ -202,12 +202,19 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
+  python -m gtaz.workers.mode_switch -g    # 获取当前模式
   python -m gtaz.workers.mode_switch -o    # 故事模式 -> 在线模式
   python -m gtaz.workers.mode_switch -s    # 在线模式 -> 故事模式
   python -m gtaz.workers.mode_switch -i    # 新的邀请战局
         """,
     )
 
+    parser.add_argument(
+        "-g",
+        "--get",
+        action="store_true",
+        help="获取当前模式",
+    )
     parser.add_argument(
         "-o",
         "--online",
@@ -238,6 +245,9 @@ def main():
 
     switcher = NetmodeSwitcher()
 
+    if args.get:
+        switcher.get_netmode_with_retry()
+
     if args.online:
         switcher.switch_story_to_online()
 
@@ -253,6 +263,9 @@ if __name__ == "__main__":
 
     # 显示帮助信息
     # python -m gtaz.workers.mode_switch
+
+    # 获取当前模式
+    # python -m gtaz.workers.mode_switch -g
 
     # 故事模式 -> 在线模式
     # python -m gtaz.workers.mode_switch -o
