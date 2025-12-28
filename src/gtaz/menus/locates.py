@@ -387,6 +387,7 @@ class MenuMatcher:
         )
         self.list_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="list"))
         self.item_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="item"))
+        self.edge_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="edge"))
         self.exit_extractor = ImageFeatureExtractor(FeatureExtractorConfig(mode="exit"))
         # 缓存模板的特征图
         self._feature_cache: dict[tuple, np.ndarray] = {}
@@ -627,6 +628,7 @@ class MenuLocator:
         """
         self.matcher.set_img_size(img_np)
         best_match = None
+        # 匹配当前网络模式
         for template_info in self.netmode_templates:
             match_result = self.matcher.match_template(
                 img_np, template_info, self.matcher.netmode_extractor
@@ -855,8 +857,23 @@ class MenuLocator:
     def match_edge(
         self, img_np: np.ndarray, header_result: MatchResult, focus_result: MatchResult
     ) -> MatchResult:
-        """匹配底部提示区域。"""
-        pass
+        """匹配底部提示区域（仅用于界面模式）。
+
+        :param img_np: 完整的输入图像数组
+        :param header_result: 标题匹配结果
+        :param focus_result: 焦点匹配结果
+
+        :return: 底部提示匹配结果，坐标为全局坐标
+        """
+        # 匹配模板
+        best_match = None
+        for template_info in self.edge_templates:
+            match_result = self.matcher.match_template(
+                img_np, template_info, self.matcher.edge_extractor
+            )
+            if should_update_best_match(match_result, best_match):
+                best_match = match_result
+        return best_match
 
 
 def is_score_too_low(result: MatchResult, threshold: float = None) -> bool:
@@ -1040,36 +1057,46 @@ class MenuLocatorRunner:
             return MergedMatchResult(
                 netmode=mode_result, header=header_result, focus=focus_result
             )
-        # 界面模式只需要匹配到焦点即可
+        # 界面模式
         if mode_result.name == "界面模式":
-            return MergedMatchResult(
-                netmode=mode_result, header=header_result, focus=focus_result
+            edge_result = self.locator.match_edge(
+                img_np, header_result=header_result, focus_result=focus_result
             )
+            if verbose:
+                self._log_result_line(edge_result, name_type="提示")
+            merged_result = MergedMatchResult(
+                netmode=mode_result,
+                header=header_result,
+                focus=focus_result,
+                edge=edge_result,
+            )
+            return merged_result
         # 故事模式 / 在线模式
-        # 匹配列表
-        list_result = self.locator.match_list(
-            img_np, header_result=header_result, focus_result=focus_result
-        )
-        if verbose:
-            self._log_result_line(list_result, name_type="列表")
-        # 匹配条目
-        item_result = self.locator.match_item(
-            img_np,
-            header_result=header_result,
-            focus_result=focus_result,
-            list_result=list_result,
-        )
-        if verbose:
-            self._log_result_line(item_result, name_type="条目")
-        # 合并结果
-        merged_result = MergedMatchResult(
-            netmode=mode_result,
-            header=header_result,
-            focus=focus_result,
-            list=list_result,
-            item=item_result,
-        )
-        return merged_result
+        else:
+            # 匹配列表
+            list_result = self.locator.match_list(
+                img_np, header_result=header_result, focus_result=focus_result
+            )
+            if verbose:
+                self._log_result_line(list_result, name_type="列表")
+            # 匹配条目
+            item_result = self.locator.match_item(
+                img_np,
+                header_result=header_result,
+                focus_result=focus_result,
+                list_result=list_result,
+            )
+            if verbose:
+                self._log_result_line(item_result, name_type="条目")
+            # 合并结果
+            merged_result = MergedMatchResult(
+                netmode=mode_result,
+                header=header_result,
+                focus=focus_result,
+                list=list_result,
+                item=item_result,
+            )
+            return merged_result
 
     def locate_and_visualize(self, img_path: PathType) -> np.ndarray:
         """可视化匹配结果。
@@ -1086,12 +1113,14 @@ class MenuLocatorRunner:
         focus_result = merged_result.focus
         list_result = merged_result.list
         item_result = merged_result.item
+        edge_result = merged_result.edge
         # 可视化
         img_np = self._plot_result_on_image(img_np, mode_result, color=(255, 255, 0))
         img_np = self._plot_result_on_image(img_np, header_result, color=(0, 255, 0))
         img_np = self._plot_result_on_image(img_np, focus_result, color=(255, 0, 0))
         img_np = self._plot_result_on_image(img_np, list_result, color=(0, 128, 128))
         img_np = self._plot_result_on_image(img_np, item_result, color=(128, 128, 0))
+        img_np = self._plot_result_on_image(img_np, edge_result, color=(128, 0, 128))
         # 保存可视化结果和匹配信息
         save_path = self._get_result_path(img_path)
         self._save_result_image(img_np, save_path)

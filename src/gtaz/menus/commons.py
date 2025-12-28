@@ -36,13 +36,17 @@ def add_names(list_infos: list[dict], parent: tuple) -> list[dict]:
     return list_infos
 
 
-# ======================= 在线和故事模式 ======================= #
+# ======================= 模式：界面/在线/故事 ======================= #
 
 NETMODE_INFOS = [
     {"name": "在线模式", "img": "title_GrandTheftAuto在线模式.jpg", "level": 0},
     {"name": "在线模式", "img": "title_GrandTheftAuto在线模式_2.jpg", "level": 0},
     {"name": "故事模式", "img": "title_GrandTheftAutoV.jpg", "level": 0},
     {"name": "界面模式", "img": "home_手柄.jpg", "level": 0},
+    # 用于兼容 MenuLocatorRunner.locate 中的 match_mode，因为要在菜单中识别模式
+    {"name": "界面模式", "img": "bar_在线.jpg", "level": 0},
+    {"name": "界面模式", "img": "bar_GTA加.jpg", "level": 0},
+    {"name": "界面模式", "img": "bar_故事.jpg", "level": 0},
 ]
 
 # ======================== 标题和焦点 ========================= #
