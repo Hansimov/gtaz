@@ -42,6 +42,7 @@ NETMODE_INFOS = [
     {"name": "在线模式", "img": "title_GrandTheftAuto在线模式.jpg", "level": 0},
     {"name": "在线模式", "img": "title_GrandTheftAuto在线模式_2.jpg", "level": 0},
     {"name": "故事模式", "img": "title_GrandTheftAutoV.jpg", "level": 0},
+    {"name": "界面模式", "img": "home_手柄.jpg", "level": 0},
 ]
 
 # ======================== 标题和焦点 ========================= #
@@ -588,6 +589,40 @@ STORY_EXIT_INFOS = [
     {"name": "退出游戏", "img": "故事_exit_退出游戏.jpg"},
     {"name": "退出GrandTheftAutoV", "img": "故事_exit_退出GrandTheftAutoV.jpg"},
     {"name": "返回主菜单", "img": "故事_exit_返回主菜单.jpg"},
+]
+
+# =================== 界面模式 =================== #
+
+# 界面模式 - 标题
+HOME_HEADER_INFOS = [
+    {"name": "在线", "img": "bar_在线.jpg", "level": 0, "index": 0},
+    {"name": "GTA加", "img": "bar_GTA加.jpg", "level": 0, "index": 1},
+    {"name": "故事", "img": "bar_故事.jpg", "level": 0, "index": 2},
+]
+
+# 界面模式 - 焦点
+HOME_FOCUS_INFOS = [
+    {"name": "在线", "img": "barfocus_在线.jpg", "level": 1, "index": 0},
+    {"name": "GTA加", "img": "barfocus_GTA加.jpg", "level": 1, "index": 1},
+    {"name": "故事", "img": "barfocus_故事.jpg", "level": 1, "index": 2},
+]
+HOME_FOCUS_INFOS = add_names(HOME_FOCUS_INFOS, ())
+
+# 界面模式 - 在线选项 - 底部提示
+HOME_EDGE_INFOS = [
+    {
+        "name": "进入GTA在线模式的自由模式",
+        "img": "baredge_在线_进入GTA在线模式的自由模式.jpg",
+    },
+    {"name": "选择以了解详情", "img": "baredge_在线_选择以了解详情.jpg"},
+    {
+        "name": "选择以决定进入自由模式的地点",
+        "img": "baredge_在线_选择以决定进入自由模式的地点.jpg",
+    },
+    {
+        "name": "选择以开始当当钟农场突袭",
+        "img": "baredge_在线_选择以开始当当钟农场突袭.jpg",
+    },
 ]
 
 # ========================= 工具函数 ========================= #
