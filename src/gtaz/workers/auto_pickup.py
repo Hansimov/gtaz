@@ -17,7 +17,7 @@ logger = TCLogger(name="AutoPickuper", use_prefix=True, use_prefix_ms=True)
 # 默认循环次数
 LOOP_COUNT = 1
 # 切换到故事模式后的等待时间（秒）
-SECS_AT_STORY = 10
+SECS_AT_STORY = 15
 # 确认断网提示前的等待时间（秒）
 SECS_BEFORE_CONFIRM_BLOCK = 10
 # 检测到信号后的等待时间（秒）
@@ -37,29 +37,11 @@ class AutoPickuper:
     实现自动切换模式、监控音频信号、控制防火墙的完整自动循环取货流程。
     """
 
-    def __init__(
-        self,
-        secs_at_story: float = SECS_AT_STORY,
-        secs_at_online: float = SECS_AT_ONLINE,
-        secs_before_detect: float = SECS_BEFORE_DETECT,
-        confirm_count_at_hint: int = CONFIRM_COUNT_AT_HINT,
-    ):
-        """初始化自动循环取货器
-
-        :param secs_at_story: 切换到故事模式后的等待时间（秒）
-        :param secs_at_online: 检测到信号后的等待时间（秒）
-        :param secs_before_detect: 等待音频信号稳定时间（秒）
-        :param confirm_count_at_hint: 确认次数
-        """
-        self.secs_at_story = secs_at_story
-        self.secs_at_online = secs_at_online
-        self.secs_before_detect = secs_before_detect
-        self.confirm_count_at_hint = confirm_count_at_hint
-        # 初始化各个组件
+    def __init__(self):
+        """初始化自动循环取货器"""
         self.switcher = NetmodeSwitcher()
         self.blocker = GTAVFirewallBlocker()
         self.detector = AudioDetector()
-        # 初始化检测器（加载模板特征）
         self.detector.initialize()
 
     def _confirm_at_online(self):
@@ -67,14 +49,14 @@ class AutoPickuper:
         # TODO: 后续优化为检测到加载图像
         logger.note(f"等待 {SECS_BEFORE_CONFIRM_BLOCK} 秒，以确认断网提示...")
         time.sleep(SECS_BEFORE_CONFIRM_BLOCK)
-        for i in range(self.confirm_count_at_hint):
+        for i in range(CONFIRM_COUNT_AT_HINT):
             self.switcher.interactor.confirm()
             time.sleep(CONFIRM_INTERVAL_AT_HINT)
 
     def _sleep_at_online(self):
         """在线模式等待操作"""
-        logger.note(f"等待 {self.secs_at_online} 秒，确保货物全部到达...")
-        time.sleep(self.secs_at_online)
+        logger.note(f"等待 {SECS_AT_ONLINE} 秒，确保货物全部到达...")
+        time.sleep(SECS_AT_ONLINE)
 
     def _sleep_after_disable_rule(self):
         """禁用防火墙规则后的等待操作"""
@@ -82,8 +64,8 @@ class AutoPickuper:
 
     def _sleep_before_detect(self):
         """等待音频信号稳定"""
-        logger.note(f"等待 {self.secs_before_detect} 秒，直到音频信号稳定...")
-        time.sleep(self.secs_before_detect)
+        logger.note(f"等待 {SECS_BEFORE_DETECT} 秒，直到音频信号稳定...")
+        time.sleep(SECS_BEFORE_DETECT)
 
     def switch_to_invite(self) -> bool:
         """切换到在线模式（邀请战局）
@@ -118,7 +100,7 @@ class AutoPickuper:
 
     def _sleep_at_story(self):
         """故事模式等待操作"""
-        time.sleep(self.secs_at_story)
+        time.sleep(SECS_AT_STORY)
 
     def switch_to_story(self) -> bool:
         """切换到故事模式
@@ -166,9 +148,9 @@ class AutoPickuper:
     def __repr__(self) -> str:
         return (
             f"AutoPickuper("
-            f"secs_at_story={self.secs_at_story}, "
-            f"secs_at_online={self.secs_at_online}, "
-            f"confirm_count_at_hint={self.confirm_count_at_hint}"
+            f"secs_at_story={SECS_AT_STORY}, "
+            f"secs_at_online={SECS_AT_ONLINE}, "
+            f"confirm_count_at_hint={CONFIRM_COUNT_AT_HINT}"
         )
 
 
