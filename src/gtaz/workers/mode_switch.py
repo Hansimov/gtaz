@@ -43,6 +43,10 @@ class NetmodeSwitcher:
         if not is_score_too_low(result):
             mode_name = result.name
             logger.mesg(f"当前模式: [{mode_name}]")
+            # 对于界面模式，关闭菜单，以进行后续切换
+            if mode_name == "界面模式":
+                self.navigator.ensure_menu_closed()
+                logger.mesg("已关闭设置菜单，回到开始页")
             return mode_name
         else:
             logger.warn("无法识别当前模式")

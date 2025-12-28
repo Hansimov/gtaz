@@ -23,7 +23,7 @@ class MenuInfoProvider:
     def __init__(self, netmode: str = None):
         """初始化菜单信息提供器
 
-        :param netmode: 模式名称，"在线模式" 或 "故事模式"
+        :param netmode: 模式名称，"界面模式"/"在线模式"/"故事模式"
         """
         self._netmode = netmode
         self._update_infos()
@@ -46,7 +46,7 @@ class MenuInfoProvider:
     def netmode(self, value: str):
         """设置模式并更新菜单信息
 
-        :param value: 模式名称，"在线模式" 或 "故事模式"
+        :param value: 模式名称，"界面模式"/"在线模式"/"故事模式"
         """
         if self._netmode != value:
             self._netmode = value
@@ -519,7 +519,10 @@ class MenuNavigator:
             result = self.locate()
             if not is_score_too_low(result.netmode):
                 # 菜单未关闭，执行关闭操作
-                self.interactor.cancel(4)
+                # 取消5次：
+                # - 在故事和在线模式中，可以退出绝大多数层级；
+                # - 在界面模式中，恰好可以关闭退出提示
+                self.interactor.cancel(5)
             else:
                 # 菜单已关闭
                 break
