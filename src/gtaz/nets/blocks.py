@@ -11,6 +11,13 @@ from typing import Optional
 
 logger = TCLogger(name="FirewallBlocker", use_prefix=True, use_prefix_ms=True)
 
+# GTAV 增强版进程名
+GTAV_PROCESS_NAME = "GTA5_Enhanced.exe"
+# 防火墙规则名称
+GTAV_FIREWALL_RULE_NAME = "GTAV_Blocker"
+# 阻断 IP 列表
+GTAV_BLOCK_IPS = ["192.81.241.171", "192.81.245.200", "192.81.245.201"]
+
 
 def run_command(
     cmd_str: str, show_cmd: bool = True, capture_output: bool = True
@@ -45,12 +52,6 @@ def run_command(
         return False, "", str(e)
 
 
-# GTAV 增强版进程名
-GTAV_PROCESS_NAME = "GTA5_Enhanced.exe"
-# 防火墙规则名称
-GTAV_FIREWALL_RULE_NAME = "GTAV_Blocker"
-
-
 class GTAVFirewallBlocker:
     """
     用于管理 GTAV 增强版游戏的防火墙阻断规则。
@@ -71,9 +72,9 @@ class GTAVFirewallBlocker:
         """
         self.process_name = process_name
         self.rule_name = rule_name
-        self._process_path: Optional[str] = None
+        self.get_process_path()
 
-    def find_process_path(self) -> Optional[str]:
+    def get_process_path(self) -> str:
         """
         查找 GTAV 进程的完整路径。
 
@@ -84,7 +85,7 @@ class GTAVFirewallBlocker:
                 if proc.info["name"] == self.process_name:
                     exe_path = proc.info["exe"]
                     if exe_path:
-                        self._process_path = exe_path
+                        self.process_path = exe_path
                         logger.okay(f"GTAV 完整路径:")
                         logger.file(exe_path)
                         return exe_path
@@ -93,13 +94,6 @@ class GTAVFirewallBlocker:
         except Exception as e:
             logger.err(f"查找进程路径时出错: {e}")
             return None
-
-    @property
-    def process_path(self) -> Optional[str]:
-        """获取缓存的进程路径，如果未缓存则重新查找。"""
-        if self._process_path:
-            return self._process_path
-        return self.find_process_path()
 
     def _run_netsh_command(self, cmd_args: str, desc: str) -> bool:
         """
@@ -185,7 +179,8 @@ class GTAVFirewallBlocker:
             logger.fail("无法获取 GTAV 进程路径，请确保游戏正在运行")
             return False
         # 添加阻断出站流量的规则
-        cmd_args = f'add rule name={self.rule_name} dir=out action=block program="{path}" enable=yes'
+        ips_str = ",".join(GTAV_BLOCK_IPS)
+        cmd_args = f'add rule name={self.rule_name} dir=out action=block program="{path}" remoteip={ips_str} enable=yes'
         return self._run_netsh_command(cmd_args, logstr.okay("已添加"))
 
     def delete_rule(self) -> bool:
@@ -271,7 +266,7 @@ class GTAVFirewallBlocker:
             f"GTAVFirewallBlocker("
             f"rule_name={self.rule_name}, "
             f"process_name={self.process_name}, "
-            f"process_path={self._process_path}, "
+            f"process_path={self.process_path}, "
             f"exists={exists}, "
             f"enabled={enabled})"
         )
@@ -359,7 +354,7 @@ def main():
     blocker = GTAVFirewallBlocker()
 
     if args.find:
-        process_path = blocker.find_process_path()
+        process_path = blocker.get_process_path()
 
     if args.exists:
         exists = blocker.rule_exists()
