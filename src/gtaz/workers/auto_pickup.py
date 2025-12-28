@@ -18,11 +18,11 @@ logger = TCLogger(name="AutoPickuper", use_prefix=True, use_prefix_ms=True)
 LOOP_COUNT = 1
 # 切换到故事模式后的等待时间（秒）
 WAIT_AT_STORY = 15
-# 切换到在线模式后的等待时间（秒）
-WAIT_AT_ONLINE = 15
+# 确保货物全部到达等待时间（秒）
+WAIT_FOR_GOODS = 15
 # 等待音频信号稳定时间（秒）
-WAIT_FOR_DETECT = 15
-# 检测音频信号后等待时间（秒）
+WAIT_FOR_QUIET = 15
+# 检测到音频信号后等待时间（秒）
 WAIT_AFTER_DETECT = 1
 # 等待断网提示出现（秒）
 WAIT_FOR_DISCONNECT_WARN = 12
@@ -46,6 +46,7 @@ class AutoPickuper:
         self.detector = AudioDetector()
         self.detector.initialize()
 
+    # =============== 故事模式相关 =============== #
     def _sleep_at_story(self):
         """故事模式等待操作"""
         time.sleep(WAIT_AT_STORY)
@@ -64,28 +65,39 @@ class AutoPickuper:
         # TODO: 后续优化：检测是否已经切到故事模式
         return True
 
-    def _sleep_before_detect(self):
+    # =============== 在线模式相关 =============== #
+    def _wait_for_quiet(self):
         """等待音频信号稳定"""
-        logger.note(f"等待 {WAIT_FOR_DETECT} 秒，直到音频信号稳定...")
-        time.sleep(WAIT_FOR_DETECT)
+        logger.note(f"等待 {WAIT_FOR_QUIET} 秒，直到音频信号稳定...")
+        time.sleep(WAIT_FOR_QUIET)
 
-    def _sleep_after_disable_rule(self):
-        """禁用防火墙规则后的等待操作"""
-        time.sleep(3)
-
-    def _confirm_at_online(self):
-        """确认断网提示"""
+    def _wait_for_disconnect_warn(self):
+        """等待断网警报"""
         # TODO: 后续优化为检测到加载图像
         logger.note(f"等待 {WAIT_FOR_DISCONNECT_WARN} 秒，以确认断网提示...")
         time.sleep(WAIT_FOR_DISCONNECT_WARN)
+
+    def _confirm_disconnect_warn(self):
+        """确认断网警报"""
         for i in range(WARN_CONFIRM_COUNT):
             self.switcher.interactor.confirm()
             time.sleep(WARN_CONFIRM_INTERVAL)
 
-    def _sleep_at_online(self):
+    def _wait_for_goods_arrival(self):
+        """等待确保货物全部到达"""
+        logger.note(f"等待 {WAIT_FOR_GOODS} 秒，确保货物全部到达...")
+        time.sleep(WAIT_FOR_GOODS)
+
+    def _do_at_online(self):
         """在线模式等待操作"""
-        logger.note(f"等待 {WAIT_AT_ONLINE} 秒，确保货物全部到达...")
-        time.sleep(WAIT_AT_ONLINE)
+        # 等待断网提示
+        self._wait_for_disconnect_warn()
+        # 确认断网警报
+        self._confirm_disconnect_warn()
+        # 等待确保货物全部到达
+        self._wait_for_goods_arrival()
+        # 再次确认断网警报以防万一
+        self._confirm_disconnect_warn()
 
     def switch_to_invite(self) -> bool:
         """切换到在线模式（邀请战局）
@@ -103,11 +115,11 @@ class AutoPickuper:
         """
         # 禁用防火墙规则
         self.blocker.disable_rule()
-        self._sleep_after_disable_rule()
+        time.sleep(3)
         # 切换到在线模式
         self.switcher.switch_to_new_invite_lobby()
         # 等待音频信号稳定再开启检测
-        self._sleep_before_detect()
+        self._wait_for_quiet()
         # 启动音频检测，检测到匹配信号后立即退出
         matched, score, result = self.detector.detect_then_stop()
         if matched:
@@ -116,10 +128,9 @@ class AutoPickuper:
         time.sleep(WAIT_AFTER_DETECT)
         # 启用防火墙规则
         self.blocker.enable_rule()
-        # 确认断网提示
-        self._confirm_at_online()
         return True
 
+    # =============== 循环 =============== #
     def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
         """循环切换模式
 
@@ -140,8 +151,8 @@ class AutoPickuper:
             self.switch_to_story()
             # 切换到在线模式（邀请战局）
             self.switch_to_invite()
-            # 等待货物全部到达
-            self._sleep_at_online()
+            # 执行在线模式操作
+            self._do_at_online()
             # 切换到故事模式
             self.switch_to_story()
             # 等待指定秒数
