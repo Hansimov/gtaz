@@ -29,6 +29,7 @@ SW_RESTORE = 9
 SW_SHOW = 5
 SW_MINIMIZE = 6
 SW_MAXIMIZE = 3
+WM_CLOSE = 0x0010
 
 
 class GTAVWindowLocator:
@@ -244,6 +245,23 @@ class GTAVWindowLocator:
         if not self.hwnd:
             return False
         return bool(self.user32.ShowWindow(self.hwnd, SW_RESTORE))
+
+    def close(self) -> bool:
+        """
+        关闭窗口。
+
+        :return: 是否成功发送关闭消息
+        """
+        if not self.hwnd:
+            logger.erro("无法关闭: 未找到 GTAV 窗口")
+            return False
+        result = self.user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+        if result:
+            logger.okay("发送关闭窗口消息成功")
+            return True
+        else:
+            logger.erro("发送关闭窗口消息失败")
+            return False
 
     def refresh(self) -> Optional[int]:
         """

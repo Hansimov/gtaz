@@ -5,6 +5,7 @@ from time import sleep
 from tclogger import TCLogger
 
 from ..devices.gamepads import GamepadSimulator, Button, sleep_ms
+from ..visions.windows import GTAVWindowLocator
 
 
 logger = TCLogger(name="MenuInteractor", use_prefix=True, use_prefix_ms=True)
@@ -108,6 +109,16 @@ class MenuInteractor:
         """关闭手机（B 键）"""
         self.click_button(Button.B)
 
+    # =============== 窗口操作 ================ #
+    def close_window(self) -> bool:
+        """关闭 GTAV 游戏窗口
+
+        :return: 是否成功发送关闭消息
+        """
+        window = GTAVWindowLocator()
+        window.close()
+        self.wait_until_ready(5000)
+
 
 class MenuInteractorTester:
     """菜单交互测试"""
@@ -154,10 +165,18 @@ class MenuInteractorTester:
         menu.close_phone()
         sleep(0.5)
 
+    def test_close_window(self):
+        menu = MenuInteractor()
+        logger.note("测试：关闭游戏窗口 ...")
+        menu.close_window()
+        sleep(2)
+        menu.cancel()
+
 
 def test_menu_interactor():
     tester = MenuInteractorTester()
-    tester.test()
+    # tester.test()
+    tester.test_close_window()
 
 
 if __name__ == "__main__":
