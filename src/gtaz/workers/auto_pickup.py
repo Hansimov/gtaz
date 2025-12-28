@@ -17,23 +17,25 @@ logger = TCLogger(name="AutoPickuper", use_prefix=True, use_prefix_ms=True)
 # 默认循环次数
 LOOP_COUNT = 1
 # 切换到故事模式后的等待时间（秒）
-SECS_AT_STORY = 15
-# 确认断网提示前的等待时间（秒）
-SECS_BEFORE_CONFIRM_BLOCK = 10
-# 检测到信号后的等待时间（秒）
-SECS_AT_ONLINE = 20
+WAIT_AT_STORY = 15
+# 切换到在线模式后的等待时间（秒）
+WAIT_AT_ONLINE = 15
 # 等待音频信号稳定时间（秒）
-SECS_BEFORE_DETECT = 15
+WAIT_FOR_DETECT = 15
+# 检测音频信号后等待时间（秒）
+WAIT_AFTER_DETECT = 1
+# 等待断网提示出现（秒）
+WAIT_FOR_DISCONNECT_WARN = 12
 # 线上模式确认次数
-CONFIRM_COUNT_AT_HINT = 3
+WARN_CONFIRM_COUNT = 3
 # 相邻确认的间隔（秒）
-CONFIRM_INTERVAL_AT_HINT = 1
+WARN_CONFIRM_INTERVAL = 1
 
 
 class AutoPickuper:
     """GTA 自动循环取货器
 
-    整合 NetmodeSwitcher、GTAVFirewallBlocker、SignalDetector，
+    整合 NetmodeSwitcher、GTAVFirewallBlocker、AudioDetector，
     实现自动切换模式、监控音频信号、控制防火墙的完整自动循环取货流程。
     """
 
@@ -44,28 +46,46 @@ class AutoPickuper:
         self.detector = AudioDetector()
         self.detector.initialize()
 
-    def _confirm_at_online(self):
-        """确认断网提示"""
-        # TODO: 后续优化为检测到加载图像
-        logger.note(f"等待 {SECS_BEFORE_CONFIRM_BLOCK} 秒，以确认断网提示...")
-        time.sleep(SECS_BEFORE_CONFIRM_BLOCK)
-        for i in range(CONFIRM_COUNT_AT_HINT):
-            self.switcher.interactor.confirm()
-            time.sleep(CONFIRM_INTERVAL_AT_HINT)
+    def _sleep_at_story(self):
+        """故事模式等待操作"""
+        time.sleep(WAIT_AT_STORY)
 
-    def _sleep_at_online(self):
-        """在线模式等待操作"""
-        logger.note(f"等待 {SECS_AT_ONLINE} 秒，确保货物全部到达...")
-        time.sleep(SECS_AT_ONLINE)
+    def switch_to_story(self) -> bool:
+        """切换到故事模式
+
+        流程：
+        - 切换到故事模式
+        - 等待指定秒数
+
+        :return: 是否成功完成流程
+        """
+        # 切换到故事模式
+        self.switcher.switch_online_to_story()
+        # TODO: 后续优化：检测是否已经切到故事模式
+        return True
+
+    def _sleep_before_detect(self):
+        """等待音频信号稳定"""
+        logger.note(f"等待 {WAIT_FOR_DETECT} 秒，直到音频信号稳定...")
+        time.sleep(WAIT_FOR_DETECT)
 
     def _sleep_after_disable_rule(self):
         """禁用防火墙规则后的等待操作"""
         time.sleep(3)
 
-    def _sleep_before_detect(self):
-        """等待音频信号稳定"""
-        logger.note(f"等待 {SECS_BEFORE_DETECT} 秒，直到音频信号稳定...")
-        time.sleep(SECS_BEFORE_DETECT)
+    def _confirm_at_online(self):
+        """确认断网提示"""
+        # TODO: 后续优化为检测到加载图像
+        logger.note(f"等待 {WAIT_FOR_DISCONNECT_WARN} 秒，以确认断网提示...")
+        time.sleep(WAIT_FOR_DISCONNECT_WARN)
+        for i in range(WARN_CONFIRM_COUNT):
+            self.switcher.interactor.confirm()
+            time.sleep(WARN_CONFIRM_INTERVAL)
+
+    def _sleep_at_online(self):
+        """在线模式等待操作"""
+        logger.note(f"等待 {WAIT_AT_ONLINE} 秒，确保货物全部到达...")
+        time.sleep(WAIT_AT_ONLINE)
 
     def switch_to_invite(self) -> bool:
         """切换到在线模式（邀请战局）
@@ -92,28 +112,12 @@ class AutoPickuper:
         matched, score, result = self.detector.detect_then_stop()
         if matched:
             logger.okay(f"检测到匹配信号，分数: {score:.4f}")
+        # 检测到信号后，等待一段时间
+        time.sleep(WAIT_AFTER_DETECT)
         # 启用防火墙规则
         self.blocker.enable_rule()
         # 确认断网提示
         self._confirm_at_online()
-        return True
-
-    def _sleep_at_story(self):
-        """故事模式等待操作"""
-        time.sleep(SECS_AT_STORY)
-
-    def switch_to_story(self) -> bool:
-        """切换到故事模式
-
-        流程：
-        - 切换到故事模式
-        - 等待指定秒数
-
-        :return: 是否成功完成流程
-        """
-        # 切换到故事模式
-        self.switcher.switch_online_to_story()
-        # TODO: 后续优化：检测是否已经切到故事模式
         return True
 
     def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
@@ -146,12 +150,7 @@ class AutoPickuper:
         return True
 
     def __repr__(self) -> str:
-        return (
-            f"AutoPickuper("
-            f"secs_at_story={SECS_AT_STORY}, "
-            f"secs_at_online={SECS_AT_ONLINE}, "
-            f"confirm_count_at_hint={CONFIRM_COUNT_AT_HINT}"
-        )
+        return f"AutoPickuper()"
 
 
 def parse_args() -> argparse.Namespace:
