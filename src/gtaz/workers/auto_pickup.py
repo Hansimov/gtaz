@@ -133,12 +133,13 @@ class AutoPickuper:
     # =============== 循环 =============== #
     def _do_at_last(self):
         """收尾操作"""
-        # TODO: 后续优化：自动执行收尾操作
-        logger.hint("已完成最后一次循环，还需执行如下操作：")
-        logger.hint("- 禁用防火墙规则，恢复网络连接：")
-        logger.mesg("  python -m gtaz.nets.blocks -s")
-        logger.hint("- 保存进度到服务器：")
-        logger.mesg("  Alt+F4，再取消")
+        logger.hint("已完成最后一次循环，将执行如下操作：")
+        logger.hint("[1] 禁用防火墙规则，恢复网络连接")
+        logger.hint("[2] 同步存档到服务器")
+        self.blocker.disable_rule()
+        logger.note("等待 10 秒，确保网络连接恢复...")
+        time.sleep(10)
+        self.switcher.sync_to_remote()
 
     def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
         """循环切换模式

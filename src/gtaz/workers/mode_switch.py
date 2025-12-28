@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import time
 
 from tclogger import TCLogger, logstr
 from acto import SoftRetrier
@@ -194,6 +195,14 @@ class NetmodeSwitcher:
         # 执行切换
         return self._switch_mode(dst_names, mode_desc, max_retries)
 
+    def sync_to_remote(self):
+        """同步存档到远程服务器"""
+        logger.note(f"同步存档到远程服务器...")
+        self.interactor.close_window()
+        time.sleep(5)
+        self.interactor.cancel(3)
+        logger.okay(f"已完成同步，请留意左下角提示: {logstr.mesg('[保存成功]')}")
+
 
 def parse_args() -> argparse.Namespace:
     """
@@ -210,6 +219,7 @@ def parse_args() -> argparse.Namespace:
   python -m gtaz.workers.mode_switch -o    # 故事模式 -> 在线模式
   python -m gtaz.workers.mode_switch -s    # 在线模式 -> 故事模式
   python -m gtaz.workers.mode_switch -i    # 新的邀请战局
+  python -m gtaz.workers.mode_switch -y    # 同步存档到远程服务器
         """,
     )
 
@@ -237,6 +247,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="新的邀请战局",
     )
+    parser.add_argument(
+        "-y",
+        "--sync",
+        action="store_true",
+        help="同步存档到远程服务器",
+    )
     return parser.parse_args()
 
 
@@ -261,6 +277,9 @@ def main():
     if args.invite:
         switcher.switch_to_new_invite_lobby()
 
+    if args.sync:
+        switcher.sync_to_remote()
+
 
 if __name__ == "__main__":
     main()
@@ -279,3 +298,6 @@ if __name__ == "__main__":
 
     # 新的邀请战局
     # python -m gtaz.workers.mode_switch -i
+
+    # 同步存档到远程服务器
+    # python -m gtaz.workers.mode_switch -y
