@@ -2,9 +2,9 @@
 
 import argparse
 import sys
-import time
 
-from tclogger import TCLogger, logstr
+from time import sleep
+from tclogger import TCLogger, logstr, Runtimer, dt_to_str
 
 from ..workers.mode_switch import NetmodeSwitcher
 from ..nets.blocks import GTAVFirewallBlocker
@@ -49,7 +49,7 @@ class AutoPickuper:
     # =============== 故事模式相关 =============== #
     def _do_at_story(self):
         """故事模式操作"""
-        time.sleep(WAIT_AT_STORY)
+        sleep(WAIT_AT_STORY)
 
     def switch_to_story(self) -> bool:
         """切换到故事模式
@@ -69,24 +69,24 @@ class AutoPickuper:
     def _wait_for_quiet(self):
         """等待音频信号稳定"""
         logger.note(f"等待 {WAIT_FOR_QUIET} 秒，直到音频信号稳定...")
-        time.sleep(WAIT_FOR_QUIET)
+        sleep(WAIT_FOR_QUIET)
 
     def _wait_for_disconnect_warn(self):
         """等待断网警报"""
         # TODO: 后续优化为检测到加载图像
         logger.note(f"等待 {WAIT_FOR_DISCONNECT_WARN} 秒，以确认断网提示...")
-        time.sleep(WAIT_FOR_DISCONNECT_WARN)
+        sleep(WAIT_FOR_DISCONNECT_WARN)
 
     def _confirm_disconnect_warn(self):
         """确认断网警报"""
         for i in range(WARN_CONFIRM_COUNT):
             self.switcher.interactor.confirm()
-            time.sleep(WARN_CONFIRM_INTERVAL)
+            sleep(WARN_CONFIRM_INTERVAL)
 
     def _wait_for_goods_arrival(self):
         """等待确保货物全部到达"""
         logger.note(f"等待 {WAIT_FOR_GOODS} 秒，以确保货物全部到达...")
-        time.sleep(WAIT_FOR_GOODS)
+        sleep(WAIT_FOR_GOODS)
 
     def _do_at_online(self):
         """在线模式操作"""
@@ -115,7 +115,7 @@ class AutoPickuper:
         """
         # 禁用防火墙规则
         self.blocker.disable_rule()
-        time.sleep(3)
+        sleep(3)
         # 切换到在线模式
         self.switcher.switch_to_new_invite_lobby()
         # 等待音频信号稳定再开启检测
@@ -123,21 +123,33 @@ class AutoPickuper:
         # 启动音频检测，检测到匹配信号后立即退出
         matched, score, result = self.detector.detect_then_stop()
         # 检测到信号后，等待一段时间
-        time.sleep(WAIT_AFTER_DETECT)
+        sleep(WAIT_AFTER_DETECT)
         # 启用防火墙规则
         self.blocker.enable_rule()
         return True
 
     # =============== 循环 =============== #
-    def _do_at_last(self):
+    def _do_at_last_round(self):
         """收尾操作"""
         logger.hint("已完成最后一次循环，将执行如下操作：")
         logger.hint("[1] 禁用防火墙规则，恢复网络连接")
         logger.hint("[2] 同步存档到服务器")
         self.blocker.disable_rule()
         logger.note("等待 10 秒，确保网络连接恢复...")
-        time.sleep(10)
+        sleep(10)
         self.switcher.sync_to_remote()
+
+    def _log_at_round_start(self, round: int):
+        logger.hint("=" * 50)
+        logger.hint(f"[{logstr.file(round+1)}/{self.loop_count}] 循环开始")
+        logger.hint("=" * 50)
+
+    def _log_at_round_end(self, round: int):
+        self.timer.elapsed_time()
+        round_str = logstr.file(round + 1)
+        elapsed_str = dt_to_str(self.timer.dt, str_format="unit")
+        elapsed_str = logstr.mesg(elapsed_str)
+        logger.okay(f"第 {round_str} 轮完成，用时: {elapsed_str}")
 
     def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
         """循环切换模式
@@ -147,15 +159,14 @@ class AutoPickuper:
         :param loop_count: 循环次数
         :return: 是否成功完成所有循环
         """
-        logger.note("=" * 50)
-        logger.note("开始循环切换模式")
-        logger.note("=" * 50)
-        logger.note(f"循环次数: {loop_count}")
+        logger.hint(f"开始循环切换，循环次数: {loop_count}")
+        self.loop_count = loop_count
+        self.timer = Runtimer(verbose=False)
         for i in range(loop_count):
-            logger.hint("=" * 50)
-            logger.hint(f"[{logstr.file(i+1)}/{loop_count}] 循环开始")
-            logger.hint("=" * 50)
-            # 保证在故事模式
+            # 打印本轮开始信息
+            self._log_at_round_start(i)
+            self.timer.start_time()
+            # 确保在故事模式
             self.switch_to_story()
             # 切换到在线模式（邀请战局）
             self.switch_to_invite()
@@ -163,14 +174,20 @@ class AutoPickuper:
             self._do_at_online()
             # 最后一轮
             if i >= loop_count - 1:
+                # 打印最后一轮结束信息
+                self.timer.end_time()
+                self._log_at_round_end(i)
                 # 执行收尾操作
-                self._do_at_last()
+                self._do_at_last_round()
                 # 最后一轮不再切回故事模式
                 break
             # 切换到故事模式
             self.switch_to_story()
             # 执行故事模式操作
             self._do_at_story()
+            # 打印本轮结束信息
+            self.timer.end_time()
+            self._log_at_round_end(i)
         logger.okay("所有循环完成")
         return True
 
