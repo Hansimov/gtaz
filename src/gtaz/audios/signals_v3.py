@@ -3,16 +3,15 @@
 import argparse
 import json
 import re
+import time
 import numpy as np
 import scipy.io.wavfile as wavfile
 import scipy.signal as signal
-import matplotlib.pyplot as plt
-import time
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict
-from tclogger import TCLogger, logstr, dict_to_lines
+from tclogger import TCLogger
 
 # 当前模块所在目录
 MODULE_DIR = Path(__file__).parent
@@ -1098,6 +1097,8 @@ class MatchResultsPlotter:
             title: 图表标题
             match_start_sample: 开始匹配的采样点位置，用于绘制分界线
         """
+        import matplotlib.pyplot as plt
+
         # 创建图形
         fig, ax = plt.subplots(figsize=(16, 6))
 

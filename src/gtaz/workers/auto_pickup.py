@@ -208,7 +208,7 @@ def parse_args() -> argparse.Namespace:
 示例:
   python -m gtaz.workers.auto_pickup -s          # 切换到故事模式
   python -m gtaz.workers.auto_pickup -i          # 切换到在线模式（邀请战局）
-  python -m gtaz.workers.auto_pickup -l          # 循环切换（默认10次）
+  python -m gtaz.workers.auto_pickup -l          # 循环切换（默认1次）
   python -m gtaz.workers.auto_pickup -l -c 5     # 循环切换5次
         """,
     )

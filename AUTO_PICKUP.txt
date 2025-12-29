@@ -1,0 +1,11 @@
+acto
+numpy
+opencv_contrib_python
+opencv_python
+Pillow
+psutil
+scipy
+sounddevice
+soundfile
+tclogger
+vgamepad
