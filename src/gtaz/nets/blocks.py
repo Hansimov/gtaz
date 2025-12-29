@@ -105,9 +105,9 @@ class GTAVFirewallBlocker:
         :return: 是否执行成功
         """
         cmd_str = f"netsh advfirewall firewall {cmd_args}"
-        success, stdout, stderr = run_command(cmd_str, show_cmd=True)
+        success, stdout, stderr = run_command(cmd_str, show_cmd=False)
         if success:
-            logger.note(f"更新防火墙规则成功")
+            # logger.note(f"更新防火墙规则成功")
             logger.mesg(f"最新状态: {desc}")
             return True
         else:
@@ -152,13 +152,18 @@ class GTAVFirewallBlocker:
             if "Enabled:" in line or "已启用:" in line:
                 enabled = "Yes" in line or "是" in line
                 if enabled:
-                    status_str = logstr.okay("启用")
+                    status_str = logstr.mesg("启用")
                 else:
-                    status_str = logstr.warn("禁用")
+                    status_str = logstr.mesg("禁用")
                 logger.mesg(f"当前状态: {status_str}")
                 return enabled
         logger.warn(f"无法确定规则启用状态: {rule_str}")
         return None
+
+    def _log_rule_title(self, desc: str):
+        logger.note("=" * 50)
+        logger.note(desc)
+        logger.note("=" * 50)
 
     def add_rule(self, path: Optional[str] = None) -> bool:
         """
@@ -167,9 +172,7 @@ class GTAVFirewallBlocker:
         :param path: 程序路径，如果为 None 则自动查找
         :return: 是否成功添加规则
         """
-        logger.note("=" * 50)
-        logger.note("添加防火墙规则")
-        logger.note("=" * 50)
+        self._log_rule_title("添加防火墙规则")
         # 检查规则是否已存在
         if self.rule_exists():
             # logger.mesg(f"防火墙规则已存在，无需添加")
@@ -190,9 +193,7 @@ class GTAVFirewallBlocker:
 
         :return: 是否成功删除规则
         """
-        logger.note("=" * 50)
-        logger.note("删除防火墙规则")
-        logger.note("=" * 50)
+        self._log_rule_title("删除防火墙规则")
         # 检查规则是否存在
         if not self.rule_exists():
             # logger.mesg(f"防火墙规则不存在，无需删除")
@@ -206,9 +207,7 @@ class GTAVFirewallBlocker:
 
         :return: 是否成功启用规则
         """
-        logger.note("=" * 50)
-        logger.note("启用防火墙规则")
-        logger.note("=" * 50)
+        self._log_rule_title("启用防火墙规则")
         # 检查规则是否存在
         if not self.rule_exists():
             logger.warn(f"防火墙规则不存在，无法启用")
@@ -226,9 +225,7 @@ class GTAVFirewallBlocker:
 
         :return: 是否成功禁用规则
         """
-        logger.note("=" * 50)
-        logger.note("禁用防火墙规则")
-        logger.note("=" * 50)
+        self._log_rule_title("禁用防火墙规则")
         # 检查规则是否存在
         if not self.rule_exists():
             logger.warn(f"防火墙规则不存在，无法禁用")

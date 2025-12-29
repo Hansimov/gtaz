@@ -570,7 +570,10 @@ class MenuNavigator:
             self.interactor.wait_until_ready()
 
     def _log_retry_go_to(self, names: list[str], retry: int, max_retries: int) -> None:
-        logger.warn(f"[{retry}/{max_retries}] 未导航到预期位置，当前路径: {names}")
+        """打印导航重试日志"""
+        # 第一次不打印日志，避免冗余信息
+        if retry >= 2:
+            logger.warn(f"[{retry}/{max_retries}] 未导航到预期位置，当前路径: {names}")
 
     def go_to(self, dst_names: list[str], max_retries: int = 5) -> list[str]:
         """导航到指定菜单项
@@ -583,8 +586,8 @@ class MenuNavigator:
         retry = 0
         while retry < max_retries:
             actions = self.plan_actions(dst_names)
-            logger.mesg(f"当前模式: [{self.planner.netmode}]")
             if self.verbose:
+                logger.mesg(f"当前模式: [{self.planner.netmode}]")
                 logger.mesg(f"导航动作: {logstr.file(actions)}")
             self.execute_actions(actions)
             names = self.locate_names()

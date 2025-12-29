@@ -77,17 +77,17 @@ class NetmodeSwitcher:
             exit_result = self.exit_runner.locate(frame_np, verbose=True)
             # 判断是否匹配到退出提示
             if not is_score_too_low(exit_result):
-                logger.okay(f"已定位到退出提示: {exit_result.name}")
+                logger.mesg(f"已看到退出提示: {exit_result.name}")
                 # 确认退出
                 self.interactor.confirm()
-                logger.okay("已确认退出")
+                logger.okay("已确认退出提示")
                 return True
             else:
                 retry_str = f"[{retry} / {max_retries}]"
-                logger.warn(f"{retry_str} 未定位到退出提示，重试中...")
+                logger.warn(f"{retry_str} 未能看到退出提示，重试中...")
                 # 再按一次 confirm，可能需要多次确认才能触发退出提示
                 self.interactor.confirm()
-        logger.fail("未能定位到退出提示")
+        logger.fail("未能看到退出提示")
         return False
 
     def _switch_mode(
@@ -116,13 +116,13 @@ class NetmodeSwitcher:
             current_names = self.navigator.go_to(dst_names)
             # 检查是否导航到目标位置
             if current_names == dst_names:
-                logger.okay(f"已导航到目标位置: {current_names}")
+                logger.okay(f"成功导航到: {current_names}")
                 # 确认选择
                 self.interactor.confirm()
                 logger.mesg("已确认选择，等待退出提示...")
                 # 定位退出提示并确认
                 if self.exit_and_confirm():
-                    logger.okay("已完成切换")
+                    # logger.okay("已完成切换")
                     return True
                 # 如果定位退出提示失败，继续重试整个流程
             else:

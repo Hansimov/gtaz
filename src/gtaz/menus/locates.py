@@ -1023,7 +1023,7 @@ class MenuLocatorRunner:
 
         name_str = logstr_func(result.name)
         score_str = logstr_func(f"{score:.4f}")
-        rect_str = logstr_func(result.rect)
+        rect_str = logstr_func(result.rect_size)
 
         logger.mesg(
             f"  * {idx_str}"

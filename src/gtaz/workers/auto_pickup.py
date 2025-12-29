@@ -85,7 +85,7 @@ class AutoPickuper:
 
     def _wait_for_goods_arrival(self):
         """等待确保货物全部到达"""
-        logger.note(f"等待 {WAIT_FOR_GOODS} 秒，确保货物全部到达...")
+        logger.note(f"等待 {WAIT_FOR_GOODS} 秒，以确保货物全部到达...")
         time.sleep(WAIT_FOR_GOODS)
 
     def _do_at_online(self):
@@ -122,8 +122,6 @@ class AutoPickuper:
         self._wait_for_quiet()
         # 启动音频检测，检测到匹配信号后立即退出
         matched, score, result = self.detector.detect_then_stop()
-        if matched:
-            logger.okay(f"检测到匹配信号，分数: {score:.4f}")
         # 检测到信号后，等待一段时间
         time.sleep(WAIT_AFTER_DETECT)
         # 启用防火墙规则
@@ -154,9 +152,9 @@ class AutoPickuper:
         logger.note("=" * 50)
         logger.note(f"循环次数: {loop_count}")
         for i in range(loop_count):
-            logger.note("=" * 50)
+            logger.hint("=" * 50)
             logger.hint(f"[{logstr.file(i+1)}/{loop_count}] 循环开始")
-            logger.note("=" * 50)
+            logger.hint("=" * 50)
             # 保证在故事模式
             self.switch_to_story()
             # 切换到在线模式（邀请战局）
