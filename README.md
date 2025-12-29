@@ -8,7 +8,27 @@ Visual-based AI for real-time tasks in GTAV.
 - [x] 大仓自动取货
 - [x] 事务所自动走到“别惹德瑞”任务点
 
-## Thanks to
+## 安装和使用
+
+- 大仓自动取货
+  - See: [自动取货模块 - 安装和使用教程](./AUTO_PICKUP.md)
+
+- 事务所自动走到“别惹德瑞”任务点
+  - TBD
+
+## Demos
+
+### 大仓自动取货
+
+TBD
+
+### 事务所自动走到任务点
+
+行为克隆 + resnet18 + tensorrt：
+
+https://github.com/user-attachments/assets/b8f11ecf-4cc4-4458-8905-debdf7b7a654
+
+## 致谢
 
 没有他们的无私工作，这个项目不可能诞生。
 
@@ -93,36 +113,6 @@ Trueboss 插件下载：
 * GTA5 解答大仓取货遇到的问题
   * https://www.bilibili.com/video/BV1khCCBAEE4
 
-
-## Install and Setup
-
-TBD
-
-## Demos
-
-### 大仓自动取货
-
-TBD
-
-### 德瑞卡CEO
-
-视频教程：
-* 【GTAOL】增强版最赚钱的任务方式：卡CEO无限德瑞！四个人一人一百万
-    * https://www.bilibili.com/video/BV1BhR2Y6EwS
-
-操作步骤：
-* M 键菜单，注册为CEO或者摩托帮首领
-* ↑键打开手机，选择 “快速加入”，找到最下方的“随机”，开始匹配
-* 等到右下角出现差事名称，并且玩家数量 >=2 时
-* 再次打开手机，选择“快速加入”，中断匹配进程
-* 关闭手机，此时 CEO 状态就卡好了
-* 之后只要加入德瑞差事即可独享分红。
-
-### 事务所自动走到任务点
-
-行为克隆 + resnet18 + tensorrt：
-
-https://github.com/user-attachments/assets/b8f11ecf-4cc4-4458-8905-debdf7b7a654
 
 ## Developer Notes
 
