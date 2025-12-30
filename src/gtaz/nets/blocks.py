@@ -73,9 +73,9 @@ class GTAVFirewallBlocker:
         """
         self.process_name = process_name
         self.rule_name = rule_name
-        self.get_process_path()
+        self.get_process_path(verbose=False)
 
-    def get_process_path(self) -> str:
+    def get_process_path(self, verbose: bool = True) -> str:
         """
         查找 GTAV 进程的完整路径。
 
@@ -87,14 +87,18 @@ class GTAVFirewallBlocker:
                     exe_path = proc.info["exe"]
                     if exe_path:
                         self.process_path = exe_path
-                        logger.okay(f"GTAV 完整路径:")
-                        logger.file(exe_path)
+                        if verbose:
+                            logger.note(f"GTAV 增强版程序路径:")
+                            logger.file(exe_path)
                         return exe_path
             logger.warn(f"未找到运行中的 GTAV 进程: {self.process_name}")
             return None
         except Exception as e:
             logger.err(f"查找进程路径时出错: {e}")
             return None
+
+    def _log_rule_latest(self, desc: str):
+        logger.mesg(f"最新状态: {desc}")
 
     def _run_netsh_command(self, cmd_args: str, desc: str) -> bool:
         """
@@ -108,7 +112,7 @@ class GTAVFirewallBlocker:
         success, stdout, stderr = run_command(cmd_str, show_cmd=False)
         if success:
             # logger.note(f"更新防火墙规则成功")
-            logger.mesg(f"最新状态: {desc}")
+            self._log_rule_latest(desc)
             return True
         else:
             logger.warn(f"未能{desc}防火墙规则")
@@ -122,7 +126,7 @@ class GTAVFirewallBlocker:
         """获取防火墙规则的日志字符串表示。"""
         return logstr.file(brk(self.rule_name))
 
-    def rule_exists(self) -> bool:
+    def rule_exists(self, verbose: bool = True) -> bool:
         """
         检查防火墙规则是否存在。
 
@@ -130,13 +134,14 @@ class GTAVFirewallBlocker:
         """
         cmd_str = f"netsh advfirewall firewall show rule name={self.rule_name}"
         success, stdout, stderr = run_command(cmd_str, show_cmd=False)
-        if success:
-            logger.mesg(f"防火墙规则已存在: {self.rule_str} ")
-        else:
-            logger.mesg(f"防火墙规则不存在: {self.rule_str} ")
+        if verbose:
+            if success:
+                logger.mesg(f"防火墙规则已存在: {self.rule_str} ")
+            else:
+                logger.mesg(f"防火墙规则不存在: {self.rule_str} ")
         return success
 
-    def is_rule_enabled(self) -> Optional[bool]:
+    def is_rule_enabled(self, verbose: bool = True) -> Optional[bool]:
         """
         检查防火墙规则是否启用。
 
@@ -146,23 +151,24 @@ class GTAVFirewallBlocker:
         success, stdout, stderr = run_command(cmd_str, show_cmd=False)
         rule_str = logstr.file(brk(self.rule_name))
         if not success:
-            logger.warn(f"防火墙规则不存在: {rule_str}")
+            logger.warn(f"防火墙规则不存在: {rule_str}", verbose=verbose)
             return None
         for line in stdout.split("\n"):
             if "Enabled:" in line or "已启用:" in line:
                 enabled = "Yes" in line or "是" in line
-                if enabled:
-                    status_str = logstr.mesg("启用")
-                else:
-                    status_str = logstr.mesg("禁用")
-                logger.mesg(f"当前状态: {status_str}")
+                if verbose:
+                    if enabled:
+                        status_str = logstr.file("启用")
+                    else:
+                        status_str = logstr.file("禁用")
+                    logger.mesg(f"当前状态: {status_str}")
                 return enabled
-        logger.warn(f"无法确定规则启用状态: {rule_str}")
+        logger.warn(f"无法确定规则启用状态: {rule_str}", verbose=verbose)
         return None
 
-    def _log_rule_title(self, desc: str):
+    def _log_rule_title(self, op: str):
         logger.note("=" * 50)
-        logger.note(desc)
+        logger.note(f"{logstr.note(op)}防火墙规则")
         logger.note("=" * 50)
 
     def add_rule(self, path: Optional[str] = None) -> bool:
@@ -172,20 +178,22 @@ class GTAVFirewallBlocker:
         :param path: 程序路径，如果为 None 则自动查找
         :return: 是否成功添加规则
         """
-        self._log_rule_title("添加防火墙规则")
+        self._log_rule_title("添加")
+        desc = logstr.okay("已添加")
         # 检查规则是否已存在
-        if self.rule_exists():
-            # logger.mesg(f"防火墙规则已存在，无需添加")
+        exists = self.rule_exists(verbose=False)
+        if exists:
+            logger.mesg(f"防火墙规则已存在: {self.rule_str}")
             return True
         # 获取程序路径
         path = path or self.process_path
         if path is None:
             logger.fail("无法获取 GTAV 进程路径，请确保游戏正在运行")
             return False
-        # 添加阻断出站流量的规则
+        # 添加阻断出站流量的规则，初始时不启用
         ips_str = ",".join(GTAV_BLOCK_IPS)
-        cmd_args = f'add rule name={self.rule_name} dir=out action=block program="{path}" remoteip={ips_str} enable=yes'
-        return self._run_netsh_command(cmd_args, logstr.okay("已添加"))
+        cmd_args = f'add rule name={self.rule_name} dir=out action=block program="{path}" remoteip={ips_str} enable=no'
+        return self._run_netsh_command(cmd_args, desc)
 
     def delete_rule(self) -> bool:
         """
@@ -193,13 +201,14 @@ class GTAVFirewallBlocker:
 
         :return: 是否成功删除规则
         """
-        self._log_rule_title("删除防火墙规则")
+        self._log_rule_title("删除")
+        desc = logstr.warn("已删除")
         # 检查规则是否存在
-        if not self.rule_exists():
-            # logger.mesg(f"防火墙规则不存在，无需删除")
+        if not self.rule_exists(verbose=False):
+            logger.mesg(f"防火墙规则不存在: {self.rule_str}")
             return True
         cmd_args = f"delete rule name={self.rule_name}"
-        return self._run_netsh_command(cmd_args, logstr.warn("已删除"))
+        return self._run_netsh_command(cmd_args, desc)
 
     def enable_rule(self) -> bool:
         """
@@ -207,17 +216,19 @@ class GTAVFirewallBlocker:
 
         :return: 是否成功启用规则
         """
-        self._log_rule_title("启用防火墙规则")
+        self._log_rule_title("启用")
+        desc = logstr.okay("已启用")
         # 检查规则是否存在
-        if not self.rule_exists():
+        if not self.rule_exists(verbose=False):
             logger.warn(f"防火墙规则不存在，无法启用")
             return False
         # 检查规则是否已启用
-        if self.is_rule_enabled():
+        if self.is_rule_enabled(verbose=False):
             # logger.mesg(f"防火墙规则已启用，无需重复操作")
+            self._log_rule_latest(desc)
             return True
         cmd_args = f"set rule name={self.rule_name} new enable=yes"
-        return self._run_netsh_command(cmd_args, logstr.okay("已启用"))
+        return self._run_netsh_command(cmd_args, desc)
 
     def disable_rule(self) -> bool:
         """
@@ -225,18 +236,20 @@ class GTAVFirewallBlocker:
 
         :return: 是否成功禁用规则
         """
-        self._log_rule_title("禁用防火墙规则")
+        self._log_rule_title("禁用")
+        desc = logstr.warn("已禁用")
         # 检查规则是否存在
-        if not self.rule_exists():
+        if not self.rule_exists(verbose=False):
             logger.warn(f"防火墙规则不存在，无法禁用")
             return False
         # 检查规则是否已禁用
-        enabled = self.is_rule_enabled()
+        enabled = self.is_rule_enabled(verbose=False)
         if enabled is False:
             # logger.mesg(f"防火墙规则已禁用，无需重复操作")
+            self._log_rule_latest(desc)
             return True
         cmd_args = f"set rule name={self.rule_name} new enable=no"
-        return self._run_netsh_command(cmd_args, logstr.warn("已禁用"))
+        return self._run_netsh_command(cmd_args, desc)
 
     def get_rule_info(self) -> Optional[str]:
         """
@@ -248,10 +261,18 @@ class GTAVFirewallBlocker:
         success, stdout, stderr = run_command(cmd_str, show_cmd=False)
         if success:
             if stdout:
-                logger.mesg(f"规则详细信息:")
+                # 打印规则详细信息
+                logger.note("规则详情:")
                 logger.mesg(stdout)
+                # 检查启用状态
+                enabled = self.is_rule_enabled(verbose=False)
+                if enabled:
+                    status_str = logstr.okay("启用")
+                else:
+                    status_str = logstr.warn("禁用")
+                logger.note(f"当前状态: {status_str}")
             else:
-                logger.warn("无法获取规则信息")
+                logger.warn("无法获取规则详情")
             return stdout
         else:
             logger.mesg(f"防火墙规则不存在: {self.rule_str}")
@@ -351,7 +372,7 @@ def main():
 
     blocker = GTAVFirewallBlocker()
 
-    if args.find:
+    if args.find or args.info:
         process_path = blocker.get_process_path()
 
     if args.exists:
