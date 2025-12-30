@@ -8,19 +8,23 @@
 - https://www.python.org/downloads/release/python-3139/
 - https://www.python.org/ftp/python/3.13.9/python-3.13.9-amd64.exe
 
-创建 venv：
+下载 `python-3.13.9-amd64.exe`，双击运行安装程序。
+
+安装时注意勾选下面的 `Add Python 3.13 to PATH` 选项。
+
+进入想放置虚拟环境的目录，创建 venv：
 
 ```sh
-# cd <path_you_like>
 python -m venv gta
 ```
 
-激活 venv：
+等待创建完成，激活：
 
 ```sh
-# cd <path_you_like>
 call gta\Scripts\activate.bat
 ```
+
+命令行左侧会显示 `(gta)`，说明已成功激活虚拟环境。
 
 ## 克隆项目，安装依赖
 
@@ -30,25 +34,28 @@ call gta\Scripts\activate.bat
 
 ```sh
 cd /d D:\codes
-git clone https://github.com/Hansimov/gtaz.git --depth 1
+git clone --depth 1 https://github.com/Hansimov/gtaz.git 
+
+# 如果速度慢，可以用镜像加速：
+# git clone --depth 1 https://githubfast.com/Hansimov/gtaz.git 
 ```
 
 安装依赖：
 
 ```sh
-cd gtaz  # D:/codes/gtaz
+cd gtaz
 pip install -r AUTO_PICKUP.txt -i https://mirrors.ustc.edu.cn/pypi/simple
 ```
 
-过程中会出现 ViGEmBus 的安装提示，确认并安装即可。
+过程中会出现 ViGEmBus 的安装提示（详见：[vgamepad](https://github.com/yannbouteiller/vgamepad?tab=readme-ov-file#windows)），确认并安装即可。
 
 进入运行目录：
 
 ```sh
-cd src  # D:/codes/gtaz/src
+cd src
 ```
 
-后续所有命令均在 `src` 目录下执行。
+后续所有命令均在 `src` (`D:/codes/gtaz/src`) 目录下执行。
 
 ## 安装 VBCABLE，配置混音器
 
@@ -78,7 +85,7 @@ cd src  # D:/codes/gtaz/src
   - 输出为 `CABLE Input (VB-Audio Virtual Cable)`
   - 输入为 `CABLE Output (VB-Audio Virtual Cable)`
 - [x] 命令行窗口已正确配置
-  - 已激活 venv：左侧会显示 `(gta)`
+  - 已激活 venv：左侧显示 `(gta)`
   - 已切换到 `D:/codes/gtaz/src` 目录
 
 ## 首次运行测试
