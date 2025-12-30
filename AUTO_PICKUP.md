@@ -79,40 +79,6 @@ cd src
 
 之后的所有命令均在 `src` 目录下执行。
 
-## 添加防火墙规则
-
-查看帮助：
-
-```sh
-python -m gtaz.nets.blocks -h
-```
-
-添加防火墙规则：
-
-```sh
-python -m gtaz.nets.blocks -a
-```
-
-默认添加后自动启用。运行自动取货模块时，会自动配置规则。
-
-如果暂时不需要，可以禁用：
-
-```sh
-python -m gtaz.nets.blocks -s
-```
-
-启用防火墙规则：
-
-```sh
-python -m gtaz.nets.blocks -e
-```
-
-删除防火墙规则：
-
-```sh
-python -m gtaz.nets.blocks -d
-```
-
 ## 前置条件
 
 - [x] 大仓员工已经派出取货
@@ -156,7 +122,11 @@ python -m gtaz.workers.auto_pickup -l -c 85
 
 循环结束后，脚本会自动保存货物存档，并同步到云服务器。
 
-## 其他实用脚本：模式和战局切换
+<details> <summary><b>点击展开：其他实用脚本</b></summary>
+
+## 其他实用脚本
+
+### 模式和战局切换
 
 从故事模式切换到线上邀请战局，或者从当前战局切换到新的邀请战局：
 
@@ -175,3 +145,39 @@ python -m gtaz.workers.mode_switch -s
 ```sh
 python -m gtaz.workers.mode_switch -o
 ```
+
+### 防火墙规则管理
+
+运行自动取货模块时，会自动 添加/启用/禁用 防火墙规则。不需要手动操作。
+
+查看帮助：
+
+```sh
+python -m gtaz.nets.blocks -h
+```
+
+添加防火墙规则：
+
+```sh
+python -m gtaz.nets.blocks -a
+```
+
+删除防火墙规则：
+
+```sh
+python -m gtaz.nets.blocks -d
+```
+
+启用防火墙规则：
+
+```sh
+python -m gtaz.nets.blocks -e
+```
+
+禁用防火墙规则：
+
+```sh
+python -m gtaz.nets.blocks -s
+```
+
+</details>

@@ -159,6 +159,9 @@ class AutoPickuper:
         :param loop_count: 循环次数
         :return: 是否成功完成所有循环
         """
+        # 添加防火墙规则
+        self.blocker.add_rule()
+        # 打印循环开始信息
         logger.hint(f"开始循环切换，循环次数: {loop_count}")
         self.loop_count = loop_count
         self.timer = Runtimer(verbose=False)
