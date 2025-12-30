@@ -19,7 +19,7 @@ MODULE_DIR = Path(__file__).parent
 CACHE_DIR = MODULE_DIR.parent / "cache"
 
 # 模板目录
-TEMPLATES_DIR = MODULE_DIR / "wavs"
+TEMPLATES_DIR = CACHE_DIR / "wavs"
 # 模板文件正则表达式
 TEMPLATE_REGEX = r"templatey_.*\.wav"
 

@@ -54,10 +54,8 @@ logger = TCLogger(
 
 # 当前模块所在目录
 MODULE_DIR = Path(__file__).parent
-# 缓存目录
-CACHE_DIR = MODULE_DIR.parent / "cache"
 # 模板特征缓存文件
-TEMPLATE_FEATURE_CACHE = CACHE_DIR / "template_feature.pkl"
+TEMPLATE_FEATURE_CACHE = MODULE_DIR / "template_feature.pkl"
 
 # 检测间隔（毫秒）- 每隔多久执行一次匹配
 DETECT_INTERVAL_MS = 200
@@ -114,13 +112,13 @@ class TemplateFeatureManager:
             with open(self.cache_path, "rb") as f:
                 cache_data = pickle.load(f)
 
-            # 检查模板是否变化
-            cached_hash = cache_data.get("hash", "")
-            current_hash = self._compute_templates_hash()
+            # # 检查模板是否变化
+            # cached_hash = cache_data.get("hash", "")
+            # current_hash = self._compute_templates_hash()
 
-            if cached_hash != current_hash:
-                logger.note("模板文件已变化，需要重新计算特征")
-                return None
+            # if cached_hash != current_hash:
+            #     logger.note("模板文件已变化，需要重新计算特征")
+            #     return None
 
             logger.okay(f"从缓存加载模板特征: {self.cache_path}")
             return cache_data["feature"]
