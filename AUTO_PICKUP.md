@@ -22,11 +22,39 @@ python -m venv gta
 call gta\Scripts\activate.bat
 ```
 
-## 安装 VB-Audio，配置混音器
+## 克隆项目，安装依赖
+
+假设 repo 下载到：`D:/codes`。后续均以此路径作为参考。
+
+克隆项目：
+
+```sh
+cd /d D:\codes
+git clone https://github.com/Hansimov/gtaz.git --depth 1
+```
+
+安装依赖：
+
+```sh
+cd gtaz  # D:/codes/gtaz
+pip install -r AUTO_PICKUP.txt -i https://mirrors.ustc.edu.cn/pypi/simple
+```
+
+过程中会出现 ViGEmBus 的安装提示，确认并安装即可。
+
+进入运行目录：
+
+```sh
+cd src  # D:/codes/gtaz/src
+```
+
+后续所有命令均在 `src` 目录下执行。
+
+## 安装 VBCABLE，配置混音器
 
 在自动取货模块中，需要根据下云的声音判断何时断网。
 
-下载 VB-Audio：
+下载 VBCABLE：
 - https://vb-audio.com/Cable/index.htm
 - https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
 
@@ -39,58 +67,21 @@ call gta\Scripts\activate.bat
 - 输入（下面的选项）选择：`CABLE Output (VB-Audio Virtual Cable)`
 - 注意：输出是 `CABLE Input`，输入是 `CABLE Output`
 
-## 克隆项目，安装依赖
-
-假设代码路径为：`D:/codes`。后续均以此作为示例。
-
-```sh
-cd /d D:\codes
-```
-
-克隆项目：
-
-```sh
-# D:/codes
-git clone https://github.com/Hansimov/gtaz.git --depth 1
-```
-
-进入项目目录：
-
-```sh
-cd gtaz
-# D:/codes/gtaz
-```
-
-安装依赖：
-
-```sh
-# D:/codes/gtaz
-pip install -r AUTO_PICKUP.txt -i "https://mirrors.ustc.edu.cn/pypi/simple"
-```
-
-过程中会出现 ViGEmBus 的安装提示，确认并安装即可。
-
-进入 `src` 目录。
-
-```sh
-cd src
-# D:/codes/gtaz/src
-```
-
-之后的所有命令均在 `src` 目录下执行。
-
-## 前置条件
+## 运行前检查清单
 
 - [x] 大仓员工已经派出取货
   - 一定要看到 `-$7500`，并且员工已经离开仓库
 - [x] 出生点设置为室内的地点
   - 推荐游戏厅（升级控制端后可以直接在游戏厅里查看大仓库存）
   - 不要选择机库，也避免有浴室的地点（比如公寓）
-- [x] 混音器选项已经正确配置
+- [x] 混音器选项已正确配置
   - 输出为 `CABLE Input (VB-Audio Virtual Cable)`
   - 输入为 `CABLE Output (VB-Audio Virtual Cable)`
+- [x] 命令行窗口已正确配置
+  - 已激活 venv：左侧会显示 `(gta)`
+  - 已切换到 `D:/codes/gtaz/src` 目录
 
-## 首次运行自动取货模块
+## 首次运行测试
 
 查看帮助：
 
