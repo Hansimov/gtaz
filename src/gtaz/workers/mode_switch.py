@@ -199,7 +199,7 @@ class NetmodeSwitcher:
         """同步存档到远程服务器"""
         logger.note(f"同步存档到远程服务器...")
         self.interactor.close_window()
-        time.sleep(5)
+        time.sleep(10)  # 等待右下角转完圈，出现选项
         self.interactor.cancel(3)
         logger.okay(f"已完成同步，请留意左下角提示: {logstr.mesg('[保存成功]')}")
 

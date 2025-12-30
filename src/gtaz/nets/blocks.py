@@ -5,7 +5,7 @@ import subprocess
 import psutil
 import sys
 
-from tclogger import TCLogger, logstr, brk
+from tclogger import TCLogger, logstr, brk, decolored
 from typing import Optional
 
 
@@ -115,7 +115,8 @@ class GTAVFirewallBlocker:
             self._log_rule_latest(desc)
             return True
         else:
-            logger.warn(f"未能{desc}防火墙规则")
+            neg_desc = decolored(desc)[-2:]
+            logger.warn(f"未能{neg_desc}防火墙规则")
             if stderr:
                 logger.warn(f"错误信息:")
                 logger.warn(stderr)

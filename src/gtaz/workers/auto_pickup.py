@@ -131,7 +131,7 @@ class AutoPickuper:
     # =============== 循环 =============== #
     def _do_at_last_round(self):
         """收尾操作"""
-        logger.hint("已完成最后一次循环，将执行如下操作：")
+        logger.hint("已完成最后一轮循环，将执行如下操作：")
         logger.hint("[1] 禁用防火墙规则，恢复网络连接")
         logger.hint("[2] 同步存档到服务器")
         self.blocker.disable_rule()
@@ -151,7 +151,9 @@ class AutoPickuper:
         elapsed_str = logstr.mesg(elapsed_str)
         logger.okay(f"第 {round_str} 轮完成，用时: {elapsed_str}")
 
-    def switch_loop(self, loop_count: int = LOOP_COUNT) -> bool:
+    def switch_loop(
+        self, loop_count: int = LOOP_COUNT, args: argparse.Namespace = None
+    ) -> bool:
         """循环切换模式
 
         流程：循环调用 switch_to_invite 和 switch_to_story，直到指定次数
@@ -182,8 +184,9 @@ class AutoPickuper:
                 self._log_at_round_end(i)
                 # 执行收尾操作
                 self._do_at_last_round()
-                # 最后一轮不再切回故事模式
-                break
+                if args and not args.go_to_story_after_finished:
+                    # 最后一轮留在线上，不再回到故事模式
+                    break
             # 切换到故事模式
             self.switch_to_story()
             # 执行故事模式操作
@@ -211,11 +214,11 @@ def parse_args() -> argparse.Namespace:
 示例:
   python -m gtaz.workers.auto_pickup -s          # 切换到故事模式
   python -m gtaz.workers.auto_pickup -i          # 切换到在线模式（邀请战局）
-  python -m gtaz.workers.auto_pickup -l          # 循环切换（默认1次）
-  python -m gtaz.workers.auto_pickup -l -c 5     # 循环切换5次
+  python -m gtaz.workers.auto_pickup -l          # 循环1次
+  python -m gtaz.workers.auto_pickup -l -g       # 循环1次，结束后回到线下
+  python -m gtaz.workers.auto_pickup -l -c 5     # 循环5次
         """,
     )
-
     parser.add_argument(
         "-s",
         "--story",
@@ -241,6 +244,12 @@ def parse_args() -> argparse.Namespace:
         default=LOOP_COUNT,
         help=f"循环次数（默认: {LOOP_COUNT}）",
     )
+    parser.add_argument(
+        "-g",
+        "--go-to-story-after-finished",
+        action="store_true",
+        help="循环结束后回到线下故事模式（默认留在线上）",
+    )
     return parser.parse_args()
 
 
@@ -259,14 +268,14 @@ def main():
         pickuper.switch_to_invite()
 
     if args.loop:
-        pickuper.switch_loop(loop_count=args.count)
+        pickuper.switch_loop(loop_count=args.count, args=args)
 
 
 if __name__ == "__main__":
     main()
 
     # 显示帮助信息
-    # python -m gtaz.workers.auto_pickup
+    # python -m gtaz.workers.auto_pickup -h
 
     # 切换到故事模式
     # python -m gtaz.workers.auto_pickup -s
@@ -274,8 +283,11 @@ if __name__ == "__main__":
     # 切换到在线模式（邀请战局）
     # python -m gtaz.workers.auto_pickup -i
 
-    # 循环切换（默认1次）
+    # 循环（默认1次）
     # python -m gtaz.workers.auto_pickup -l
 
-    # 循环切换5次
+    # 循环1次，结束后回到线下故事模式
+    # python -m gtaz.workers.auto_pickup -l -g
+
+    # 循环5次
     # python -m gtaz.workers.auto_pickup -l -c 5
