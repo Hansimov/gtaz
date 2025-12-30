@@ -27,6 +27,7 @@ call gta\Scripts\activate.bat
 在自动取货模块中，需要根据下云的声音判断何时断网。
 
 下载 VB-Audio：
+- https://vb-audio.com/Cable/index.htm
 - https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
 
 解压后，双击 `VBCABLE_Setup_x64.exe` 安装。
@@ -50,7 +51,7 @@ cd /d D:\codes
 
 ```sh
 # D:/codes
-git clone https://github.com/Hansimov/gtaz.git
+git clone https://github.com/Hansimov/gtaz.git --depth 1
 ```
 
 进入项目目录：
@@ -66,6 +67,8 @@ cd gtaz
 # D:/codes/gtaz
 pip install -r AUTO_PICKUP.txt -i "https://mirrors.ustc.edu.cn/pypi/simple"
 ```
+
+过程中会出现 ViGEmBus 的安装提示，确认并安装即可。
 
 进入 `src` 目录。
 
