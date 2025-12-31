@@ -350,10 +350,20 @@ class AudioDetector:
             return False
 
     def _preprocess_audio(self, data: np.ndarray) -> np.ndarray:
-        """预处理音频数据（转单声道、统一采样率）"""
+        """预处理音频数据（转单声道、统一采样率）
+        
+        关键修改：使用最大值合并通道而非平均值，
+        避免当音频只在部分通道时信号被稀释。
+        """
         # 转单声道
         if len(data.shape) > 1 and data.shape[1] > 1:
-            data = np.mean(data, axis=1)
+            # 方案1：取各通道的最大绝对值（保留最强信号）
+            # 这对于只有部分通道有音频的情况更有效
+            # 对每个样本点，取所有通道中绝对值最大的那个（保留符号）
+            abs_data = np.abs(data)
+            max_ch_idx = np.argmax(abs_data, axis=1)
+            # 使用高级索引获取每个样本点对应通道的值
+            data = data[np.arange(len(data)), max_ch_idx]
         elif len(data.shape) > 1:
             data = data.flatten()
 

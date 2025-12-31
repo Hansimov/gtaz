@@ -107,7 +107,7 @@ class TemplateLoader:
             try:
                 sample_rate, data = wavfile.read(file_path)
                 # 先转换为浮点数（归一化），再转单声道
-                # 注意：必须先归一化再 np.mean，否则 np.mean 会把 int16 转成 float64 但值不变
+                # 注意：必须先归一化再转单声道，否则值域不对
                 if data.dtype == np.int16:
                     data = data.astype(np.float32) / 32768.0
                 elif data.dtype == np.int32:
@@ -118,8 +118,14 @@ class TemplateLoader:
                     data = data.astype(np.float32)
 
                 # 如果是立体声，转换为单声道
-                if len(data.shape) > 1:
-                    data = np.mean(data, axis=1).astype(np.float32)
+                # 关键修改：使用最大绝对值策略（与 detects_v2._preprocess_audio 保持一致）
+                # 这样即使只有部分通道有音频，也能正确保留信号
+                if len(data.shape) > 1 and data.shape[1] > 1:
+                    abs_data = np.abs(data)
+                    max_ch_idx = np.argmax(abs_data, axis=1)
+                    data = data[np.arange(len(data)), max_ch_idx].astype(np.float32)
+                elif len(data.shape) > 1:
+                    data = data.flatten().astype(np.float32)
 
                 self.template_data.append((sample_rate, data))
             except Exception as e:
@@ -1034,17 +1040,24 @@ class TestDataSamplesLoader:
         try:
             sample_rate, data = wavfile.read(file_path)
 
-            # 如果是立体声，转换为单声道
-            if len(data.shape) > 1:
-                data = np.mean(data, axis=1)
-
-            # 转换为浮点数
+            # 转换为浮点数（先转换再处理通道）
             if data.dtype == np.int16:
                 data = data.astype(np.float32) / 32768.0
             elif data.dtype == np.int32:
                 data = data.astype(np.float32) / 2147483648.0
             elif data.dtype == np.uint8:
                 data = (data.astype(np.float32) - 128) / 128.0
+            else:
+                data = data.astype(np.float32)
+
+            # 如果是立体声，转换为单声道
+            # 关键修改：使用最大绝对值策略（与模板加载和实时检测保持一致）
+            if len(data.shape) > 1 and data.shape[1] > 1:
+                abs_data = np.abs(data)
+                max_ch_idx = np.argmax(abs_data, axis=1)
+                data = data[np.arange(len(data)), max_ch_idx].astype(np.float32)
+            elif len(data.shape) > 1:
+                data = data.flatten().astype(np.float32)
 
             # 统一采样率（不截断数据）
             data = self.unifier.unify_single(sample_rate, data)
