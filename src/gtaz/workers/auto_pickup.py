@@ -9,7 +9,7 @@ from tclogger import TCLogger, TCLogbar, logstr, Runtimer, dt_to_str, get_now_ts
 
 from ..workers.mode_switch import NetmodeSwitcher
 from ..nets.blocks import GTAVFirewallBlocker
-from ..audios.detects_v2 import AudioDetector
+from ..audios.detects_v3 import VolumeDetector
 
 
 logger = TCLogger(name="AutoPickuper", use_prefix=True, use_prefix_ms=True)
@@ -22,7 +22,7 @@ WAIT_AT_STORY = 15
 # 确保货物全部到达等待时间（秒）
 WAIT_FOR_GOODS = 10
 # 等待音频信号稳定时间（秒）
-WAIT_FOR_QUIET = 12
+WAIT_FOR_QUIET = 8
 # 检测到音频信号后等待时间（秒）
 WAIT_AFTER_DETECT = 1
 # 等待断网提示出现（秒）
@@ -46,7 +46,7 @@ class AutoPickuper:
         """初始化自动循环取货器"""
         self.switcher = NetmodeSwitcher()
         self.blocker = GTAVFirewallBlocker()
-        self.detector = AudioDetector()
+        self.detector = VolumeDetector()
         self.detector.initialize()
 
     # =============== 故事模式相关 =============== #
