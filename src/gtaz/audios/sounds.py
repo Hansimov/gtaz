@@ -110,30 +110,53 @@ def list_audio_devices():
         logger.warn(f"列出音频设备时出错: {e}")
 
 
-def find_audio_device(device_name: str = AUDIO_DEVICE_NAME) -> Optional[int]:
+def find_audio_device(
+    device_name: str = AUDIO_DEVICE_NAME,
+    target_sample_rate: int = SAMPLE_RATE,
+) -> tuple[Optional[int], int, int]:
     """
     查找音频设备索引。
 
     :param device_name: 设备名称关键字
+    :param target_sample_rate: 目标采样率，用于筛选设备
 
-    :return: 设备索引，未找到则返回 None
+    :return: (设备索引, 通道数, 实际采样率)，未找到则返回 (None, 0, 0)
     """
     try:
         devices = sd.query_devices()
+        candidates = []
+
         for i, device in enumerate(devices):
             if device_name.lower() in device["name"].lower():
                 if device["max_input_channels"] > 0:
-                    logger.okay(
-                        f"找到音频设备: [{i}] {device['name']} "
-                        f"(输入通道: {device['max_input_channels']})"
+                    device_sr = int(device["default_samplerate"])
+                    candidates.append(
+                        {
+                            "index": i,
+                            "name": device["name"],
+                            "channels": device["max_input_channels"],
+                            "sample_rate": device_sr,
+                            "sr_match": device_sr == target_sample_rate,
+                        }
                     )
-                    return i
-        logger.warn(f"未找到包含 '{device_name}' 的输入设备")
-        list_audio_devices()
-        return None
+
+        if not candidates:
+            logger.warn(f"未找到包含 '{device_name}' 的输入设备")
+            list_audio_devices()
+            return None, 0, 0
+
+        # 排序：优先采样率匹配，其次通道数较少
+        candidates.sort(key=lambda x: (not x["sr_match"], x["channels"]))
+        best = candidates[0]
+        logger.okay(
+            f"音频设备: [{best['index']}] {best['name']} "
+            f"(通道: {best['channels']}, 采样率: {best['sample_rate']}Hz)"
+        )
+
+        return best["index"], best["channels"], best["sample_rate"]
     except Exception as e:
         logger.warn(f"查找音频设备时出错: {e}")
-        return None
+        return None, 0, 0
 
 
 @dataclass
@@ -219,12 +242,23 @@ class AudioBuffer:
         with self._lock:
             self._chunks.append(chunk)
             self._total_samples += chunk.samples
-            # 计算这个数据块的 RMS 音量（转单声道后）
-            if len(data.shape) > 1:
-                mono_data = np.mean(data, axis=1)
+            # 计算这个数据块的 RMS 音量
+            # 关键修改：取所有通道中的最大 RMS，而不是平均
+            # 这样即使只有部分通道有音频，也能正确检测到
+            if len(data.shape) > 1 and data.shape[1] > 1:
+                # 多通道：计算每个通道的 RMS，取最大值
+                channel_rms = [
+                    float(np.sqrt(np.mean(data[:, ch] ** 2)))
+                    for ch in range(data.shape[1])
+                ]
+                self._latest_rms = max(channel_rms)
             else:
-                mono_data = data
-            self._latest_rms = float(np.sqrt(np.mean(mono_data**2)))
+                # 单通道或 1D 数组
+                if len(data.shape) > 1:
+                    mono_data = data[:, 0]
+                else:
+                    mono_data = data
+                self._latest_rms = float(np.sqrt(np.mean(mono_data**2)))
             # 清理超出窗口的旧数据
             self._cleanup()
 
@@ -322,15 +356,23 @@ class SoundRecorder:
         :param audio_format: 音频格式（wav/flac/ogg）
         """
         self.device_name = device_name
-        self.sample_rate = sample_rate
-        self.channels = channels
         self.window_ms = window_ms
         self.audio_format = audio_format
 
-        # 查找音频设备
-        self.device_index = find_audio_device(device_name)
+        # 查找音频设备（获取设备索引、通道数、采样率）
+        self.device_index, device_channels, device_sample_rate = find_audio_device(
+            device_name, target_sample_rate=sample_rate
+        )
         if self.device_index is None:
             logger.warn(f"未找到音频设备 '{device_name}'，将使用默认设备")
+            self.sample_rate = sample_rate
+            self.channels = channels
+        else:
+            # 使用设备实际采样率
+            self.sample_rate = (
+                device_sample_rate if device_sample_rate > 0 else sample_rate
+            )
+            self.channels = channels
 
         # 设置输出目录
         session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -338,11 +380,11 @@ class SoundRecorder:
             output_dir = SOUNDS_DIR
         self.save_dir = Path(output_dir) / session_name
 
-        # 初始化缓冲区
+        # 初始化缓冲区（使用实际的采样率和通道数）
         self.buffer = AudioBuffer(
             window_ms=window_ms,
-            sample_rate=sample_rate,
-            channels=channels,
+            sample_rate=self.sample_rate,
+            channels=self.channels,
         )
 
         # 录制状态
@@ -351,17 +393,6 @@ class SoundRecorder:
         self._record_start_time: Optional[float] = None
         self._lock = threading.Lock()
         self._stream: Optional[sd.InputStream] = None
-
-        # 数据回调（可用于实时处理）
-        self._data_callback: Optional[Callable[[np.ndarray, float], Any]] = None
-
-    def set_data_callback(self, callback: Callable[[np.ndarray, float], Any]):
-        """
-        设置数据回调函数。
-
-        :param callback: 回调函数，接收 (data, timestamp) 参数
-        """
-        self._data_callback = callback
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         """
@@ -392,13 +423,6 @@ class SoundRecorder:
                 )
                 self._recorded_chunks.append(chunk)
 
-        # 调用数据回调
-        if self._data_callback:
-            try:
-                self._data_callback(data, timestamp)
-            except Exception as e:
-                logger.warn(f"数据回调执行出错: {e}")
-
     def start_stream(self) -> bool:
         """
         启动音频流（开始采集音频到缓冲区）。
@@ -418,7 +442,10 @@ class SoundRecorder:
                 dtype=np.float32,
             )
             self._stream.start()
-            logger.okay(f"音频流已启动 (设备: {self.device_name})")
+            logger.okay(
+                f"音频流已启动 (设备: {self.device_name}, "
+                f"采样率: {self.sample_rate}Hz, 通道数: {self.channels})"
+            )
             return True
         except Exception as e:
             logger.warn(f"启动音频流失败: {e}")
