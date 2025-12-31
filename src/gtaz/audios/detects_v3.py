@@ -33,6 +33,8 @@ DETECT_INTERVAL_MS = 200
 AVG_VOLUME_THRESHOLD = 25
 # 最大音量阈值（音量百分比）
 MAX_VOLUME_THRESHOLD = 45
+# 最小预热样本数，避免开始时的抖动
+MIN_WARMUP_SAMPLES = 10
 
 
 class VolumeDetector:
@@ -134,6 +136,10 @@ class VolumeDetector:
 
         :return: (是否检测到, 平均音量, 最大音量)
         """
+        # 启动后的预热期间不检测，等待缓冲区填充
+        if self._sample_count < MIN_WARMUP_SAMPLES:
+            return False, 0, 0
+
         if not self._group_volumes:
             return False, 0, 0
 
