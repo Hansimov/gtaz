@@ -62,7 +62,7 @@ pip install -r AUTO_PICKUP.txt -i https://mirrors.ustc.edu.cn/pypi/simple
 pip install -e .
 ```
 
-后续命令可在任意目录下执行（只要 venv 已激活）。
+后续所有命令均在 `src` (`D:/codes/gtaz/src`) 目录下执行。
 
 ## 安装 VBCABLE，配置混音器
 
@@ -92,7 +92,9 @@ pip install -e .
 - [x] 优化图像设置：打开菜单 `设置` - `图像`
   - `屏幕类型` 改为 `窗口模式`，分辨率改为 `1024 x 768`
   - 可以不改，但是大部分开发和测试都是在这个分辨率下，改成这个会更稳定
-- [x] 失焦后静音：选择 `关闭`
+- [x] 优化声音设置：打开菜单 `设置` - `声音`
+  - `游戏失去焦点时静音` 改为 `关闭`
+  - 保证在后台时也能获取游戏音频流，用于断网时机判断
 - [x] 大仓员工已经派出取货
   - 正式运行前必须完成，测试时不需要
   - 一定要看到 `-$7500`，并且员工已经离开仓库
@@ -106,6 +108,7 @@ pip install -e .
 - [x] 命令行窗口已正确配置
   - 以管理员身份运行（因为后续需要添加和开关防火墙规则，用于存档断网）
   - 已激活 venv：左侧显示 `(gta)`
+  - 已切换到 `D:/codes/gtaz/src` 目录
 
 ## 首次测试运行
 
@@ -164,6 +167,13 @@ pickup -l -c 85
   * https://socialclub.rockstargames.com/job/gtav/-0msxwdcJkavnSVnz-XRHg
 * 西好麦坞
   * https://socialclub.rockstargames.com/job/gtav/QCayGLKZlEKfhfmYYkrgEQ
+
+我补充了两个差传点：
+
+* 沃克父子仓库
+  * https://socialclub.rockstargames.com/job/gtav/QtoyeriMUEmySY4w-NTt0Q
+* 游戏厅后门
+  * https://socialclub.rockstargames.com/job/gtav/UbEovYmkbk2eG8orepFZDg
 
 </details>
 
