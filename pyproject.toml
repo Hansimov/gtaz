@@ -1,6 +1,6 @@
 [project]
 name = "gtaz"
-version = "0.8.1"
+version = "0.9"
 authors = [
     { name="Hansimov" },
 ]
@@ -12,12 +12,17 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = [ "tclogger", "vgamepad", "numpy", "Pillow" ]
+dependencies = [ ]
 
 [project.optional-dependencies]
 dev = [ "tclogger", "vgamepad", "numpy", "Pillow", "torch", "torchvision", "timm" ]
 gpu = [ ]
 cpu = [ ]
+
+[project.scripts]
+blocks = "gtaz.nets.blocks:main"
+switch = "gtaz.workers.mode_switch:main"
+pickup = "gtaz.workers.auto_pickup:main"
 
 [project.urls]
 Homepage = "https://github.com/Hansimov/gtaz"
