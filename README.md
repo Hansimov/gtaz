@@ -60,18 +60,7 @@ Trueboss 插件下载：
 * 使用文档：
   * https://docs.qq.com/doc/DVFNMaUZQWVpFYnhh
 
-而且他还自制了5个常用大仓的差传点：
-
-* 家具批发市场
-  * https://socialclub.rockstargames.com/job/gtav/bVP0ivyoV0iSLJsjJMvT5Q
-* 物流仓库
-  * https://socialclub.rockstargames.com/job/gtav/gAiwYOjtQE2L2Idr0cGBeQ
-* 达内尔兄弟仓库
-  * https://socialclub.rockstargames.com/job/gtav/lFacb8aFy0q3lxKQ-qbjSQ
-* 柏树仓库
-  * https://socialclub.rockstargames.com/job/gtav/-0msxwdcJkavnSVnz-XRHg
-* 西好麦坞
-  * https://socialclub.rockstargames.com/job/gtav/QCayGLKZlEKfhfmYYkrgEQ
+而且他还自制了5个常用大仓的差传点，详见文档：[大仓自动取货](./AUTO_PICKUP.md#常用大仓差传点)。
 
 公益差传Bot也是他的功劳。这个我之后加入差传模块时，还会展开说明。
 
@@ -112,8 +101,3 @@ Trueboss 插件下载：
 
 * GTA5 解答大仓取货遇到的问题
   * https://www.bilibili.com/video/BV1khCCBAEE4
-
-
-## Developer Notes
-
-See [Developer Notes](./DEV.md) for details of data collection, model training, runtime exporting, and real-time inference.

@@ -92,6 +92,7 @@ cd src
 - [x] 优化图像设置：打开菜单 `设置` - `图像`
   - `屏幕类型` 改为 `窗口模式`，分辨率改为 `1024 x 768`
   - 可以不改，但是大部分开发和测试都是在这个分辨率下，改成这个会更稳定
+- [x] 失焦后静音：选择 `关闭`
 - [x] 大仓员工已经派出取货
   - 正式运行前必须完成，测试时不需要
   - 一定要看到 `-$7500`，并且员工已经离开仓库
@@ -146,6 +147,26 @@ python -m gtaz.workers.auto_pickup -l -c 85
 ```
 
 循环结束后，脚本会自动保存货物存档，并同步到云服务器。
+
+
+<details open> <summary><b>点击展开：常用大仓差传点</b></summary>
+
+## 常用大仓差传点
+
+来自 [傲弗拉](https://space.bilibili.com/2913798) 的 [▶️【GTA教程】我要当老板！全自动大仓员工无限取货](https://www.bilibili.com/video/BV1DdoMYdEic)：
+
+* 家具批发市场
+  * https://socialclub.rockstargames.com/job/gtav/bVP0ivyoV0iSLJsjJMvT5Q
+* 物流仓库
+  * https://socialclub.rockstargames.com/job/gtav/gAiwYOjtQE2L2Idr0cGBeQ
+* 达内尔兄弟仓库
+  * https://socialclub.rockstargames.com/job/gtav/lFacb8aFy0q3lxKQ-qbjSQ
+* 柏树仓库
+  * https://socialclub.rockstargames.com/job/gtav/-0msxwdcJkavnSVnz-XRHg
+* 西好麦坞
+  * https://socialclub.rockstargames.com/job/gtav/QCayGLKZlEKfhfmYYkrgEQ
+
+</details>
 
 <details> <summary><b>点击展开：其他实用脚本</b></summary>
 
