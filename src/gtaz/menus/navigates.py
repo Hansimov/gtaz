@@ -492,9 +492,13 @@ class MenuNavigator:
 
     def locate(self) -> MergedMatchResult:
         """获取当前菜单定位结果"""
-        frame_np = self.capturer.capture_frame(verbose=self.verbose).to_np()
-        result = self.locator_runner.locate(frame_np, verbose=self.verbose)
-        self._update_netmode_from_result(result)
+        try:
+            frame_np = self.capturer.capture_frame(verbose=self.verbose).to_np()
+            result = self.locator_runner.locate(frame_np, verbose=self.verbose)
+            self._update_netmode_from_result(result)
+        except Exception as e:
+            logger.erro(e)
+            result = MergedMatchResult()
         return result
 
     def ensure_menu_opened(self, max_retries: int = 5):

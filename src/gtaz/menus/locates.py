@@ -878,11 +878,17 @@ class MenuLocator:
 
 def is_score_too_low(result: MatchResult, threshold: float = None) -> bool:
     """判断匹配结果的分数是否低于阈值"""
+    if not result or not result.score:
+        # 无效结果视为低分
+        return True
     return result.score < (threshold or MATCH_THRESHOLD)
 
 
 def is_score_high(result: MatchResult, threshold: float = None) -> bool:
     """判断匹配结果的分数是否高于阈值"""
+    if not result or not result.score:
+        # 无效结果视为低分
+        return False
     return result.score >= (threshold or HIGH_THRESHOLD)
 
 
