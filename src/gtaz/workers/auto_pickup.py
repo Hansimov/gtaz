@@ -20,9 +20,9 @@ LOOP_COUNT = 1
 # 切换到故事模式后的等待时间（秒）
 WAIT_AT_STORY = 15
 # 确保货物全部到达等待时间（秒）
-WAIT_FOR_GOODS = 15
+WAIT_FOR_GOODS = 10
 # 等待音频信号稳定时间（秒）
-WAIT_FOR_QUIET = 15
+WAIT_FOR_QUIET = 12
 # 检测到音频信号后等待时间（秒）
 WAIT_AFTER_DETECT = 1
 # 等待断网提示出现（秒）
@@ -242,12 +242,13 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python -m gtaz.workers.auto_pickup -s              # 切换到故事模式
-  python -m gtaz.workers.auto_pickup -i              # 切换到在线模式（邀请战局）
-  python -m gtaz.workers.auto_pickup -l              # 循环1次
-  python -m gtaz.workers.auto_pickup -l -g           # 循环1次，结束后回到线下
-  python -m gtaz.workers.auto_pickup -l -c 5         # 循环5次
-  python -m gtaz.workers.auto_pickup -l -w 48 -c 85  # 等待48分钟后开始，循环85次
+  python -m gtaz.workers.auto_pickup -s                 # 切换到故事模式
+  python -m gtaz.workers.auto_pickup -i                 # 切换到在线模式（邀请战局）
+  python -m gtaz.workers.auto_pickup -l                 # 循环1次
+  python -m gtaz.workers.auto_pickup -l -g              # 循环1次，结束后回到线下
+  python -m gtaz.workers.auto_pickup -l -c 5            # 循环5次
+  python -m gtaz.workers.auto_pickup -l -w 48           # 等待48分钟后开始
+  python -m gtaz.workers.auto_pickup -l -w 48 -c 85 -g  # 等待48分钟后开始，循环85次，结束后回到线下
         """,
     )
     parser.add_argument(
