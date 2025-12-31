@@ -3,8 +3,9 @@
 import argparse
 import sys
 
+from datetime import datetime
 from time import sleep
-from tclogger import TCLogger, logstr, Runtimer, dt_to_str
+from tclogger import TCLogger, TCLogbar, logstr, Runtimer, dt_to_str, get_now_ts
 
 from ..workers.mode_switch import NetmodeSwitcher
 from ..nets.blocks import GTAVFirewallBlocker
@@ -30,6 +31,8 @@ WAIT_FOR_DISCONNECT_WARN = 12
 WARN_CONFIRM_COUNT = 3
 # 相邻确认的间隔（秒）
 WARN_CONFIRM_INTERVAL = 1
+# 循环开始前等待时间（分钟）
+WAIT_FOR_LOOP_MINS = 48  # 48 分钟
 
 
 class AutoPickuper:
@@ -151,6 +154,31 @@ class AutoPickuper:
         elapsed_str = logstr.mesg(elapsed_str)
         logger.okay(f"第 {round_str} 轮完成，用时: {elapsed_str}")
 
+    def _wait_for_loop(self, minutes: int):
+        """循环开始前等待（分钟）"""
+        if not minutes or minutes <= 0:
+            return
+        remain_seconds = int(minutes * 60)
+        tick = 0.5
+        bar = TCLogbar()
+        total = int(remain_seconds)
+        run_dt_ts = get_now_ts() + remain_seconds
+        bar.set_total(total)
+        bar.set_desc(logstr.note("等待循环开始"))
+        while remain_seconds > tick:
+            now_ts = get_now_ts()
+            bar.update(
+                count=round(total - remain_seconds),
+                remain_seconds=round(remain_seconds),
+            )
+            if now_ts >= run_dt_ts:
+                break
+            remain_seconds = run_dt_ts - now_ts
+            sleep(tick)
+        bar.update(count=total, remain_seconds=0, flush=True)
+        bar.reset(linebreak=True)
+        sleep(max(run_dt_ts - get_now_ts(), 0))
+
     def switch_loop(
         self, loop_count: int = LOOP_COUNT, args: argparse.Namespace = None
     ) -> bool:
@@ -161,6 +189,8 @@ class AutoPickuper:
         :param loop_count: 循环次数
         :return: 是否成功完成所有循环
         """
+        # 等待循环开始
+        self._wait_for_loop(minutes=args.wait_for_loop_mins)
         # 添加防火墙规则
         self.blocker.add_rule()
         # 打印循环开始信息
@@ -212,11 +242,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python -m gtaz.workers.auto_pickup -s          # 切换到故事模式
-  python -m gtaz.workers.auto_pickup -i          # 切换到在线模式（邀请战局）
-  python -m gtaz.workers.auto_pickup -l          # 循环1次
-  python -m gtaz.workers.auto_pickup -l -g       # 循环1次，结束后回到线下
-  python -m gtaz.workers.auto_pickup -l -c 5     # 循环5次
+  python -m gtaz.workers.auto_pickup -s              # 切换到故事模式
+  python -m gtaz.workers.auto_pickup -i              # 切换到在线模式（邀请战局）
+  python -m gtaz.workers.auto_pickup -l              # 循环1次
+  python -m gtaz.workers.auto_pickup -l -g           # 循环1次，结束后回到线下
+  python -m gtaz.workers.auto_pickup -l -c 5         # 循环5次
+  python -m gtaz.workers.auto_pickup -l -w 48 -c 85  # 等待48分钟后开始，循环85次
         """,
     )
     parser.add_argument(
@@ -249,6 +280,13 @@ def parse_args() -> argparse.Namespace:
         "--go-to-story-after-finished",
         action="store_true",
         help="循环结束后回到线下故事模式（默认留在线上）",
+    )
+    parser.add_argument(
+        "-w",
+        "--wait-for-loop-mins",
+        type=float,
+        default=WAIT_FOR_LOOP_MINS,
+        help=f"循环开始前等待的分钟数（默认: {WAIT_FOR_LOOP_MINS}）",
     )
     return parser.parse_args()
 
@@ -291,3 +329,6 @@ if __name__ == "__main__":
 
     # 循环5次
     # python -m gtaz.workers.auto_pickup -l -c 5
+
+    # 等待48分钟后开始循环85次
+    # python -m gtaz.workers.auto_pickup -l -w 48 -c 85
