@@ -56,13 +56,13 @@ pip install -r AUTO_PICKUP.txt -i https://mirrors.ustc.edu.cn/pypi/simple
 
 过程中会出现 ViGEmBus 的安装提示（详见：[vgamepad](https://github.com/yannbouteiller/vgamepad?tab=readme-ov-file#windows)），确认并安装即可。
 
-进入运行目录：
+以开发模式安装本项目（使命令行工具生效）：
 
 ```sh
-cd src
+pip install -e .
 ```
 
-后续所有命令均在 `src` (`D:/codes/gtaz/src`) 目录下执行。
+后续命令可在任意目录下执行（只要 venv 已激活）。
 
 ## 安装 VBCABLE，配置混音器
 
@@ -106,14 +106,13 @@ cd src
 - [x] 命令行窗口已正确配置
   - 以管理员身份运行（因为后续需要添加和开关防火墙规则，用于存档断网）
   - 已激活 venv：左侧显示 `(gta)`
-  - 已切换到 `D:/codes/gtaz/src` 目录
 
 ## 首次测试运行
 
 添加防火墙规则：
 
 ```sh
-python -m gtaz.nets.blocks -a
+blocks -a
 ```
 
 如果出现 `未能添加防火墙规则`，则需要以管理员身份运行命令行，然后再运行。
@@ -121,7 +120,7 @@ python -m gtaz.nets.blocks -a
 在员工取回货之前，运行下面的测试脚本，确认各个组件工作正常：
 
 ```sh
-python -m gtaz.workers.auto_pickup -l -g
+pickup -l -g
 ```
 
 如果出现下面的情况，就说明运行正常：
@@ -133,7 +132,7 @@ python -m gtaz.workers.auto_pickup -l -g
 确保退到线下故事模式：
 
 ```sh
-python -m gtaz.workers.mode_switch -s
+switch -s
 ```
 
 从最后一个员工外出取货开始计算，等待 48 分钟。
@@ -143,7 +142,7 @@ python -m gtaz.workers.mode_switch -s
 等待结束后，运行下面的脚本，开始自动取货（循环 85 次，基本能取满，可以按需调整）：
 
 ```sh
-python -m gtaz.workers.auto_pickup -l -c 85
+pickup -l -c 85
 ```
 
 循环结束后，脚本会自动保存货物存档，并同步到云服务器。
@@ -177,19 +176,19 @@ python -m gtaz.workers.auto_pickup -l -c 85
 从故事模式切换到线上邀请战局，或者从当前战局切换到新的邀请战局：
 
 ```sh
-python -m gtaz.workers.mode_switch -i
+switch -i
 ```
 
 从在线模式切换到故事模式：
 
 ```sh
-python -m gtaz.workers.mode_switch -s
+switch -s
 ```
 
 从故事模式切换到在线模式（公开战局）：
 
 ```sh
-python -m gtaz.workers.mode_switch -o
+switch -o
 ```
 
 ### 防火墙规则管理
@@ -199,31 +198,31 @@ python -m gtaz.workers.mode_switch -o
 查看帮助：
 
 ```sh
-python -m gtaz.nets.blocks -h
+blocks -h
 ```
 
 添加防火墙规则：
 
 ```sh
-python -m gtaz.nets.blocks -a
+blocks -a
 ```
 
 删除防火墙规则：
 
 ```sh
-python -m gtaz.nets.blocks -d
+blocks -d
 ```
 
 启用防火墙规则：
 
 ```sh
-python -m gtaz.nets.blocks -e
+blocks -e
 ```
 
 禁用防火墙规则：
 
 ```sh
-python -m gtaz.nets.blocks -s
+blocks -s
 ```
 
 </details>
