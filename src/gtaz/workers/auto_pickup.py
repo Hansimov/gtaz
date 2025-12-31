@@ -214,7 +214,7 @@ class AutoPickuper:
                 self._log_at_round_end(i)
                 # 执行收尾操作
                 self._do_at_last_round()
-                if args and not args.go_to_story_after_finished:
+                if args and args.stay_online_after_finished:
                     # 最后一轮留在线上，不再回到故事模式
                     break
             # 切换到故事模式
@@ -242,13 +242,13 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python -m gtaz.workers.auto_pickup -s                 # 切换到故事模式
-  python -m gtaz.workers.auto_pickup -i                 # 切换到在线模式（邀请战局）
-  python -m gtaz.workers.auto_pickup -l                 # 循环1次
-  python -m gtaz.workers.auto_pickup -l -g              # 循环1次，结束后回到线下
-  python -m gtaz.workers.auto_pickup -l -c 5            # 循环5次
-  python -m gtaz.workers.auto_pickup -l -w 48           # 等待48分钟后开始
-  python -m gtaz.workers.auto_pickup -l -w 48 -c 85 -g  # 等待48分钟后开始，循环85次，结束后回到线下
+  python -m gtaz.workers.auto_pickup -s              # 切换到故事模式
+  python -m gtaz.workers.auto_pickup -i              # 切换到在线模式（邀请战局）
+  python -m gtaz.workers.auto_pickup -l              # 循环1次
+  python -m gtaz.workers.auto_pickup -l -o           # 循环1次，结束后留在线上
+  python -m gtaz.workers.auto_pickup -l -c 5         # 循环5次
+  python -m gtaz.workers.auto_pickup -l -w 48        # 等待48分钟后开始
+  python -m gtaz.workers.auto_pickup -l -w 48 -c 85  # 等待48分钟后开始，循环85次，结束后回到线下
         """,
     )
     parser.add_argument(
@@ -277,17 +277,17 @@ def parse_args() -> argparse.Namespace:
         help=f"循环次数（默认: {LOOP_COUNT}）",
     )
     parser.add_argument(
-        "-g",
-        "--go-to-story-after-finished",
+        "-o",
+        "--stay-online-after-finished",
         action="store_true",
-        help="循环结束后回到线下故事模式（默认留在线上）",
+        help="循环结束后留在线上（默认回到线下故事模式）",
     )
     parser.add_argument(
         "-w",
         "--wait-for-loop-mins",
         type=float,
-        default=WAIT_FOR_LOOP_MINS,
-        help=f"循环开始前等待的分钟数（默认: {WAIT_FOR_LOOP_MINS}）",
+        default=None,
+        help=f"循环开始前等待的分钟数（默认不等待）",
     )
     return parser.parse_args()
 
@@ -316,20 +316,8 @@ if __name__ == "__main__":
     # 显示帮助信息
     # python -m gtaz.workers.auto_pickup -h
 
-    # 切换到故事模式
-    # python -m gtaz.workers.auto_pickup -s
-
-    # 切换到在线模式（邀请战局）
-    # python -m gtaz.workers.auto_pickup -i
-
     # 循环（默认1次）
     # python -m gtaz.workers.auto_pickup -l
-
-    # 循环1次，结束后回到线下故事模式
-    # python -m gtaz.workers.auto_pickup -l -g
-
-    # 循环5次
-    # python -m gtaz.workers.auto_pickup -l -c 5
 
     # 等待48分钟后开始循环85次
     # python -m gtaz.workers.auto_pickup -l -w 48 -c 85
