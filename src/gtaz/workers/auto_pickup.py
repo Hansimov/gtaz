@@ -192,10 +192,10 @@ class AutoPickuper:
         """
         # 确保音频输出为 CABLE Input
         self.audio_switcher.ensure_cable_input()
-        # 等待循环开始
-        self._wait_for_loop(minutes=args.wait_for_loop_mins)
         # 添加防火墙规则
         self.blocker.add_rule()
+        # 等待循环开始
+        self._wait_for_loop(minutes=args.wait_for_loop_mins)
         # 打印循环开始信息
         logger.hint(f"开始循环切换，循环次数: {loop_count}")
         self.loop_count = loop_count
