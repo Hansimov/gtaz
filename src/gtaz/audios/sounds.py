@@ -148,8 +148,8 @@ def find_audio_device(
         # 排序：优先采样率匹配，其次通道数较少
         candidates.sort(key=lambda x: (not x["sr_match"], x["channels"]))
         best = candidates[0]
-        logger.okay(
-            f"音频设备: [{best['index']}] {best['name']} "
+        logger.note(
+            f"监听音频设备: [{best['index']}] {logstr.mesg(best['name'])} "
             f"(通道: {best['channels']}, 采样率: {best['sample_rate']}Hz)"
         )
 

@@ -8,6 +8,7 @@ from time import sleep
 from tclogger import TCLogger, TCLogbar, logstr, Runtimer, dt_to_str, get_now_ts
 
 from ..workers.mode_switch import NetmodeSwitcher
+from ..audios.cables import AudioDeviceSwitcher
 from ..nets.blocks import GTAVFirewallBlocker
 from ..audios.detects_v3 import VolumeDetector
 
@@ -45,9 +46,9 @@ class AutoPickuper:
     def __init__(self):
         """初始化自动循环取货器"""
         self.switcher = NetmodeSwitcher()
+        self.audio_switcher = AudioDeviceSwitcher()
         self.blocker = GTAVFirewallBlocker()
         self.detector = VolumeDetector()
-        self.detector.initialize()
 
     # =============== 故事模式相关 =============== #
     def _do_at_story(self):
@@ -189,6 +190,8 @@ class AutoPickuper:
         :param loop_count: 循环次数
         :return: 是否成功完成所有循环
         """
+        # 确保音频输出为 CABLE Input
+        self.audio_switcher.ensure_cable_input()
         # 等待循环开始
         self._wait_for_loop(minutes=args.wait_for_loop_mins)
         # 添加防火墙规则

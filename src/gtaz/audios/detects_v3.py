@@ -79,6 +79,15 @@ class VolumeDetector:
         self._line_buffer: list[str] = []
         self._current_tick_detected = False
 
+        self._log_init()
+
+    def _log_init(self):
+        """初始化日志"""
+        logger.okay(
+            f"音量检测器初始化完成 "
+            f"(平均阈值: {self.avg_threshold}, 最大阈值: {self.max_threshold})"
+        )
+
     def _is_first_in_group(self) -> bool:
         """判断是否是组内第一个。"""
         return self._sample_count % SAMPLES_PER_GROUP == 0
@@ -123,13 +132,6 @@ class VolumeDetector:
             logger.note(f" [{vol_line}] {status_str}", use_prefix=False)
         else:
             logger.note("", use_prefix=False)
-
-    def initialize(self) -> bool:
-        """初始化检测器（兼容 detects_v2 接口）"""
-        logger.okay(
-            f"音量检测器初始化完成 (平均阈值: {self.avg_threshold}, 最大阈值: {self.max_threshold})"
-        )
-        return True
 
     def detect(self) -> tuple[bool, int, int]:
         """执行一次检测
@@ -374,9 +376,6 @@ def main():
         avg_threshold=args.avg_threshold,
         max_threshold=args.max_threshold,
     )
-
-    # 初始化
-    detector.initialize()
 
     # 运行检测
     if args.stop_on_match:
