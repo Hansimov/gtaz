@@ -1,6 +1,6 @@
 [project]
 name = "gtaz"
-version = "1.0"
+version = "1.0.1"
 authors = [
     { name="Hansimov" },
 ]
@@ -16,6 +16,7 @@ dependencies = [ ]
 
 [project.optional-dependencies]
 dev = [ "tclogger", "vgamepad", "numpy", "Pillow", "torch", "torchvision", "timm" ]
+pickup = [ "acto", "numpy", "opencv-contrib-python", "opencv-python", "Pillow", "psutil", "sounddevice", "soundfile", "tclogger", "vgamepad" ]
 gpu = [ ]
 cpu = [ ]
 

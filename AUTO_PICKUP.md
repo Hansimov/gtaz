@@ -40,27 +40,18 @@ git clone --depth 1 https://github.com/Hansimov/gtaz.git
 # git clone --depth 1 https://githubfast.com/Hansimov/gtaz.git 
 ```
 
-安装依赖：
+以开发模式安装项目和依赖：
 
 ```sh
 cd gtaz
-pip install -r AUTO_PICKUP.txt -i https://mirrors.ustc.edu.cn/pypi/simple
+pip install -e .[pickup] -i https://mirrors.ustc.edu.cn/pypi/simple
 ```
 
 过程中会出现 ViGEmBus 的安装提示（详见：[vgamepad](https://github.com/yannbouteiller/vgamepad?tab=readme-ov-file#windows)），确认并安装即可。
 
-以开发模式安装本项目（使命令行工具生效）：
-
-```sh
-pip install -e .
-```
-
-后续所有命令均在 `src` (`D:/codes/gtaz/src`) 目录下执行。
-
 如果项目未来有更新，运行下面的命令即可同步：
 
 ```sh
-cd /d D:\codes\gtaz
 git pull
 ```
 
@@ -83,9 +74,10 @@ git pull
 - [x] 优化图像设置：打开菜单 `设置` - `图像`
   - `屏幕类型` 改为 `窗口模式`，分辨率改为 `1024 x 768`
   - 可以不改，但是大部分开发和测试都是在这个分辨率下，改成这个会更稳定
-- [x] （故事模式）优化声音设置：打开菜单 `设置` - `声音`
+- [x] 优化声音设置：打开菜单 `设置` - `声音`
   - `游戏失去焦点时静音` 改为 `关闭`
   - 保证在后台时也能获取游戏音频流，用于断网时机判断
+  - 故事模式和在线模式都需要设置
 - [x] 大仓员工已经派出取货
   - 正式运行前必须完成，测试时不需要
   - 一定要看到 `-$7500`，并且员工已经离开仓库
@@ -96,9 +88,15 @@ git pull
 - [x] 命令行窗口已正确配置
   - 以管理员身份运行（因为后续需要添加和开关防火墙规则，用于存档断网）
   - 已激活 venv：左侧显示 `(gta)`
-  - 已切换到 `D:/codes/gtaz/src` 目录
+  - 已切换到 `D:\codes\gtaz\src` 目录
 
 ## 首次测试运行
+
+```sh
+cd /d D:\codes\gtaz\src
+```
+
+后续所有命令均在 `src` (`D:\codes\gtaz\src`) 目录下执行。
 
 在员工取回货之前，运行下面的测试脚本，确认各个组件工作正常：
 
@@ -106,7 +104,7 @@ git pull
 pickup -l
 ```
 
-如果出现 `未能添加防火墙规则`，则需要以管理员身份运行命令行，然后再运行。
+如果出现 `未能添加防火墙规则`，则需要以管理员身份打开命令行，然后再运行上面的命令。
 
 如果出现下面的提示，就说明运行正常：
 - [x] 在下云的时候，命令行日志出现 `音频流已启动...匹配成功！...音频流已停止`，表明音频识别正常
