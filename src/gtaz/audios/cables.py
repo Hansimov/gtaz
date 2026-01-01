@@ -18,6 +18,7 @@ svcl.exe 命令行参考:
 import argparse
 import csv
 import io
+import re
 import subprocess
 import sys
 
@@ -138,7 +139,7 @@ class AudioDeviceSwitcher:
         success, stdout, stderr = run_svcl_command(args)
 
         if success:
-            self._log_device_setting("音频输出", device_name)
+            self._log_device_setting("设置音频输出", device_name)
         else:
             logger.warn(f"设置音频输出设备失败")
             if stderr:
@@ -161,7 +162,7 @@ class AudioDeviceSwitcher:
         success, stdout, stderr = run_svcl_command(args)
 
         if success:
-            self._log_device_setting("音频输入", device_name)
+            self._log_device_setting("设置音频输入", device_name)
         else:
             logger.warn(f"设置音频输入设备失败")
             if stderr:
@@ -178,14 +179,14 @@ class AudioDeviceSwitcher:
 
         :return: 是否全部设置成功
         """
-        self._log_title("设置 CABLE")
+        self._log_title("设置CABLE")
         logger.mesg(f"应用: {self.app_str}")
 
         output_success = self.set_output_device(CABLE_INPUT_DEVICE)
         input_success = self.set_input_device(CABLE_OUTPUT_DEVICE)
 
         if output_success and input_success:
-            logger.okay("CABLE 音频设备设置完成")
+            logger.okay("CABLE音频设备设置完成")
         else:
             logger.warn("部分设备设置失败")
 
@@ -210,11 +211,11 @@ class AudioDeviceSwitcher:
 
         return output_success and input_success
 
-    def get_current_devices(self) -> dict[str, str]:
+    def get_current_devices(self) -> dict:
         """
-        获取应用当前的音频输入输出设备。
+        获取当前应用使用的音频输入/输出设备信息。
 
-        :return: 包含 'output' 和 'input' 键的字典，值为设备名称
+        :return: 包含 'output' 和 'input' 键的字典，值为包含 device_name、friendly_id 和 short_name 的字典
         """
         # 执行 svcl.exe 导出 CSV
         args = ["/scomma", ""]
@@ -228,7 +229,21 @@ class AudioDeviceSwitcher:
         result = {"output": None, "input": None}
         try:
             csv_reader = csv.DictReader(io.StringIO(stdout))
-            for row in csv_reader:
+            rows = list(csv_reader)
+
+            # 第一步：构建 GUID -> 设备短名称映射
+            guid_to_name = {}
+            for row in rows:
+                if row.get("Type") == "Device":
+                    item_id = row.get("Item ID", "")
+                    # 提取 GUID：{xxx}.{GUID}
+                    match = re.search(r"\{[^}]+\}\.\{([^}]+)\}", item_id)
+                    if match:
+                        guid = match.group(1)
+                        guid_to_name[guid] = row.get("Name", "")
+
+            # 第二步：查找应用的音频设备
+            for row in rows:
                 # 筛选条件：
                 # 1. Name 包含应用名称
                 # 2. Type 为 Application
@@ -240,16 +255,53 @@ class AudioDeviceSwitcher:
                 ):
                     direction = row.get("Direction")
                     device_name = row.get("Device Name")
+                    friendly_id = row.get("Command-Line Friendly ID", "")
+                    item_id = row.get("Item ID", "")
+
+                    # 通过 Item ID 中的 GUID 查找设备短名称
+                    short_name = device_name  # 默认使用设备名
+                    match = re.search(r"\{[^}]+\}\.\{([^}]+)\}", item_id)
+                    if match:
+                        guid = match.group(1)
+                        short_name = guid_to_name.get(guid, device_name)
+
+                    device_info = {
+                        "device_name": device_name,
+                        "friendly_id": friendly_id,
+                        "short_name": short_name,
+                    }
 
                     if direction == "Render":
-                        result["output"] = device_name
+                        result["output"] = device_info
                     elif direction == "Capture":
-                        result["input"] = device_name
+                        result["input"] = device_info
 
         except Exception as e:
             logger.err(f"解析音频设备信息时出错: {e}")
 
         return result
+
+    def _format_device_display_name(self, device_info: dict) -> str:
+        """
+        格式化设备显示名称。
+
+        :param device_info: 包含 device_name、friendly_id 和 short_name 的字典
+        :return: 格式化后的显示名称
+
+        格式：设备简称 (实际设备名)
+        """
+        if not device_info:
+            return None
+
+        device_name = device_info.get("device_name", "")
+        short_name = device_info.get("short_name", device_name)
+
+        if short_name and short_name != device_name:
+            # 有简称且与设备名不同时，显示为：简称 (设备名)
+            return f"{short_name} ({device_name})"
+        else:
+            # 没有简称或简称就是设备名时，只显示设备名
+            return device_name
 
     def list_current_devices(self) -> bool:
         """
@@ -262,13 +314,17 @@ class AudioDeviceSwitcher:
 
         devices = self.get_current_devices()
 
+        # 显示输出设备
         if devices["output"] is not None:
-            self._log_device_setting("音频输出", devices["output"])
+            display_name = self._format_device_display_name(devices["output"])
+            self._log_device_setting("当前音频输出", display_name)
         else:
             logger.warn("未找到活动的音频输出设备")
 
+        # 显示输入设备
         if devices["input"] is not None:
-            self._log_device_setting("音频输入", devices["input"])
+            display_name = self._format_device_display_name(devices["input"])
+            self._log_device_setting("当前音频输入", display_name)
         else:
             logger.warn("未找到活动的音频输入设备")
 
