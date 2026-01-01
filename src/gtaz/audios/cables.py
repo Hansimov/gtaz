@@ -330,6 +330,70 @@ class AudioDeviceSwitcher:
 
         return devices["output"] is not None or devices["input"] is not None
 
+    def _log_device_name(self, device_name: str):
+        if device_name == CABLE_INPUT_DEVICE:
+            device_name_str = logstr.okay(device_name)
+        else:
+            device_name_str = logstr.file(device_name)
+        logger.mesg(f"当前音频输出: {device_name_str}")
+
+    def ensure_cable_input(self) -> bool:
+        """确保音频输出设备为 CABLE Input
+
+        流程：
+        - 检查当前音频输出设备
+        - 如果不是 CABLE Input，则设置为 CABLE Input
+        - 再次检查音频输出设备
+        - 如果仍然不是 CABLE Input，抛出异常并退出
+
+        :return: 是否成功设置
+        """
+        logger.note("检查音频输出设备...")
+
+        # 第一次检查当前设备
+        devices = self.get_current_devices()
+        output_device = devices.get("output")
+
+        if output_device is None:
+            logger.fail("无法获取当前音频输出设备信息")
+            logger.fail("请确保 GTAV 增强版正在运行")
+            sys.exit(1)
+
+        current_device_name = output_device.get("short_name", "")
+        self._log_device_name(current_device_name)
+
+        # 检查是否已经是 CABLE Input
+        if current_device_name == CABLE_INPUT_DEVICE:
+            logger.okay("音频输出设备已正确配置")
+            return True
+
+        # 不是 CABLE Input，需要设置
+        self.set_cable()
+
+        # 第二次检查
+        logger.note("再次检查音频输出设备...")
+        devices = self.get_current_devices()
+        output_device = devices.get("output")
+
+        if output_device is None:
+            logger.fail("设置后无法获取音频输出设备信息")
+            logger.fail("请检查音频设备配置")
+            sys.exit(1)
+
+        current_device_name = output_device.get("short_name", "")
+        self._log_device_name(current_device_name)
+
+        # 验证是否设置成功
+        if current_device_name != CABLE_INPUT_DEVICE:
+            logger.fail(
+                f"音频输出设备设置失败，期望: {logstr.file(CABLE_INPUT_DEVICE)}，实际: {logstr.file(current_device_name)}"
+            )
+            logger.fail("请手动在系统混音器选项中设置 GTAV 的音频输出为 CABLE Input")
+            sys.exit(1)
+
+        logger.okay("音频输出设备设置成功")
+        return True
+
     def __repr__(self) -> str:
         return f"AudioDeviceSwitcher(app_name={self.app_name!r}, process_name={self.process_name!r})"
 
@@ -348,6 +412,7 @@ def parse_args() -> argparse.Namespace:
   python -m gtaz.audios.cables -l    # 查看当前音频设备
   python -m gtaz.audios.cables -c    # 设置为 CABLE 虚拟音频设备
   python -m gtaz.audios.cables -d    # 设置为系统默认音频设备
+  python -m gtaz.audios.cables -e    # 确保音频输出为 CABLE Input
         """,
     )
     parser.add_argument(
@@ -367,6 +432,12 @@ def parse_args() -> argparse.Namespace:
         "--list",
         action="store_true",
         help="查看当前的音频输入输出设备",
+    )
+    parser.add_argument(
+        "-e",
+        "--ensure-cable-input",
+        action="store_true",
+        help="确保音频输出设备为 CABLE Input",
     )
     return parser.parse_args()
 
@@ -389,6 +460,9 @@ def main():
     if args.default:
         switcher.set_default()
 
+    if args.ensure_cable_input:
+        switcher.ensure_cable_input()
+
 
 if __name__ == "__main__":
     main()
@@ -404,3 +478,6 @@ if __name__ == "__main__":
 
     # 设置为系统默认音频设备
     # python -m gtaz.audios.cables -d
+
+    # 确保音频输出设备为 CABLE Input
+    # python -m gtaz.audios.cables -e
