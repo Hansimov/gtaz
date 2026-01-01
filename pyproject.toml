@@ -1,6 +1,6 @@
 [project]
 name = "gtaz"
-version = "0.9.2"
+version = "1.0"
 authors = [
     { name="Hansimov" },
 ]
@@ -21,6 +21,7 @@ cpu = [ ]
 
 [project.scripts]
 screen = "gtaz.visions.screens:main"
+cables = "gtaz.audios.cables:main"
 blocks = "gtaz.nets.blocks:main"
 switch = "gtaz.workers.mode_switch:main"
 pickup = "gtaz.workers.auto_pickup:main"
