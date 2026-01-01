@@ -125,6 +125,10 @@ class AudioDeviceSwitcher:
         device_str = logstr.file(device)
         logger.mesg(f"{direction_str}: {device_str}")
 
+    def _log_app_name(self):
+        """打印应用名称日志。"""
+        logger.mesg(f"应用名称: {self.app_str}")
+
     def set_output_device(self, device_name: str) -> bool:
         """
         设置音频输出设备（Render）。
@@ -180,13 +184,13 @@ class AudioDeviceSwitcher:
         :return: 是否全部设置成功
         """
         self._log_title("设置CABLE")
-        logger.mesg(f"应用: {self.app_str}")
+        self._log_app_name()
 
         output_success = self.set_output_device(CABLE_INPUT_DEVICE)
         input_success = self.set_input_device(CABLE_OUTPUT_DEVICE)
 
         if output_success and input_success:
-            logger.okay("CABLE音频设备设置完成")
+            logger.okay("音频设备设置完成：CABLE")
         else:
             logger.warn("部分设备设置失败")
 
@@ -199,13 +203,13 @@ class AudioDeviceSwitcher:
         :return: 是否全部设置成功
         """
         self._log_title("设置默认")
-        logger.mesg(f"应用: {self.app_str}")
+        self._log_app_name()
 
         output_success = self.set_output_device(DEFAULT_RENDER_DEVICE)
         input_success = self.set_input_device(DEFAULT_CAPTURE_DEVICE)
 
         if output_success and input_success:
-            logger.okay("默认音频设备设置完成")
+            logger.okay("音频设备设置完成：默认")
         else:
             logger.warn("部分设备设置失败")
 
@@ -310,7 +314,7 @@ class AudioDeviceSwitcher:
         :return: 是否成功获取设备信息
         """
         self._log_title("查看当前")
-        logger.mesg(f"应用: {self.app_str}")
+        self._log_app_name()
 
         devices = self.get_current_devices()
 
@@ -330,12 +334,18 @@ class AudioDeviceSwitcher:
 
         return devices["output"] is not None or devices["input"] is not None
 
-    def _log_device_name(self, device_name: str):
-        if device_name == CABLE_INPUT_DEVICE:
-            device_name_str = logstr.okay(device_name)
+    def _is_cable_input(self, short_name: str) -> bool:
+        return short_name == CABLE_INPUT_DEVICE
+
+    def _log_short_name(self, short_name: str):
+        if self._is_cable_input(short_name):
+            short_name_str = logstr.okay(short_name)
         else:
-            device_name_str = logstr.file(device_name)
-        logger.mesg(f"当前音频输出: {device_name_str}")
+            short_name_str = logstr.file(short_name)
+        logger.mesg(f"当前音频输出: {short_name_str}")
+
+    def _log_okay_setting(self):
+        logger.okay("音频输出设备已正确设置")
 
     def ensure_cable_input(self) -> bool:
         """确保音频输出设备为 CABLE Input
@@ -348,7 +358,7 @@ class AudioDeviceSwitcher:
 
         :return: 是否成功设置
         """
-        logger.note("检查音频输出设备...")
+        self._log_title("检查")
 
         # 第一次检查当前设备
         devices = self.get_current_devices()
@@ -359,19 +369,19 @@ class AudioDeviceSwitcher:
             logger.fail("请确保 GTAV 增强版正在运行")
             sys.exit(1)
 
-        current_device_name = output_device.get("short_name", "")
-        self._log_device_name(current_device_name)
+        short_name = output_device.get("short_name", "")
+        self._log_short_name(short_name)
 
         # 检查是否已经是 CABLE Input
-        if current_device_name == CABLE_INPUT_DEVICE:
-            logger.okay("音频输出设备已正确配置")
+        if self._is_cable_input(short_name):
+            self._log_okay_setting()
             return True
 
         # 不是 CABLE Input，需要设置
         self.set_cable()
 
         # 第二次检查
-        logger.note("再次检查音频输出设备...")
+        logger.note("检查音频输出设备是否正确设置...")
         devices = self.get_current_devices()
         output_device = devices.get("output")
 
@@ -380,18 +390,20 @@ class AudioDeviceSwitcher:
             logger.fail("请检查音频设备配置")
             sys.exit(1)
 
-        current_device_name = output_device.get("short_name", "")
-        self._log_device_name(current_device_name)
+        short_name = output_device.get("short_name", "")
+        self._log_short_name(short_name)
 
         # 验证是否设置成功
-        if current_device_name != CABLE_INPUT_DEVICE:
+        if not self._is_cable_input(short_name):
             logger.fail(
-                f"音频输出设备设置失败，期望: {logstr.file(CABLE_INPUT_DEVICE)}，实际: {logstr.file(current_device_name)}"
+                f"音频输出设备设置失败，"
+                f"期望: {logstr.file(CABLE_INPUT_DEVICE)}，"
+                f"实际: {logstr.file(short_name)}"
             )
             logger.fail("请手动在系统混音器选项中设置 GTAV 的音频输出为 CABLE Input")
             sys.exit(1)
 
-        logger.okay("音频输出设备设置成功")
+        self._log_okay_setting()
         return True
 
     def __repr__(self) -> str:
