@@ -1,6 +1,8 @@
 from pathlib import Path
 from tclogger import strf_path, logstr
 
+from ..resources import get_resource_path
+
 # 分辨率
 RESOLUTIONS = [
     (1024, 768),
@@ -25,7 +27,7 @@ RESOLUTIONS = [
 REF_WIDTH, REF_HEIGHT = 1024, 768
 
 # 菜单模板目录
-MENU_IMGS_DIR = Path(__file__).parent / "imgs"
+MENU_IMGS_DIR = get_resource_path("menus/imgs")
 
 
 def add_names(list_infos: list[dict], parent: tuple) -> list[dict]:

@@ -25,14 +25,13 @@ import sys
 from pathlib import Path
 from tclogger import TCLogger, logstr, brk
 
+from ..resources import get_resource_path
 
 logger = TCLogger(name="AudioDeviceSwitcher", use_prefix=True, use_prefix_ms=True)
 
 
-# 获取当前模块所在目录
-MODULE_DIR = Path(__file__).parent
 # svcl.exe 路径
-SVCL_EXE = MODULE_DIR / "svcl.exe"
+SVCL_EXE = get_resource_path("audios/svcl.exe")
 
 # GTAV 增强版应用名称（在 SoundVolumeView 中显示的名称）
 GTAV_APP_NAME = "Grand Theft Auto V"

@@ -2,7 +2,66 @@
 
 目前仅适配 GTAV 增强版。
 
-## 安装 Python，创建 venv
+---
+
+## 方式一：直接使用 EXE（推荐新手）
+
+如果你不想安装 Python 环境，可以直接使用打包好的 exe 文件。
+
+### 下载 EXE 文件
+
+从 [Releases](https://github.com/Hansimov/gtaz/releases) 页面下载最新版本的压缩包，解压后包含以下文件：
+
+- `pickup.exe` - 自动取货主程序
+- `switch.exe` - 模式切换工具
+- `blocks.exe` - 防火墙规则管理
+
+### 安装必要驱动
+
+**1. 安装 ViGEmBus（虚拟手柄驱动）**
+
+下载并安装 ViGEmBus：
+- https://github.com/nefarius/ViGEmBus/releases
+- 下载 `ViGEmBus_Setup_x64.msi`，双击安装即可
+
+**2. 安装 VBCABLE（虚拟音频线缆）**
+
+下载 VBCABLE：
+- https://vb-audio.com/Cable/index.htm
+- https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
+
+解压后，双击 `VBCABLE_Setup_x64.exe` 安装。
+
+### 使用方法
+
+1. 将 exe 文件放到任意目录（例如 `D:\gtaz\`）
+2. 以**管理员身份**打开命令提示符（因为需要操作防火墙规则）
+3. 切换到 exe 所在目录：
+   ```sh
+   cd /d D:\gtaz
+   ```
+4. 运行命令（参数与 Python 版本完全相同）：
+   ```sh
+   # 测试运行
+   pickup -l
+   
+   # 正式运行（等待48分钟后开始，循环85次）
+   pickup -l -w 48 -c 85
+   
+   # 切换到故事模式
+   switch -s
+   
+   # 查看帮助
+   pickup -h
+   ```
+
+跳转到 [测试和运行前检查清单](#测试和运行前检查清单) 继续。
+
+---
+
+## 方式二：从源码安装（开发者）
+
+### 安装 Python，创建 venv
 
 本项目开发环境为 Python 3.13.9：
 - https://www.python.org/downloads/release/python-3139/
@@ -26,7 +85,7 @@ call gta\Scripts\activate.bat
 
 命令行左侧会显示 `(gta)`，说明已成功激活虚拟环境。
 
-## 克隆项目，安装依赖
+### 克隆项目，安装依赖
 
 假设 repo 下载到：`D:/codes`。后续均以此路径作为参考。
 
@@ -55,7 +114,7 @@ pip install -e .[pickup] -i https://mirrors.ustc.edu.cn/pypi/simple
 git pull
 ```
 
-## 安装 VBCABLE
+### 安装 VBCABLE
 
 在自动取货模块中，需要根据下云的声音判断何时断网。
 
@@ -87,20 +146,22 @@ git pull
   - 不要选择机库，也避免有浴室的地点（比如公寓）
 - [x] 命令行窗口已正确配置
   - 以管理员身份运行（因为后续需要添加和开关防火墙规则，用于存档断网）
-  - 已激活 venv：左侧显示 `(gta)`
-  - 已切换到 `D:\codes\gtaz\src` 目录
+  - **EXE 版本**：切换到 exe 所在目录
+  - **源码版本**：已激活 venv（左侧显示 `(gta)`），已切换到 `D:\codes\gtaz\src` 目录
+
+---
 
 ## 首次测试运行
 
+**EXE 版本**：
 ```sh
-cd /d D:\codes\gtaz\src
+cd /d D:\gtaz
+pickup -l
 ```
 
-后续所有命令均在 `src` (`D:\codes\gtaz\src`) 目录下执行。
-
-在员工取回货之前，运行下面的测试脚本，确认各个组件工作正常：
-
+**源码版本**：
 ```sh
+cd /d D:\codes\gtaz\src
 pickup -l
 ```
 

@@ -2,6 +2,7 @@ secrets.json
 upload.json
 .vscode
 cache
+build/
 dist/
 src/*.egg-info/
 __pycache__
